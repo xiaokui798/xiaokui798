@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#121915" />
+    <title>方块世界</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <canvas id="game" tabindex="-1" aria-label="方块世界游戏画面"></canvas>
+    <canvas id="effects" aria-hidden="true"></canvas>
+
+    <main id="start-screen" class="screen">
+      <section class="panel">
+        <h1>方块世界</h1>
+        <p class="intro">挑战断星巨像和熔炉守卫，或在方块世界里生存建造。</p>
+        <div class="menu-actions">
+          <button id="colossus-button" type="button">挑战断星巨像</button>
+          <button id="boss-button" class="secondary-button" type="button">挑战熔炉守卫</button>
+          <button id="defense-button" class="secondary-button" type="button">信标防守</button>
+          <button id="start-button" class="secondary-button" type="button">开始生存</button>
+          <button id="build-button" class="secondary-button" type="button">自由建造</button>
+          <button id="sound-button" class="sound-button" type="button" aria-label="游戏音效" aria-pressed="true">音效开启</button>
+        </div>
+        <p id="menu-status" class="menu-note" role="status" hidden></p>
+        <div class="controls" aria-label="操作说明">
+          <p><kbd>W A S D</kbd> 移动 <kbd>空格</kbd> 跳跃 <kbd>Shift</kbd> 冲刺</p>
+          <p><kbd>鼠标 / 方向键</kbd> 环视 <kbd>左键</kbd> 攻击或挖掘 <kbd>右键</kbd> 放置</p>
+          <p><kbd>1–5</kbd> 方块 <kbd>6</kbd> 石剑 <kbd>7</kbd> 石斧</p>
+          <p><kbd>C</kbd> 背包与制作 <kbd>H</kbd> 使用敷料</p>
+          <p><kbd>T</kbd> 切换天气 <kbd>M</kbd> 音效 <kbd>Esc</kbd> 暂停</p>
+        </div>
+      </section>
+    </main>
+
+    <div id="hud" hidden>
+      <div class="topbar">
+        <div>
+          <span id="coordinates">X 0 · Y 0 · Z 0</span>
+          <span id="weather-status">晴朗</span>
+          <span id="look-hint" hidden>按住左键拖动环视</span>
+        </div>
+        <div class="game-status">
+          <div id="wave-status"></div>
+          <div id="stage-time" class="defense-detail" hidden></div>
+          <div id="message" role="status"></div>
+        </div>
+      </div>
+      <div id="crosshair" aria-hidden="true" hidden></div>
+      <div id="target-status" hidden></div>
+      <section id="boss-hud" class="boss-hud" aria-label="熔炉守卫" hidden>
+        <label for="boss-health"><span id="boss-name">熔炉守卫</span><strong id="boss-health-value">80 / 80</strong></label>
+        <progress id="boss-health" max="80" value="80"></progress>
+        <div id="boss-callout" role="status"></div>
+      </section>
+      <div id="defense-hud" class="defense-hud" hidden>
+        <label for="beacon-health">信标 <strong id="beacon-health-value">120 / 120</strong></label>
+        <progress id="beacon-health" max="120" value="120"></progress>
+        <div id="beacon-bearing" class="defense-detail"></div>
+        <div id="defense-actions" class="defense-detail"></div>
+      </div>
+      <section class="speed-hud" aria-label="移动速度">
+        <div class="speed-current"><span>水平速度</span><strong id="speed-current">0.00</strong><span>格/秒</span></div>
+        <dl class="speed-metrics">
+          <div><dt>起跳 → 峰值</dt><dd id="speed-jump">待起跳</dd></div>
+          <div><dt id="speed-landing-label">落地 → 0.20 秒后</dt><dd id="speed-landing">待落地</dd></div>
+        </dl>
+      </section>
+      <div class="loadout">
+        <div id="vitals" class="vitals">
+          <label for="health">生命 <span id="health-value">100</span></label>
+          <progress id="health" max="100" value="100"></progress>
+        </div>
+        <div id="survival-supplies" class="supplies" hidden><span><kbd>C</kbd> 背包</span><span><kbd>H</kbd> 敷料 <strong id="hud-dressings">0</strong></span></div>
+        <div id="weapon-state" class="vitals" hidden>
+          <label for="weapon-recovery" id="weapon-label"></label>
+          <progress id="weapon-recovery" max="100" value="100"></progress>
+        </div>
+        <div id="pulse-info" hidden></div>
+        <div id="pulse-hint" hidden><kbd>左键</kbd> 单发 <kbd>按住右键</kbd> 爆发</div>
+        <div id="hotbar" aria-label="物品栏"></div>
+      </div>
+    </div>
+    <div id="pause" class="screen" hidden>
+      <section class="panel pause-panel" role="dialog" aria-modal="true" aria-labelledby="pause-title">
+        <h2 id="pause-title">游戏暂停</h2>
+        <div class="menu-actions">
+          <button id="resume-button" type="button">继续游戏</button>
+          <button id="pause-inventory-button" class="secondary-button" type="button">背包与制作</button>
+          <button id="pause-menu-button" class="secondary-button" type="button">返回主菜单</button>
+          <button id="pause-sound-button" class="sound-button" type="button" aria-label="游戏音效" aria-pressed="true">音效开启</button>
+          <button id="reload-save-button" type="button" hidden>载入最新存档</button>
+        </div>
+        <p id="save-warning" class="menu-note" role="status" hidden>另一标签页更新了存档。载入后会回到主菜单，当前波次结束。</p>
+        <p id="graphics-warning" class="menu-note" role="status" hidden></p>
+        <div class="look-option">
+          <label for="look-sensitivity">鼠标灵敏度</label>
+          <input id="look-sensitivity" type="range" min="10" max="100" step="5" value="40" aria-valuetext="40%" />
+          <output id="look-sensitivity-value" for="look-sensitivity">40%</output>
+        </div>
+        <p id="pause-note" class="menu-note">返回主菜单会结束当前波次，建筑和背包会保留。</p>
+      </section>
+    </div>
+
+    <div id="death-screen" class="screen" hidden>
+      <section class="panel death-panel" role="dialog" aria-modal="true" aria-labelledby="death-title">
+        <h2 id="death-title">你倒下了</h2>
+        <p class="intro" id="death-summary"></p>
+        <div class="menu-actions">
+          <button id="respawn-button" type="button">重生</button>
+          <button id="death-menu-button" class="secondary-button" type="button">返回主菜单</button>
+        </div>
+      </section>
+    </div>
+
+    <div id="inventory-screen" class="screen" hidden>
+      <section class="panel inventory-panel" role="dialog" aria-modal="true" aria-labelledby="inventory-title">
+        <header class="inventory-heading">
+          <h2 id="inventory-title">背包与制作</h2>
+          <button id="inventory-resume" class="secondary-button" type="button">回到游戏</button>
+        </header>
+        <dl id="inventory-materials" class="inventory-materials" aria-label="材料数量"></dl>
+        <div class="recipe">
+          <div><h3>石斧</h3><p id="axe-cost"></p></div>
+          <button id="craft-axe" type="button">制作石斧</button>
+        </div>
+        <div class="recipe">
+          <div><h3>树叶敷料</h3><p id="dressing-cost"></p></div>
+          <button id="craft-dressing" type="button">制作敷料</button>
+        </div>
+        <div class="inventory-foot">
+          <span id="inventory-dressings"></span>
+          <button class="secondary-button" id="use-dressing" type="button">使用敷料</button>
+        </div>
+        <p class="inventory-notice" id="inventory-notice" role="status"></p>
+      </section>
+    </div>
+
+    <script type="module" src="game.js"></script>
+  </body>
+</html>
