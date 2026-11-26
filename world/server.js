@@ -37,6 +37,9 @@ for (const name of ["laserSmall_003", "impactMetal_001", "explosionCrunch_002", 
   const file = "assets/" + name + ".ogg";
   files.set("/" + file, [file, "audio/ogg"]);
 }
+for (const name of fs.readdirSync(path.join(__dirname, "icons"))) {
+  if (name.endsWith(".svg")) files.set("/icons/" + name, ["icons/" + name, "image/svg+xml"]);
+}
 
 const server = http.createServer((req, res) => {
   if (req.method !== "GET" && req.method !== "HEAD") {
