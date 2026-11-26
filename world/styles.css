@@ -288,7 +288,7 @@ kbd {
 .inventory-panel button { min-width: 0; padding: .58rem .75rem; }
 .inventory-materials { display: grid; grid-template-columns: repeat(auto-fit, minmax(4.45rem, 1fr)); gap: .5rem; margin: 1.3rem 0; }
 .inventory-materials div { padding: .5rem .35rem; text-align: center; background: #273526; display: flex; align-items: center; justify-content: center; gap: .35rem; flex-wrap: wrap; }
-.inventory-materials dd { margin: 0; }
+.inventory-materials dd { margin: 0; flex-basis: 100%; }
 .inventory-materials dt { font-size: .82rem; }
 .inventory-materials dd { margin: .25rem 0 0; color: #ecefdc; font-size: 1.25rem; font-variant-numeric: tabular-nums; }
 .recipe, .inventory-foot { display: flex; align-items: center; justify-content: space-between; gap: .6rem; padding: .75rem 0; border-top: 1px solid rgba(235, 244, 220, .18); }

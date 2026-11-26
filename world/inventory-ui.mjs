@@ -458,7 +458,7 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
     document.querySelector("#equip-weapon-card").style.setProperty("opacity", weaponBroken ? ".58" : "");
     const armor = campaign.equipment.armor;
     const armorBroken = armor && armor.durability <= 0;
-    setText(document.querySelector("#equip-armor-name"), (armor ? RECIPES[armor.key].name : "防具") + (armorBroken ? "（已损坏，无法使用）" : ""));
+    setText(document.querySelector("#equip-armor-name"), (armor ? RECIPES[armor.key].name : RECIPES.stoneArmor.name) + (armorBroken ? "（已损坏，无法使用）" : ""));
     setText(document.querySelector("#equip-armor-info"), armorBroken ? "失效，回退到石阶 / 拳头 / 0.28 秒"
       : armor ? `${TIER_TITLES[armor.tier]} · 减伤 ${Math.round(armorReduction(armor.tier) * 100)}%` : "未获得——在工作台制作");
     setDurabilityBar("armor", armor);
@@ -467,7 +467,7 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
     document.querySelector("#equip-armor-card").style.setProperty("opacity", armorBroken ? ".58" : "");
     const tool = campaign.equipment.tool;
     const toolBroken = tool && tool.durability <= 0;
-    setText(document.querySelector("#equip-tool-name"), (tool ? RECIPES[tool.key].name : "工具") + (toolBroken ? "（已损坏，无法使用）" : ""));
+    setText(document.querySelector("#equip-tool-name"), (tool ? RECIPES[tool.key].name : RECIPES.stonePickaxe.name) + (toolBroken ? "（已损坏，无法使用）" : ""));
     setText(document.querySelector("#equip-tool-info"), toolBroken ? "失效，回退到石阶 / 拳头 / 0.28 秒"
       : tool ? `${TIER_TITLES[tool.tier]} · 挖掘 ${miningInterval(tool.tier).toFixed(2)} 秒/块` : "未获得——在工作台制作");
     setDurabilityBar("tool", tool);

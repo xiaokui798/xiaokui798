@@ -2659,7 +2659,7 @@ test("the backpack shows the workbench gate, and crafting unlocks the equipment 
   assert.equal(game.get("equip-armor-name").textContent, "石甲");
   assert.equal(game.get("equip-armor-info").textContent, "石阶 · 减伤 10%");
   assert.equal(game.get("equip-armor-state").textContent, "已装备");
-  assert.equal(game.get("equip-tool-name").textContent, "工具");
+  assert.equal(game.get("equip-tool-name").textContent, "石镐");
   assert.equal(game.get("equip-tool-info").textContent, "未获得——在工作台制作");
   assert.equal(game.get("equip-tool-state").textContent, "未获得");
   // And the pickaxe the same way.
@@ -3436,6 +3436,10 @@ test("item icons lead the material strips, rows, cards and hotbar slots", () => 
   assert.match(game.get("tech-list").innerHTML, /icons\/bountifulHarvest\.svg/);
   assert.equal(game.get("equip-weapon-icon").src, "icons/stoneSword.svg");
   assert.equal(game.get("equip-armor-icon").src, "icons/stoneArmor.svg");
+  // Batch 84: an empty slot's title names its preview piece, like
+  // its icon — "未获得" is carried by the info and state lines.
+  assert.equal(game.get("equip-armor-name").textContent, "石甲");
+  assert.equal(game.get("equip-tool-name").textContent, "石镐");
   assert.equal(game.get("detail-icon").src, "icons/workbench.svg");
   const slots = game.get("hotbar").children;
   assert.match(slots[0].innerHTML, /icons\/grass\.svg/);
