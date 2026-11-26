@@ -20,9 +20,9 @@
 
 export function createHud(elements, timers) {
   const { setTimeout, clearTimeout } = timers;
-  const { hud, bossHud, bossName, bossHealth, bossHealthValue, bossHealthGhost,
+  const { hud, bossHud, bossName, bossHealthValue, bossHealthTrack,
     bossCallout, bossWarning, bossPhaseBanner, bossSkills, bossSkillHeal,
-    bossSkillDragons, waveStatus, coordinates, message, buffLines } = elements;
+    bossSkillDragons, waveStatus, coordinates, message, buffLines, document } = elements;
 
   function setText(element, text) {
     if (element.textContent !== text) element.textContent = text;
@@ -41,11 +41,61 @@ export function createHud(elements, timers) {
     bossHud.hidden = !visible;
   }
 
+  // The segmented health bar (batch 60, design §5): one segment
+  // per bar, built when the bar count changes and reused while it
+  // holds. Segments before the current one are broken (dimmed,
+  // striped, and flashed white by CSS the frame their class lands),
+  // the current one carries the fill and the white ghost trail, and
+  // later ones stand full in their standby colour. Per frame only
+  // the current segment's two widths are written; class and width
+  // normalisation for the rest happens on the frame the index moves.
+  let segments = [], segmentCount = 0, segmentIndex = 0;
+  function buildSegments(count) {
+    segments = [];
+    for (let i = 0; i < count; i++) {
+      const root = document.createElement("div");
+      root.classList.add("boss-segment");
+      root.classList.add(`bar-${i + 1}`);
+      const ghost = document.createElement("div");
+      ghost.classList.add("boss-segment-ghost");
+      const fill = document.createElement("div");
+      fill.classList.add("boss-segment-fill");
+      root.append(ghost, fill);
+      segments.push({ root, fill, ghost });
+    }
+    bossHealthTrack.replaceChildren(...segments.map(segment => segment.root));
+    segmentCount = count;
+    segmentIndex = 0;
+  }
+  const percent = frac => `${Math.round(Math.min(1, Math.max(0, frac)) * 1000) / 10}%`;
+  function writeBar(bar) {
+    if (bar.count !== segmentCount) buildSegments(bar.count);
+    if (bar.index !== segmentIndex) {
+      segmentIndex = bar.index;
+      segments.forEach((segment, i) => {
+        const state = i < bar.index - 1 ? "broken" : i === bar.index - 1 ? "current" : "idle";
+        segment.root.classList.toggle("broken", state === "broken");
+        segment.root.classList.toggle("current", state === "current");
+        segment.root.classList.toggle("idle", state === "idle");
+        if (state === "broken") { segment.fill.style.width = "0%"; segment.ghost.style.width = "0%"; }
+        if (state === "idle") { segment.fill.style.width = "100%"; segment.ghost.style.width = "0%"; }
+      });
+      for (let n = 1; n <= 4; n++) bossHud.classList.toggle(`bar-${n}`, n === bar.index);
+    }
+    const current = segments[bar.index - 1];
+    if (!current) return;
+    const fillWidth = percent(bar.frac), ghostWidth = percent(bar.ghostFrac);
+    if (current.fill.style.width !== fillWidth) current.fill.style.width = fillWidth;
+    if (current.ghost.style.width !== ghostWidth) current.ghost.style.width = ghostWidth;
+  }
+
   // One frame of boss HUD. The view is fully decided by the caller:
   //   name          boss-name text, or null to leave it (the colossus
   //                 name is set once at fight start, not per frame)
-  //   healthMax / health / ghostHp   bar numbers (ghost is the white
-  //                 trailing segment's current value)
+  //   bar           { index, count, frac, ghostFrac } — the current
+  //                 bar's slot and fill ratios (ghost is the white
+  //                 trailing segment, folded into the current bar)
+  //   healthText    the numeric readout beside the boss name
   //   statusText    the shared right-top line for this boss
   //   skillsHidden  false only for the colossus
   //   healReadyAt / dragonsReadyAt / elapsed   skill-chip clocks;
@@ -55,14 +105,10 @@ export function createHud(elements, timers) {
   //   warningOn     mirror the callout in the big central warning
   //   vulnerable / danger   class toggles (boss hud; danger also
   //                 lights the whole HUD root's red edge flash)
-  //   phase         1..3, drives the health bar's phase-colour frame
-  //   bannerVisible / bannerText   the phase-change big print
+  //   bannerVisible / bannerText   the bar-change big print
   function updateBossHud(view) {
-    if (bossHealth.max !== view.healthMax) bossHealth.max = view.healthMax;
-    if (bossHealth.value !== view.health) bossHealth.value = view.health;
-    setText(bossHealthValue, `${view.health} / ${view.healthMax}`);
-    const ghostWidth = `${Math.round(view.ghostHp / view.healthMax * 1000) / 10}%`;
-    if (bossHealthGhost.style.width !== ghostWidth) bossHealthGhost.style.width = ghostWidth;
+    writeBar(view.bar);
+    setText(bossHealthValue, view.healthText);
     if (view.name !== null) setText(bossName, view.name);
     setText(waveStatus, view.statusText);
     bossSkills.hidden = view.skillsHidden;
@@ -80,9 +126,6 @@ export function createHud(elements, timers) {
     bossHud.classList.toggle("vulnerable", view.vulnerable);
     bossHud.classList.toggle("in-danger", view.danger);
     hud.classList.toggle("in-danger", view.danger);
-    bossHud.classList.toggle("phase-1", view.phase === 1);
-    bossHud.classList.toggle("phase-2", view.phase === 2);
-    bossHud.classList.toggle("phase-3", view.phase === 3);
     bossPhaseBanner.hidden = !view.bannerVisible;
     if (view.bannerVisible) setText(bossPhaseBanner, view.bannerText);
   }

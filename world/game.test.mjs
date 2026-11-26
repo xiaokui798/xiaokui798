@@ -72,8 +72,11 @@ function mountGame({ pointerLock = false, storage, now = () => performance.now()
     const classes = new Set();
     return Object.assign(eventTarget(), {
       hidden: ["#inventory-screen", "#pause", "#death-screen", "#crosshair"].includes(id),
-      value: 0, textContent: "", style: { setProperty: noop }, append: noop,
-      focus: noop, setAttribute: noop, replaceChildren: noop,
+      value: 0, textContent: "", style: { setProperty: noop },
+      children: [],
+      append(...nodes) { this.children.push(...nodes); },
+      focus: noop, setAttribute: noop,
+      replaceChildren(...nodes) { this.children.length = 0; this.children.push(...nodes); },
       classList: { add: name => classes.add(name), contains: name => classes.has(name),
         toggle: (name, force) => force ? classes.add(name) : classes.delete(name) },
       getContext(type) {
@@ -3493,6 +3496,117 @@ test("buffs never reach the save: a reload starts with none", t => {
   assert.equal(second.get("hud-buff-speed").hidden, true);
   assert.equal(second.get("hud-buff-attack").hidden, true);
   assert.equal(measureSpeedReadout(second, frame2, 4.15), 4.15, "reloaded speed must be exactly 4.15");
+});
+
+test("boss health bar: segments per bar, the current one drains, broken ones go dark", t => {
+  let seed = 1;
+  t.mock.method(Math, "random", () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296));
+  const segFill = segment => segment.children.find(child => child.classList.contains("boss-segment-fill"));
+  const segGhost = segment => segment.children.find(child => child.classList.contains("boss-segment-ghost"));
+  // The colossus gets four segments; the first is current and full,
+  // the rest idle, and the hud wears the first bar's colour class.
+  {
+    const game = mountGame({ pointerLock: true });
+    let time = 0;
+    const frame = () => game.frame(time += 20);
+    game.click("colossus-button");
+    game.grantPointerLock();
+    frame();
+    const segments = game.get("boss-health-track").children;
+    assert.equal(segments.length, 4);
+    assert.ok(segments[0].classList.contains("bar-1"));
+    assert.ok(segments[0].classList.contains("current"));
+    assert.equal(segFill(segments[0]).style.width, "100%");
+    assert.equal(segGhost(segments[0]).style.width, "100%");
+    assert.ok(segments[3].classList.contains("bar-4"));
+    assert.ok(segments[3].classList.contains("idle"));
+    assert.equal(segFill(segments[3]).style.width, "100%");
+    assert.ok(game.get("boss-hud").classList.contains("bar-1"));
+  }
+  // The guardian gets three. Fight (the win test's robot) until
+  // the first bar breaks: mid-bar the current segment's fill tracks
+  // the numeric readout exactly; after the break the first segment
+  // is broken, the second is current, the third still idle.
+  const game = mountGame({ pointerLock: true });
+  const attack = () => game.get("game").emit("mousedown", { button: 0 });
+  let time = 0;
+  const frame = () => game.frame(time += 20);
+  game.click("boss-button");
+  game.grantPointerLock();
+  frame();
+  const segments = game.get("boss-health-track").children;
+  assert.equal(segments.length, 3);
+  assert.ok(segments[0].classList.contains("current"));
+  game.key("KeyW");
+  game.key("Digit7");
+  for (let i = 0; i < 58; i++) frame();
+  game.release("KeyW");
+  let jumpPrimed = false;
+  const jumpQueue = [];
+  let fracChecked = false, advanced = false;
+  for (let i = 0; i < 6000 && game.get("death-screen").hidden && !advanced; i++) {
+    frame();
+    let dx = 0, dz = 0, helmetVertices = 0;
+    const vertices = game.actorVertices;
+    for (let v = 0; v < vertices.length; v += 12) {
+      if (vertices[v + 1] < 7.6) continue;
+      helmetVertices++;
+      dx += vertices[v] - game.camera[0];
+      dz += vertices[v + 2] - game.camera[2];
+    }
+    if (dx || dz) {
+      const turn = Math.atan2(dx, -dz) - Math.atan2(game.direction[0], -game.direction[2]);
+      game.document.emit("mousemove", { movementX: Math.max(-65, Math.min(65, Math.atan2(Math.sin(turn), Math.cos(turn)) / .0013)), movementY: 0 });
+      if (Math.hypot(dx, dz) > 1.8 * helmetVertices) game.key("KeyW");
+      else game.release("KeyW");
+    }
+    const exposed = game.get("boss-callout").textContent.includes("现在打");
+    const callout = game.get("boss-callout").textContent;
+    if (/冲过来了|火球要砸下来了|熔锤冲锋|炉火坠落|横扫来了|扇形横扫/.test(callout)) {
+      game.release("KeyW");
+      game.key("KeyD");
+      game.key("ShiftLeft");
+    } else if (exposed) {
+      game.release("KeyD");
+      game.release("ShiftLeft");
+    } else {
+      game.key("KeyD");
+      game.release("ShiftLeft");
+    }
+    const bossDist = helmetVertices ? Math.hypot(dx, dz) / helmetVertices : 5;
+    if ((callout.includes("守卫要砸地了") || callout.includes("两圈冲击波")) && !jumpPrimed) {
+      jumpPrimed = true;
+      const nova = callout.includes("两圈冲击波");
+      const bar = game.get("boss-name").textContent.includes("过载") ? 3
+        : game.get("boss-name").textContent.includes("烈火") ? 2 : 1;
+      const wind = (nova ? 1.35 : 1.04) * [1, .86, .72][bar - 1];
+      const arrive = (bossDist - (nova ? 1.72 : 1.35)) / 10;
+      const first = i + Math.round((wind + arrive - 0.25) / 0.02);
+      jumpQueue.push(first);
+      if (nova) jumpQueue.push(first + 42);
+    }
+    if (!callout.includes("砸地") && !callout.includes("冲击波") && !callout.includes("· 跳！")) jumpPrimed = false;
+    if (jumpQueue.length && i >= jumpQueue[0]) {
+      jumpQueue.shift();
+      game.key("Space");
+      game.release("Space");
+    }
+    if (exposed || /游荡者|突袭者|破城者/.test(game.get("target-status").textContent)) attack();
+    const hpNow = Number(game.get("boss-health-value").textContent.split(" / ")[0]);
+    if (!fracChecked && hpNow < 260) {
+      fracChecked = true;
+      assert.equal(segFill(segments[0]).style.width, `${Math.round(hpNow / 260 * 1000) / 10}%`);
+    }
+    advanced = game.get("boss-name").textContent.includes("第 2 / 3 管");
+  }
+  assert.ok(fracChecked, "the guardian took damage mid-bar");
+  assert.ok(advanced, "the first bar broke");
+  assert.equal(game.get("boss-health-track").children.length, 3);
+  assert.ok(segments[0].classList.contains("broken"));
+  assert.equal(segFill(segments[0]).style.width, "0%");
+  assert.ok(segments[1].classList.contains("current"));
+  assert.ok(segments[2].classList.contains("idle"));
+  assert.ok(game.get("boss-hud").classList.contains("bar-2"));
 });
 
 test("boss warnings: the guardian's status line, central warning and in-danger feedback speak plainly", () => {

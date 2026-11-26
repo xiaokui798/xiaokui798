@@ -285,23 +285,35 @@ kbd {
 }
 .boss-hud label { display: flex; justify-content: space-between; align-items: baseline; gap: .5rem; font-weight: 700; }
 .boss-hud strong { font-size: .78rem; font-variant-numeric: tabular-nums; }
-.boss-hud progress { display: block; width: 100%; height: .48rem; margin: .42rem 0; border: 0; appearance: none; background: #49312d; }
-.boss-hud progress::-webkit-progress-bar { background: #49312d; }
-.boss-hud progress::-webkit-progress-value { background: #df784e; }
-.boss-hud progress::-moz-progress-bar { background: #df784e; }
 #boss-callout { color: #f2cfaa; font-size: .82rem; text-align: center; }
 .boss-hud.vulnerable #boss-callout { color: #a6eadc; }
 .boss-hud.in-danger { background: rgba(84, 20, 12, .94); }
 .boss-hud.in-danger #boss-callout { color: #ffd9c9; }
-/* The ghost segment trails real damage: white, draining to the new
-   value over 0.6s (driven from game.js), so a hit's size reads on
-   the bar itself. The track carries the old progress margin and
-   background; the progress paints transparent so the ghost shows
-   through the not-yet-lost part. */
-.boss-health-track { position: relative; margin: .42rem 0; background: #49312d; }
-.boss-health-track progress { margin: 0; background: transparent; position: relative; }
-.boss-health-track progress::-webkit-progress-bar { background: transparent; }
-#boss-health-ghost { position: absolute; left: 0; top: 0; height: .48rem; background: rgba(255, 255, 255, .85); width: 100%; }
+/* The health bar is segmented, one segment per bar (batch 60,
+   design §5): the track is a flex row whose own dark background
+   shows through the 2px seams. The current segment carries a fill
+   plus the white ghost trail — the ghost still drains over 0.6s,
+   driven from game.js, folded into the current bar only — broken
+   segments go dark grey with a 45° stripe and flash white once
+   (the shatter animation) when their class lands, and idle
+   segments stand full in their bar colour, dimmed. */
+.boss-health-track { display: flex; gap: 2px; height: .48rem; margin: .42rem 0; background: #49312d; }
+.boss-segment { position: relative; flex: 1; overflow: hidden; background: rgba(0, 0, 0, .38); }
+.boss-segment-ghost { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(255, 255, 255, .85); }
+.boss-segment-fill { position: absolute; left: 0; top: 0; bottom: 0; }
+.boss-segment.bar-1 .boss-segment-fill { background: #df784e; }
+.boss-segment.bar-2 .boss-segment-fill { background: #f0d25a; }
+.boss-segment.bar-3 .boss-segment-fill { background: #f04632; }
+.boss-segment.bar-4 .boss-segment-fill { background: #f04632; }
+.colossus-mode .boss-segment.bar-1 .boss-segment-fill { background: #ad8aed; }
+.colossus-mode .boss-segment.bar-2 .boss-segment-fill { background: #f082dc; }
+.colossus-mode .boss-segment.bar-3 .boss-segment-fill { background: #f59e4c; }
+.colossus-mode .boss-segment.bar-4 .boss-segment-fill { background: #fdf6ec; }
+.boss-segment.current { box-shadow: inset 0 0 0 2px rgba(255, 255, 255, .8); }
+.boss-segment.idle .boss-segment-fill { opacity: .45; }
+.boss-segment.broken { background: repeating-linear-gradient(45deg, #3d3d3d 0 6px, #2b2b2b 6px 12px); animation: boss-segment-shatter .45s ease-out; }
+.boss-segment.broken .boss-segment-fill, .boss-segment.broken .boss-segment-ghost { display: none; }
+@keyframes boss-segment-shatter { 0% { filter: brightness(2.6); } 100% { filter: brightness(1); } }
 /* Colossus skill chips under the health bar, in the tech tree's
    gold "have / need" style: what the key does and whether it is
    ready, never mixed into the status line. */
@@ -339,9 +351,6 @@ kbd {
   transform: translateX(-50%);
 }
 .colossus-mode .boss-hud { background: rgba(23, 20, 45, .92); color: #f0e9ff; }
-.colossus-mode .boss-hud progress::-webkit-progress-bar { background: #39324f; }
-.colossus-mode .boss-hud progress::-webkit-progress-value { background: #ad8aed; }
-.colossus-mode .boss-hud progress::-moz-progress-bar { background: #ad8aed; }
 .colossus-mode #boss-callout { color: #dcccff; }
 .colossus-mode .boss-hud.vulnerable #boss-callout { color: #a6eadc; }
 .colossus-mode .boss-hud.in-danger { background: rgba(64, 24, 42, .94); }
@@ -355,12 +364,16 @@ kbd {
   text-shadow: 0 2px 12px rgba(0, 0, 0, .65);
 }
 .colossus-mode #boss-phase-banner { color: #ffe3f4; }
-/* The health bar's frame wears the phase colour (batch 49). */
-.boss-hud.phase-1 .boss-health-track { box-shadow: 0 0 0 2px rgba(223, 120, 78, .85); }
-.boss-hud.phase-2 .boss-health-track { box-shadow: 0 0 0 2px rgba(240, 210, 90, .9); }
-.boss-hud.phase-3 .boss-health-track { box-shadow: 0 0 0 2px rgba(240, 70, 50, .9); }
-.colossus-mode .boss-hud.phase-1 .boss-health-track { box-shadow: 0 0 0 2px rgba(173, 138, 237, .9); }
-.colossus-mode .boss-hud.phase-2 .boss-health-track { box-shadow: 0 0 0 2px rgba(240, 130, 220, .9); }
+/* The health bar's frame wears the current bar's colour (batch
+   60; the guardian runs bars 1-3, the colossus all four). */
+.boss-hud.bar-1 .boss-health-track { box-shadow: 0 0 0 2px rgba(223, 120, 78, .85); }
+.boss-hud.bar-2 .boss-health-track { box-shadow: 0 0 0 2px rgba(240, 210, 90, .9); }
+.boss-hud.bar-3 .boss-health-track { box-shadow: 0 0 0 2px rgba(240, 70, 50, .9); }
+.boss-hud.bar-4 .boss-health-track { box-shadow: 0 0 0 2px rgba(240, 70, 50, .9); }
+.colossus-mode .boss-hud.bar-1 .boss-health-track { box-shadow: 0 0 0 2px rgba(173, 138, 237, .9); }
+.colossus-mode .boss-hud.bar-2 .boss-health-track { box-shadow: 0 0 0 2px rgba(240, 130, 220, .9); }
+.colossus-mode .boss-hud.bar-3 .boss-health-track { box-shadow: 0 0 0 2px rgba(245, 158, 76, .9); }
+.colossus-mode .boss-hud.bar-4 .boss-health-track { box-shadow: 0 0 0 2px rgba(253, 246, 236, .95); }
 .boss-mode .loadout { width: min(17rem, calc(100vw - 2rem)); }
 .boss-mode #hotbar { justify-content: center; }
 @media (max-width: 620px) {

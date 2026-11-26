@@ -35,14 +35,13 @@ export function initGame(window) {
   const colossusButton = document.querySelector("#colossus-button");
   const bossHud = document.querySelector("#boss-hud");
   const bossName = document.querySelector("#boss-name");
-  const bossHealth = document.querySelector("#boss-health");
   const bossHealthValue = document.querySelector("#boss-health-value");
   const bossCallout = document.querySelector("#boss-callout");
   const bossWarning = document.querySelector("#boss-warning");
   const bossSkills = document.querySelector("#boss-skills");
   const bossSkillHeal = document.querySelector("#boss-skill-heal");
   const bossSkillDragons = document.querySelector("#boss-skill-dragons");
-  const bossHealthGhost = document.querySelector("#boss-health-ghost");
+  const bossHealthTrack = document.querySelector("#boss-health-track");
   const bossPhaseBanner = document.querySelector("#boss-phase-banner");
   const menuStatus = document.querySelector("#menu-status");
   const buildButton = document.querySelector("#build-button");
@@ -144,9 +143,9 @@ export function initGame(window) {
   }
   // The HUD write-out layer (hud.mjs, split piece 2): this file
   // decides what the HUD says; hud.mjs owns writing it to the DOM.
-  const hudUi = createHud({ hud, bossHud, bossName, bossHealth, bossHealthValue, bossHealthGhost,
+  const hudUi = createHud({ hud, bossHud, bossName, bossHealthValue, bossHealthTrack,
     bossCallout, bossWarning, bossPhaseBanner, bossSkills, bossSkillHeal, bossSkillDragons,
-    waveStatus, coordinates, message, buffLines },
+    waveStatus, coordinates, message, buffLines, document },
     { setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window) });
   const showMessage = hudUi.showMessage;
 
@@ -3112,11 +3111,12 @@ export function initGame(window) {
       // player most needs it — and clears with the recovery.
       const warningOn = !finished && (boss.state === "windup" || boss.state === "attack");
       hudUi.updateBossHud({
-        name: bossNameText, healthMax: maxHp, health: boss.hp, ghostHp: bossGhostHp,
+        name: bossNameText,
+        bar: { index: bar.index, count: bar.count, frac: boss.hp / maxHp, ghostFrac: bossGhostHp / maxHp },
+        healthText: `${boss.hp} / ${maxHp}`,
         statusText, skillsHidden: boss.profile !== COLOSSUS,
         healReadyAt: boss.healReady, dragonsReadyAt: boss.dragonsReady, elapsed: boss.elapsed,
         callout, warningOn, vulnerable: boss.state === "recovery", danger,
-        phase: boss.phase,
         bannerVisible: Boolean(phaseBanner && phaseBanner.text && boss.elapsed < phaseBanner.until),
         bannerText: phaseBanner?.text ?? ""
       });
@@ -4068,7 +4068,6 @@ export function initGame(window) {
       pitch = boss.profile.arena.pitch;
       setText(bossName, boss.profile.name);
       bossHud.setAttribute("aria-label", boss.profile.name);
-      bossHealth.max = boss.profile.maxHp;
       prepareTerrain(9);
     } else if (mode === "defense") {
       defense.beacon = locateBeacon();
