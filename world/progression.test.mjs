@@ -11,6 +11,7 @@ function makeSharedStorage(data = new Map()) {
   return [view(), view()];
 }
 import { LEGACY_WORLD, WORLD, voxelIndex } from "./terrain.mjs";
+import { CROPS, growthStage } from "./crops.mjs";
 
 const line = width => ({ minX: 0, minZ: 0, width, height: 1, depth: 1 });
 
@@ -2273,4 +2274,138 @@ test("an export/import round-trip carries seeds and crops", () => {
   assert.deepEqual(game2.importSave(bare), { imported: true });
   assert.deepEqual(game2.crops, {});
   assert.equal(game2.count("wheatSeed"), 2);
+});
+
+// ---- Batch 83: save-compatibility audit --------------------------------
+// Each historical version's real stored shape, loaded whole on the
+// current version: fields reconcile, fields added later land on
+// their documented defaults (never undefined), and the loaded state
+// saves back as v5 and reads back identical (round-trip). Migration
+// fragments (corrupt fallbacks, wrong versions, edit mixing) are
+// covered by the tests above; this battery is the whole-save pass.
+
+function stateOf(game) {
+  return {
+    edits: [...game.blockEdits()].sort((a, b) => a[0] - b[0]),
+    materials: [BLOCK.GRASS, BLOCK.DIRT, BLOCK.STONE, BLOCK.WOOD, BLOCK.LEAF].map(block => game.count(block)),
+    axeUnlocked: game.axeUnlocked, wateringCanOwned: game.wateringCanOwned,
+    dressings: game.dressingsByRecipe, rare: game.rareMaterials, seeds: game.seeds,
+    crops: game.crops, equipment: game.equipment, tech: game.techUnlocked,
+    workbenchBuilt: game.workbenchBuilt, stats: game.stats
+  };
+}
+
+// The defaults every pre-field save must land on: no watering can,
+// starter seeds, no crops, empty slots, no tech, no workbench,
+// zeroed counters, no rare materials.
+const LATER_DEFAULTS = {
+  wateringCanOwned: false,
+  rare: { emberCore: 0, starShard: 0 },
+  seeds: { wheatSeed: 2, wheat: 0, fertilizer: 0 },
+  crops: {}, equipment: { weapon: null, armor: null, tool: null },
+  tech: [], workbenchBuilt: false,
+  stats: { blocksMined: 0, cropsPlanted: 0, cropsHarvested: 0 }
+};
+
+function assertLaterDefaults(game) {
+  const state = stateOf(game);
+  for (const field of Object.keys(LATER_DEFAULTS)) assert.deepEqual(state[field], LATER_DEFAULTS[field], field);
+}
+
+// Load -> reconcile -> save back (a loot grant, a synchronous save)
+// -> reload: the second load must equal the first game's state.
+function roundTrip(storage, layout) {
+  const first = createProgression(storage, layout);
+  const loaded = stateOf(first);
+  first.grantLoot("walker");
+  assert.equal(JSON.parse(storage.getItem(SAVE_KEY)).version, SAVE_VERSION);
+  const second = createProgression(storage, layout);
+  assert.deepEqual(stateOf(second), stateOf(first), "the written v5 save reads back identical");
+  return loaded;
+}
+
+test("audit: a v4 save (per-recipe dressings, nothing later) loads whole and round-trips", () => {
+  const fixture = JSON.stringify({ version: 4, edits: [[3, 0, 0, BLOCK.STONE], [7, 0, 0, BLOCK.WOOD]],
+    materials: [0, 5, 6, 7, 8, 9], axeUnlocked: true,
+    dressings: { dressing: 2, bandage: 1, bigDressing: 0 } });
+  const storage = makeStorage([[V4_SAVE_KEY, fixture]]);
+  const loaded = roundTrip(storage, line(20));
+  assert.deepEqual(loaded.edits, [[3, BLOCK.STONE], [7, BLOCK.WOOD]]);
+  assert.deepEqual(loaded.materials, [5, 6, 7, 8, 9]);
+  assert.equal(loaded.axeUnlocked, true);
+  assert.deepEqual(loaded.dressings, { dressing: 2, bandage: 1, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 0 });
+  const game = createProgression(storage, line(20));
+  assertLaterDefaults(game);
+  assert.equal(storage.getItem(V4_SAVE_KEY), fixture, "the old key is left untouched");
+});
+
+test("audit: a v3 save (single dressing count) loads whole and round-trips", () => {
+  const fixture = JSON.stringify({ version: 3, edits: [[4, 0, 0, BLOCK.DIRT]],
+    materials: [0, 1, 2, 3, 4, 5], axeUnlocked: false, dressings: 3 });
+  const storage = makeStorage([[V3_SAVE_KEY, fixture]]);
+  const loaded = roundTrip(storage, line(20));
+  assert.deepEqual(loaded.edits, [[4, BLOCK.DIRT]]);
+  assert.deepEqual(loaded.materials, [1, 2, 3, 4, 5]);
+  assert.deepEqual(loaded.dressings, { dressing: 3, bandage: 0, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 0 });
+  assertLaterDefaults(createProgression(storage, line(20)));
+});
+
+test("audit: a v2 save lands the later fields on their defaults and round-trips", () => {
+  const oldCell = voxelIndex(LEGACY_WORLD, 25, 9, 27);
+  const fixture = JSON.stringify({ version: 2, edits: [[oldCell, BLOCK.WOOD]],
+    materials: [0, 7, 12, 8, 3, 2], axeUnlocked: true, dressings: 4 });
+  const storage = makeStorage([[PREVIOUS_SAVE_KEY, fixture]]);
+  const loaded = roundTrip(storage, WORLD);
+  assert.deepEqual(loaded.edits, [[voxelIndex(WORLD, 25, 9, 27), BLOCK.WOOD]]);
+  assert.deepEqual(loaded.materials, [7, 12, 8, 3, 2]);
+  assert.equal(loaded.dressings.dressing, 4);
+  assertLaterDefaults(createProgression(storage, WORLD));
+});
+
+test("audit: a legacy v1 edit list loads with starter supplies and round-trips", () => {
+  const fixture = JSON.stringify([[2, BLOCK.WOOD], [9, BLOCK.AIR]]);
+  const storage = makeStorage([[LEGACY_KEY, fixture]]);
+  const loaded = roundTrip(storage, line(20));
+  assert.deepEqual(loaded.edits, [[2, BLOCK.WOOD], [9, BLOCK.AIR]]);
+  // No supplies in v1 at all: the starter kit stands in (dirt 10,
+  // wood 2), everything else at its default.
+  assert.deepEqual(loaded.materials, [0, 10, 0, 2, 0]);
+  assert.deepEqual(loaded.dressings, { dressing: 0, bandage: 0, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 0 });
+  assertLaterDefaults(createProgression(storage, line(20)));
+  assert.equal(storage.getItem(LEGACY_KEY), fixture, "the legacy key is left untouched");
+});
+
+test("audit: a v5 save missing every later field loads on defaults and round-trips", () => {
+  const fixture = JSON.stringify({ version: 5, edits: [[1, 0, 0, BLOCK.STONE]], materials: [0, 3, 3, 3, 3, 3] });
+  const storage = makeStorage([[SAVE_KEY, fixture]]);
+  const loaded = roundTrip(storage, line(20));
+  assert.deepEqual(loaded.edits, [[1, BLOCK.STONE]]);
+  assert.deepEqual(loaded.materials, [3, 3, 3, 3, 3]);
+  assert.equal(loaded.axeUnlocked, false);
+  assertLaterDefaults(createProgression(storage, line(20)));
+});
+
+test("audit: pre-R6 crops and a durability-less piece land on their defaults", () => {
+  // Crops written before the watering round have no `watered` flag;
+  // a piece written before durability was tracked has none either.
+  // Both must load as unwatered / fully durable — never undefined —
+  // and a stored stage that disagrees with the growth is recomputed.
+  const fixture = JSON.stringify({ version: 5, edits: [], materials: [0, 0, 0, 0, 0, 0],
+    axeUnlocked: true, wateringCanOwned: true, dressings: { dressing: 1 },
+    rareMaterials: { emberCore: 2 }, equipment: { weapon: { key: "emberSword", tier: "ember" } },
+    techUnlocked: ["workbench"], workbenchBuilt: true, stats: { blocksMined: 12 },
+    seeds: { wheatSeed: 3, wheat: 1, fertilizer: 0 },
+    crops: { "5": { crop: "wheat", stage: 0, plantedAt: 100, growth: 40000, fertilized: true } } });
+  const storage = makeStorage([[SAVE_KEY, fixture]]);
+  const game = createProgression(storage, line(20));
+  const crop = game.cropAt(5);
+  assert.equal(crop.watered, false);
+  assert.equal(crop.fertilized, true);
+  assert.equal(crop.stage, growthStage(CROPS.wheat, 40000), "the stage is recomputed from growth, not trusted");
+  assert.deepEqual(game.equipment.weapon, { key: "emberSword", tier: "ember", durability: 200 });
+  assert.equal(game.stats.blocksMined, 12);
+  assert.equal(game.stats.cropsHarvested, 0, "a missing counter lands on 0");
+  const loaded = roundTrip(storage, line(20));
+  assert.equal(loaded.crops["5"].watered, false);
+  assert.equal(loaded.equipment.weapon.durability, 200);
 });
