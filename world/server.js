@@ -16,6 +16,7 @@ const files = new Map([
   ["/save.mjs", ["save.mjs", "text/javascript; charset=utf-8"]],
   ["/hud.mjs", ["hud.mjs", "text/javascript; charset=utf-8"]],
   ["/inventory-ui.mjs", ["inventory-ui.mjs", "text/javascript; charset=utf-8"]],
+  ["/boss-render.mjs", ["boss-render.mjs", "text/javascript; charset=utf-8"]],
   ["/waves.mjs", ["waves.mjs", "text/javascript; charset=utf-8"]],
   ["/difficulty.mjs", ["difficulty.mjs", "text/javascript; charset=utf-8"]],
   ["/weapons.mjs", ["weapons.mjs", "text/javascript; charset=utf-8"]],
