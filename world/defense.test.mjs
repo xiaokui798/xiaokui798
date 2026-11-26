@@ -1,3 +1,18 @@
+// NOTE for whoever touches the seeded defense runs (batch 88,
+// hard-won): any test that seeds Math.random AND plays the game
+// over time — above all the eight-wave defense e2e in
+// game.test.mjs — must mount the game on a VIRTUAL clock
+// (now: () => time, advanced by the test's own frame stepper).
+// With the wall clock the run is not deterministic even under a
+// fixed seed: game.js throttles repeat sounds in 320 real-ms
+// windows, and each throttled (or played) sound consumes LCG
+// draws, so the same seed lands on different spawn rolls from
+// run to run. Batch 88 proved it the hard way — a registry-only
+// diff with waves 1-3 untouched flipped the e2e bot between
+// winning and dying. Do not "simplify" a seeded mount back to
+// the default clock; flaky-looking defense results after such a
+// change are this, not a balance change.
+
 import test from "node:test";
 import assert from "node:assert/strict";
 import { BEACON, DEFENSE_WAVES, DEFENSE_TOTAL_WAVES, ENEMIES, choosesBeacon, defenseWaveRoster, selectWaveSpawns, repairPlan, defenseCleared, defenseResult,
