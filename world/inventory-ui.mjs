@@ -24,6 +24,7 @@ import { miningInterval } from "./tools.mjs";
 import { durabilityMax, repairCost } from "./durability.mjs";
 import { CROPS, FARM_MATERIALS, isMature } from "./crops.mjs";
 import { WORLD, voxelPosition, DAY_LENGTH } from "./terrain.mjs";
+import { itemIconKey, itemIconImg } from "./item-icons.mjs";
 
 // The food-buff labels (R5), shared with the HUD buff lines: game.js
 // imports this back for its status refresh.
@@ -49,11 +50,13 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
   })();
   healingList.innerHTML = HEALING_KEYS.filter(key => key !== "dressing").map(key => COOKING_KEYS.includes(key) ? `
     <div class="recipe">
+      ${itemIconImg(key, 28)}
       <div><h3>${RECIPES[key].name}</h3><p id="${key}-effect"></p></div>
       <button id="use-${key}" type="button">食用</button>
       <button id="goto-workbench-${key}" class="secondary-button" type="button">去工作台</button>
     </div>` : `
     <div class="recipe">
+      ${itemIconImg(key, 28)}
       <div><h3>${RECIPES[key].name}</h3><p id="${key}-cost"></p></div>
       <button id="craft-${key}" type="button">制作${RECIPES[key].name}</button>
       <button id="use-${key}" class="secondary-button" type="button">使用${RECIPES[key].name}</button>
@@ -123,6 +126,7 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
       <div class="workbench-columns">
         <div id="workbench-list"></div>
         <div id="workbench-detail" class="recipe">
+          <img id="detail-icon" class="item-icon s36" src="icons/workbench.svg" alt="">
           <div><h3 id="detail-name"></h3><p id="detail-tier"></p><div id="detail-materials"></div><p id="detail-lock"></p></div>
           <button id="detail-craft" type="button"></button>
         </div>
@@ -135,16 +139,19 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
     </div>
     <div id="tab-equipment" role="tabpanel" hidden>
       <div class="recipe" id="equip-weapon-card">
+        <img id="equip-weapon-icon" class="item-icon s36" src="icons/stoneSword.svg" alt="">
         <div><h3 id="equip-weapon-name"></h3><p id="equip-weapon-info"></p></div>
         <div><div style="width: 6rem; height: 6px; background: #273526;"><span id="equip-weapon-durability" style="display: block; width: 100%; height: 6px; background: #f0d285;"></span></div><p id="equip-weapon-durability-text"></p></div>
         <button id="equip-weapon-state" type="button" disabled></button>
       </div>
       <div class="recipe" id="equip-armor-card">
+        <img id="equip-armor-icon" class="item-icon s36" src="icons/stoneArmor.svg" alt="" style=\"opacity: .35;\">
         <div><h3 id="equip-armor-name"></h3><p id="equip-armor-info"></p></div>
         <div><div style="width: 6rem; height: 6px; background: #273526;"><span id="equip-armor-durability" style="display: block; width: 100%; height: 6px; background: #f0d285;"></span></div><p id="equip-armor-durability-text"></p></div>
         <button id="equip-armor-state" type="button" disabled></button>
       </div>
       <div class="recipe" id="equip-tool-card">
+        <img id="equip-tool-icon" class="item-icon s36" src="icons/stonePickaxe.svg" alt="" style=\"opacity: .35;\">
         <div><h3 id="equip-tool-name"></h3><p id="equip-tool-info"></p></div>
         <div><div style="width: 6rem; height: 6px; background: #273526;"><span id="equip-tool-durability" style="display: block; width: 100%; height: 6px; background: #f0d285;"></span></div><p id="equip-tool-durability-text"></p></div>
         <button id="equip-tool-state" type="button" disabled></button>
@@ -159,10 +166,12 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
       <dl id="farm-materials" class="inventory-materials" aria-label="农场材料数量"></dl>
       <div id="farm-sow-list"></div>
       <div class="recipe" id="farm-fertilizer-row">
+        ${itemIconImg("fertilizer", 28)}
         <div><h3>${RECIPES.fertilizer.name}</h3><p id="farm-fertilizer-cost"></p></div>
         <button id="craft-fertilizer" type="button">制作${RECIPES.fertilizer.name}</button>
       </div>
       <div class="recipe" id="farm-watering-can-row">
+        ${itemIconImg("wateringCan", 28)}
         <div><h3>${RECIPES.wateringCan.name}</h3><p id="farm-watering-can-cost"></p></div>
         <button id="craft-watering-can" type="button">制作${RECIPES.wateringCan.name}</button>
       </div>
@@ -181,6 +190,7 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
   const workbenchList = document.querySelector("#workbench-list");
   workbenchList.innerHTML = `
     <div class="recipe" id="wb-row-workbench">
+      ${itemIconImg("workbench", 28)}
       <div><h3>${RECIPES.workbench.name}</h3><p id="workbench-cost"></p></div>
       <button id="craft-workbench" type="button">建造${RECIPES.workbench.name}</button>
     </div>
@@ -189,11 +199,13 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
       <h3><span style="display: inline-block; width: .6rem; height: .6rem; background: ${TIER_DOT[tier]}; margin-right: .4rem;"></span>${TIER_TITLES[tier]}</h3>
       ${tier === "stone" ? `
       <div class="recipe" id="wb-row-axe">
+        ${itemIconImg("axe", 28)}
         <div><h3>${RECIPES.axe.name}</h3><p id="axe-cost"></p></div>
         <button id="craft-axe" type="button">制作${RECIPES.axe.name}</button>
       </div>` : ""}
       ${EQUIPMENT_KEYS.filter(key => RECIPES[key].tier === tier).map(key => `
       <div class="recipe" id="wb-row-${key}">
+        ${itemIconImg(key, 28)}
         <div><h3>${RECIPES[key].name}</h3><p id="${key}-cost"></p></div>
         <button id="craft-${key}" type="button">打造${RECIPES[key].name}</button>
       </div>`).join("")}
@@ -202,6 +214,7 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
       <h3>烹饪</h3>
       ${COOKING_KEYS.map(key => `
       <div class="recipe" id="wb-row-${key}">
+        ${itemIconImg(key, 28)}
         <div><h3>${RECIPES[key].name}</h3><p id="${key}-cost"></p></div>
         <button id="craft-${key}" type="button">制作${RECIPES[key].name}</button>
       </div>`).join("")}
@@ -212,6 +225,7 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
   const craftAxeButton = document.querySelector("#craft-axe");
   const workbenchMaterials = document.querySelector("#workbench-materials");
   const detailName = document.querySelector("#detail-name");
+  const detailIcon = document.querySelector("#detail-icon");
   const detailTier = document.querySelector("#detail-tier");
   const detailMaterials = document.querySelector("#detail-materials");
   const detailLock = document.querySelector("#detail-lock");
@@ -261,6 +275,7 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
   techList.innerHTML = techDisplayOrder().map(id => {
     const node = TECH[id];
     return `<div class="recipe tech-node${node.mount ? " tech-branch" : ""}" id="tech-node-${id}"${node.mount ? " style=\"margin-left: 1.5rem;\"" : ""}>
+      ${itemIconImg(id, 28)}
       <div><h3>${node.name}</h3><p>${node.desc}</p><p id="tech-cond-${id}"></p></div>
       <button id="tech-unlock-${id}" type="button">解锁</button>
     </div>`;
@@ -273,6 +288,7 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
   // workbench tab, where the repair itself lives.
   document.querySelector("#repair-list").innerHTML = ["weapon", "armor", "tool"].map(slot => `
     <div class="recipe" id="repair-row-${slot}">
+      <img id="repair-${slot}-icon" class="item-icon s36" src="" alt="">
       <div><h3 id="repair-${slot}-name"></h3><p id="repair-${slot}-cost"></p></div>
       <button id="repair-${slot}" type="button">修理</button>
     </div>`).join("");
@@ -290,6 +306,7 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
   const farmSowList = document.querySelector("#farm-sow-list");
   farmSowList.innerHTML = FARM_SEEDS.map(seed => `
     <div class="recipe" id="farm-sow-${seed}">
+      ${itemIconImg(seed, 28)}
       <div><h3>${FARM_MATERIALS[seed]}</h3><p id="farm-sow-${seed}-cost"></p></div>
       <button id="farm-sow-${seed}-btn" type="button">播种</button>
     </div>`).join("");
@@ -332,19 +349,26 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
   // One material cell per block plus one per rare material; the backpack
   // tab and the workbench strip render the same seven cells.
   function renderMaterials(campaign, list, env) {
+    const iconFor = key => {
+      const icon = document.createElement("img");
+      icon.className = "item-icon s20";
+      icon.src = `icons/${itemIconKey(key)}.svg`;
+      icon.alt = "";
+      return icon;
+    };
     list.replaceChildren(...env.palette.map(block => {
       const entry = document.createElement("div");
       const label = document.createElement("dt"), value = document.createElement("dd");
       label.textContent = env.blockNames[block];
       value.textContent = String(campaign.count(block));
-      entry.append(label, value);
+      entry.append(iconFor(block), label, value);
       return entry;
     }), ...Object.entries(campaign.rareMaterials).map(([id, count]) => {
       const entry = document.createElement("div");
       const label = document.createElement("dt"), value = document.createElement("dd");
       label.textContent = RARE_MATERIALS[id];
       value.textContent = String(count);
-      entry.append(label, value);
+      entry.append(iconFor(id), label, value);
       return entry;
     }));
   }
@@ -387,6 +411,7 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
     if (!recipe) return;
     const owned = recipe.equipment ? campaign.equipment[recipe.equipment] : null;
     setText(detailName, recipe.name);
+    detailIcon.src = `icons/${itemIconKey(key)}.svg`;
     setText(detailTier, recipe.tier ? TIER_TITLES[recipe.tier] : recipe.cooking ? "烹饪" : key === "workbench" ? "一次性，永久解锁" : "");
     // Built as innerHTML like the healing rows, so the list is readable
     // in tests too (replaceChildren is a no-op in the harness).
@@ -395,7 +420,7 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
       const source = typeof id === "string" && RARE_SOURCE[id] ? `（${RARE_SOURCE[id]}掉落）` : "";
       const have = campaign.count(id);
       const short = have < amount ? " style=\"color: #f0d285;\"" : "";
-      return `<p${short}>${name}${source} ${have}/${amount}</p>`;
+      return `<p${short}>${itemIconImg(id, 16)}${name}${source} ${have}/${amount}</p>`;
     }).join("");
     const reason = recipe.equipment ? recipeLockReason(campaign, key, state)
       : recipe.cooking && !campaign.workbenchBuilt ? "需先建造工作台" : null;
@@ -411,8 +436,17 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
   // card, gains "（已损坏，无法使用）", and its state button becomes a
   // jump to the workbench tab ("在工作台修理（石头 5）") — the repair
   // itself only lives on the workbench tab.
+  function setEquipIcon(slot, key, owned) {
+    const icon = document.querySelector(`#equip-${slot}-icon`);
+    icon.src = `icons/${itemIconKey(key)}.svg`;
+    icon.style.setProperty("opacity", owned ? "" : ".35");
+  }
+
   function updateEquipmentCards(campaign, env) {
     const weapon = campaign.equipment.weapon;
+    setEquipIcon("weapon", weapon?.key ?? "stoneSword", true);
+    setEquipIcon("armor", campaign.equipment.armor?.key ?? "stoneArmor", Boolean(campaign.equipment.armor));
+    setEquipIcon("tool", campaign.equipment.tool?.key ?? "stonePickaxe", Boolean(campaign.equipment.tool));
     const current = weapon ? WEAPONS[weapon.key] : WEAPONS.stoneSword;
     const weaponBroken = weapon && weapon.durability <= 0;
     setText(document.querySelector("#equip-weapon-name"), current.name + (weaponBroken ? "（已损坏，无法使用）" : ""));
@@ -500,6 +534,7 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
       if (!piece || piece.durability >= durabilityMax(piece.tier)) { row.hidden = true; continue; }
       anyDamaged = true;
       row.hidden = false;
+      document.querySelector(`#repair-${slot}-icon`).src = `icons/${itemIconKey(piece.key)}.svg`;
       setText(document.querySelector(`#repair-${slot}-name`),
         `${equipmentPieceName(piece, slot)} · 耐久 ${Math.floor(piece.durability / durabilityMax(piece.tier) * 100)}%`);
       setText(document.querySelector(`#repair-${slot}-cost`), repairCostWithCounts(campaign, env, piece.tier));
@@ -524,7 +559,7 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
   function updateFarmTab(campaign, env) {
     const farmMaterials = document.querySelector("#farm-materials");
     farmMaterials.innerHTML = Object.entries(FARM_MATERIALS).map(([id, name]) =>
-      `<div><dt>${name}</dt><dd>${campaign.count(id)}</dd></div>`).join("");
+      `<div>${itemIconImg(id, 20)}<dt>${name}</dt><dd>${campaign.count(id)}</dd></div>`).join("");
     for (const seed of FARM_SEEDS) {
       const owned = campaign.count(seed);
       setText(document.querySelector(`#farm-sow-${seed}-cost`),
@@ -554,6 +589,7 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
         : `${def.name} · 生长中 · ${days} / ${totalDays} 天${rainNote}${fedNote}${waterNote}`;
       const chip = mature ? `<button type="button" disabled>已成熟</button>` : "";
       return `<div class="recipe" id="farm-crop-${cell}">
+        ${itemIconImg(crop.crop, 28)}
         <div><h3>${def.name}</h3><p>${status}</p></div>
         <div><div style="width: 6rem; height: 6px; background: #273526;"><span style="display: block; width: ${pct}%; height: 6px; background: #f0d285;"></span></div></div>
         ${chip}

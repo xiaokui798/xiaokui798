@@ -246,21 +246,19 @@ kbd {
 
 .slot.selected { border-color: #f1cf70; background: rgba(57, 73, 48, .86); }
 .slot b { position: absolute; top: .2rem; left: .3rem; color: #dbe5cf; font-size: .68rem; font-weight: 500; }
-.slot.locked .weapon-swatch { opacity: .32; }
+.slot.locked .item-icon { opacity: .32; }
 .slot-count { position: absolute; top: .2rem; right: .25rem; font-size: .68rem; font-variant-numeric: tabular-nums; }
 .supplies { display: flex; justify-content: space-between; gap: .65rem; margin-bottom: .35rem; font-size: .8rem; }
-.swatch {
-  width: 1.5rem;
-  height: 1.5rem;
-  border-top: 3px solid rgba(255, 255, 255, .25);
-  border-bottom: 3px solid rgba(0, 0, 0, .3);
-  background: var(--block-color);
-}
-
-.weapon-swatch { width: 1.6rem; height: 1.6rem; background: #c0c9c6; }
-.sword-swatch { clip-path: polygon(80% 0, 100% 0, 100% 20%, 46% 73%, 60% 88%, 49% 99%, 32% 82%, 16% 99%, 1% 84%, 18% 68%, 1% 52%, 12% 41%, 27% 55%); }
-.axe-swatch { clip-path: polygon(38% 5%, 92% 5%, 100% 17%, 100% 43%, 72% 52%, 57% 38%, 23% 100%, 4% 90%, 40% 26%); }
-.pulse-swatch { background: #abdcf2; clip-path: polygon(3% 16%, 57% 16%, 63% 5%, 94% 5%, 94% 17%, 100% 17%, 100% 43%, 63% 43%, 55% 60%, 48% 60%, 38% 94%, 17% 94%, 25% 56%, 3% 56%); }
+/* Item icons (batch 81): one .item-icon base, five size tiers —
+   16 detail costs, 20 material strips, 24 hotbar blocks, 26 hotbar
+   weapons, 28 list rows, 36 display cards. */
+.item-icon { flex: none; display: block; }
+.item-icon.s16 { width: 16px; height: 16px; }
+.item-icon.s20 { width: 20px; height: 20px; }
+.item-icon.s24 { width: 24px; height: 24px; }
+.item-icon.s26 { width: 26px; height: 26px; }
+.item-icon.s28 { width: 28px; height: 28px; }
+.item-icon.s36 { width: 36px; height: 36px; }
 #pulse-info { margin: 0 0 .38rem; color: #bbebf5; font-size: .78rem; font-variant-numeric: tabular-nums; }
 #pulse-hint { margin: 0 0 .42rem; color: #e2e8f7; font-size: .75rem; }
 #pulse-hint kbd + kbd { margin-left: .45rem; }
@@ -289,11 +287,13 @@ kbd {
 .inventory-heading h2 { margin: 0; font-size: clamp(1.45rem, 5vw, 2.25rem); }
 .inventory-panel button { min-width: 0; padding: .58rem .75rem; }
 .inventory-materials { display: grid; grid-template-columns: repeat(auto-fit, minmax(4.45rem, 1fr)); gap: .5rem; margin: 1.3rem 0; }
-.inventory-materials div { padding: .5rem .35rem; text-align: center; background: #273526; }
+.inventory-materials div { padding: .5rem .35rem; text-align: center; background: #273526; display: flex; align-items: center; justify-content: center; gap: .35rem; flex-wrap: wrap; }
+.inventory-materials dd { margin: 0; }
 .inventory-materials dt { font-size: .82rem; }
 .inventory-materials dd { margin: .25rem 0 0; color: #ecefdc; font-size: 1.25rem; font-variant-numeric: tabular-nums; }
 .recipe, .inventory-foot { display: flex; align-items: center; justify-content: space-between; gap: .6rem; padding: .75rem 0; border-top: 1px solid rgba(235, 244, 220, .18); }
 .recipe h3 { margin: 0; font-size: 1rem; }
+.recipe > .item-icon + div { margin-right: auto; }
 .recipe p { margin: .4rem 0 0; color: #c5d3bd; font-size: .88rem; line-height: 1.5; }
 .inventory-notice { min-height: 1.35em; margin: .45rem 0 0; color: #f0d285; font-size: .88rem; }
 

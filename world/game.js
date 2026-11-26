@@ -2,6 +2,7 @@ import { BLOCK, RECIPES, HEALING_KEYS, COOKING_KEYS, BOSS_DROPS, RARE_MATERIALS,
 import { LOOK_SENSITIVITY_KEY, applyBlockEdits, mergeRunProgressRecord, saveImportFailureReason } from "./save.mjs";
 import { createHud } from "./hud.mjs";
 import { createInventoryUi, BUFF_LABELS } from "./inventory-ui.mjs";
+import { itemIconKey, weaponIconKey } from "./item-icons.mjs";
 import { createBossRender } from "./boss-render.mjs";
 import { createInput } from "./input.mjs";
 import { WORLD, CHUNK_SIZE, FACES as faces, contains, voxelIndex, voxelPosition,
@@ -3394,14 +3395,12 @@ export function initGame(window) {
         const equipped = campaign.equipment.weapon;
         const durabilityBar = equipped && weapon === WEAPONS[equipped.key]
           ? `<span style="display: block; height: 3px; background: ${equipped.durability / durabilityMax(equipped.tier) < .25 ? "#e4725c" : "#f0d285"}; width: ${Math.floor(equipped.durability / durabilityMax(equipped.tier) * 100)}%;"></span>` : "";
-        slot.innerHTML = `<b>${(i + 1) % 10}</b><span class="weapon-swatch ${isGun(weapon) ? "pulse" : weapon.style}-swatch" aria-hidden="true"></span>${weapon.name}${durabilityBar}`;
+        slot.innerHTML = `<b>${(i + 1) % 10}</b><img class="item-icon s26" src="icons/${weaponIconKey(weapon)}.svg" alt="">${weapon.name}${durabilityBar}`;
         return slot;
       }
       const type = palette[i];
-      const color = blockColors[type].map(channel => Math.round(channel * 255));
-      slot.style.setProperty("--block-color", `rgb(${color.join(" ")})`);
       const quantity = survival.enabled ? `<span class="slot-count">${campaign.count(type)}</span>` : "";
-      slot.innerHTML = `<b>${i + 1}</b>${quantity}<span class="swatch" aria-hidden="true"></span>${blockNames[type]}`;
+      slot.innerHTML = `<b>${i + 1}</b>${quantity}<img class="item-icon s24" src="icons/${itemIconKey(type)}.svg" alt="">${blockNames[type]}`;
       return slot;
     }));
     setText(hudDressings, healingCountsLabel());
@@ -3455,12 +3454,6 @@ export function initGame(window) {
     });
   }
 
-  // Recipe key -> icon key for the craft-complete toast. Every
-  // recipe key is its own icon key except the stone axe: the
-  // recipe predates the tier naming, so its key is just "axe"
-  // while the icon set names it stoneAxe.
-  const CRAFT_ICON_KEYS = { axe: "stoneAxe" };
-
   function craftItem(key) {
     if (inventoryScreen.hidden || !survival.enabled) return;
     const result = campaign.craft(key);
@@ -3468,7 +3461,7 @@ export function initGame(window) {
     updateInventory();
     updateHotbar();
     setText(inventoryNotice, `已制作${RECIPES[key].name}${result.saved ? "" : " · 未保存"}`);
-    hudUi.showToast(CRAFT_ICON_KEYS[key] ?? key, RECIPES[key].name);
+    hudUi.showToast(itemIconKey(key), RECIPES[key].name);
     if (key === "axe") inventoryResume.focus({ preventScroll: true });
   }
 

@@ -3415,6 +3415,33 @@ test("the craft toast lives above the modal screens, not inside the hud layer", 
   assert.match(toastRule, /z-index: 4/, "the toast layer clears the screens' z-index 3");
 });
 
+test("item icons lead the material strips, rows, cards and hotbar slots", () => {
+  // Batch 81 (visual batch 80's wiring spec): one resolver
+  // (item-icons.mjs) feeds every surface. These pins read the icon
+  // each surface actually renders — including the axe -> stoneAxe
+  // rename arriving through the workbench template.
+  const game = mountGame();
+  game.click("start-button");
+  game.key("KeyC");
+  assert.equal(game.get("inventory-screen").hidden, false);
+  const strip = game.get("inventory-materials");
+  assert.equal(strip.children.length, 7);
+  assert.equal(strip.children[0].children[0].className, "item-icon s20");
+  assert.equal(strip.children[0].children[0].src, "icons/grass.svg");
+  assert.equal(strip.children[5].children[0].src, "icons/emberCore.svg");
+  assert.match(game.get("farm-materials").innerHTML, /icons\/wheatSeed\.svg/);
+  assert.match(game.get("healing-recipes").innerHTML, /icons\/bandage\.svg/);
+  assert.match(game.get("workbench-list").innerHTML, /icons\/workbench\.svg/);
+  assert.match(game.get("workbench-list").innerHTML, /icons\/stoneAxe\.svg/);
+  assert.match(game.get("tech-list").innerHTML, /icons\/bountifulHarvest\.svg/);
+  assert.equal(game.get("equip-weapon-icon").src, "icons/stoneSword.svg");
+  assert.equal(game.get("equip-armor-icon").src, "icons/stoneArmor.svg");
+  assert.equal(game.get("detail-icon").src, "icons/workbench.svg");
+  const slots = game.get("hotbar").children;
+  assert.match(slots[0].innerHTML, /icons\/grass\.svg/);
+  assert.match(slots[5].innerHTML, /icons\/stoneSword\.svg/);
+});
+
 test("crafting pops the craft-complete toast with the item icon and name", () => {
   const data = new Map([[SAVE_KEY, v5SaveForCooking({ techUnlocked: ["workbench", "stoneGear"] })]]);
   const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
