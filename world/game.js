@@ -530,6 +530,11 @@ export function initGame(window) {
   // the rift's torn strip, the phase-shift shock ring. Presentation
   // only; they age in advanceWorld and draw in drawActors.
   const groundDecals = [];
+  // Boss impact bursts live in their own particle list (batch 49):
+  // the shared particles3D uploads after the actor pass, and boss
+  // bursts are far too frequent to ride that slot — these draw
+  // before the actors instead. Stepped with stepParticles.
+  const bossParticles = [];
   // The windup-end pose's ghost, kept for 0.12s after a strike.
   let bossAfterimage = null, prevBossState = null;
   // Phase-change show state (batch 49): the last phase updateStatus
@@ -1379,6 +1384,38 @@ export function initGame(window) {
   // stone atlas tile, whose detail is near-grey, so a cube keeps its own
   // colour instead of picking up a grass tint from tile 0.  Cubes shrink
   // and dim slightly as they age, then stepParticles removes them at 0.6s.
+  // The boss bursts' own draw pass (batch 49): same cube maths as
+  // drawParticles3D, but on the private list and mesh, drawn before
+  // the actor pass.
+  let bossParticleMesh;
+  function drawBossBursts() {
+    if (!bossParticles.length) return;
+    bossParticleMesh ??= createActorMesh(256);
+    const { vertices } = bossParticleMesh;
+    let used = 0;
+    for (const p of bossParticles) {
+      if (used + 288 > vertices.length) break;
+      const fade = 1 - 0.55 * (p.age / p.life);
+      for (const { d, v, light } of faces) {
+        for (const corner of v) {
+          vertices[used++] = p.x + (corner[0] - 0.5) * p.size;
+          vertices[used++] = p.y + (corner[1] - 0.5) * p.size;
+          vertices[used++] = p.z + (corner[2] - 0.5) * p.size;
+          vertices[used++] = p.color[0] * light * fade;
+          vertices[used++] = p.color[1] * light * fade;
+          vertices[used++] = p.color[2] * light * fade;
+          vertices[used++] = d[0];
+          vertices[used++] = d[1];
+          vertices[used++] = d[2];
+          vertices[used++] = 0;
+          vertices[used++] = 7 / 12;
+          vertices[used++] = 0.5;
+        }
+      }
+    }
+    uploadActorMesh(bossParticleMesh, used);
+  }
+
   function drawParticles3D() {
     if (!particles3D.length) return;
     particleMesh ??= createActorMesh(256);
@@ -2154,6 +2191,7 @@ export function initGame(window) {
       debris.splice(0, debris.length, ...debris.filter(piece => piece.age <= .6));
     }
     stepParticles(particles3D, dt);
+    stepParticles(bossParticles, dt);
     for (const pop of pops) pop.age += dt;
     if (pops.some(pop => pop.age >= POP_DURATION)) {
       pops.splice(0, pops.length, ...pops.filter(pop => pop.age < POP_DURATION));
@@ -3412,15 +3450,19 @@ export function initGame(window) {
     if (!boss?.attack) return;
     const action = boss.attack, plan = BOSS_ATTACKS[action.kind];
     const floor = boss.y;
+    const burst = (x, y, z, count, options) => {
+      bossParticles.push(...createBurst(x, y, z, count, { ...options, seed: ++burstCounter * 7919 }));
+      if (bossParticles.length > 160) bossParticles.splice(0, bossParticles.length - 160);
+    };
     if (action.kind === "shock" || action.kind === "nova") {
       groundDecals.push({ kind: "cracks", x: action.x, z: action.z, radius: plan.reach * .35, age: 0, ttl: 1 });
-      spawnBurst3D(boss.x, floor + .15, boss.z, 12,
+      burst(boss.x, floor + .15, boss.z, 12,
         { colors: [[.29, .075, .022], [.075, .086, .105], [.62, .34, .16]], speed: 2.6, up: 2.4, size: .11, life: .7, floor });
     } else if (action.kind === "flare" || action.kind === "meteor") {
       const marks = action.marks ?? [action];
       const colors = boss.profile === COLOSSUS ? [[.55, .30, .90], [.75, .45, 1]] : [[1, .45, .10], [1, .65, .20]];
       for (const mark of marks) {
-        spawnBurst3D(mark.x, floor + .2, mark.z, 14, { colors, speed: 2.8, up: 2.8, size: .11, life: .7, floor });
+        burst(mark.x, floor + .2, mark.z, 14, { colors, speed: 2.8, up: 2.8, size: .11, life: .7, floor });
         groundDecals.push({ kind: "scorch", x: mark.x, z: mark.z, radius: plan.reach * .8, age: 0, ttl: 2 });
       }
     } else if (action.kind === "rift") {
@@ -4920,10 +4962,9 @@ export function initGame(window) {
     // Thrusters draw before the actor pass so the actors stay the
     // frame's last opaque upload (the glow is additive either way).
     drawColossusThrusters();
-    // Particles draw before the actor pass too: they are opaque
-    // cubes, and the actors stay the frame's last opaque upload.
-    drawParticles3D();
+    drawBossBursts();
     drawActors(bossModel);
+    drawParticles3D();
     drawPops();
     drawCrops();
     drawGuardianFire();
@@ -5335,6 +5376,7 @@ export function initGame(window) {
     bossPhaseSeen = boss?.phase ?? 0;
     phaseBanner = null;
     groundDecals.length = 0;
+    bossParticles.length = 0;
     bossAfterimage = null;
     selectTerrain();
     if (!boss) loadLatestSave();
