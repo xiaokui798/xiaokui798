@@ -65,6 +65,9 @@ export function initGame(window) {
   const landingSpeedLabel = document.querySelector("#speed-landing-label");
   const landingSpeedValue = document.querySelector("#speed-landing");
   const message = document.querySelector("#message");
+  const craftToast = document.querySelector("#craft-toast");
+  const craftToastIcon = document.querySelector("#craft-toast-icon");
+  const craftToastName = document.querySelector("#craft-toast-name");
   const hotbar = document.querySelector("#hotbar");
   const lookHint = document.querySelector("#look-hint");
   const fxCanvas = document.querySelector("#effects");
@@ -145,7 +148,8 @@ export function initGame(window) {
   // decides what the HUD says; hud.mjs owns writing it to the DOM.
   const hudUi = createHud({ hud, bossHud, bossName, bossHealthValue, bossHealthTrack,
     bossCallout, bossWarning, bossPhaseBanner, bossSkills, bossSkillHeal, bossSkillDragons,
-    waveStatus, coordinates, message, buffLines, document },
+    waveStatus, coordinates, message, buffLines, document,
+    craftToast, craftToastIcon, craftToastName },
     { setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window) });
   const showMessage = hudUi.showMessage;
 
@@ -3408,6 +3412,12 @@ export function initGame(window) {
     });
   }
 
+  // Recipe key -> icon key for the craft-complete toast. Every
+  // recipe key is its own icon key except the stone axe: the
+  // recipe predates the tier naming, so its key is just "axe"
+  // while the icon set names it stoneAxe.
+  const CRAFT_ICON_KEYS = { axe: "stoneAxe" };
+
   function craftItem(key) {
     if (inventoryScreen.hidden || !survival.enabled) return;
     const result = campaign.craft(key);
@@ -3415,6 +3425,7 @@ export function initGame(window) {
     updateInventory();
     updateHotbar();
     setText(inventoryNotice, `已制作${RECIPES[key].name}${result.saved ? "" : " · 未保存"}`);
+    hudUi.showToast(CRAFT_ICON_KEYS[key] ?? key, RECIPES[key].name);
     if (key === "axe") inventoryResume.focus({ preventScroll: true });
   }
 
@@ -3578,7 +3589,23 @@ export function initGame(window) {
     const target = raycast(origin, direction, range);
     if (!place) {
       const aim = aimEnemy(origin, direction, target, range);
-      if (weapon || aim) { attack(weapon, aim); return; }
+      if (aim) { attack(weapon, aim); return; }
+      if (weapon) {
+        // Harvest preference (batch 70): with a weapon in hand a
+        // left click otherwise only swings, so a mature crop
+        // under the crosshair could not be gathered without
+        // switching to a block slot first — the survival spawn
+        // auto-equips the stone sword, so every new farmer hit
+        // this. When the aimed block carries a mature crop, fall
+        // through to the block path below, whose harvest branch
+        // takes the crop. An enemy under the crosshair still
+        // takes the swing (the aim branch above), and every
+        // other aim — plain blocks, immature crops, sky — swings
+        // exactly as before.
+        const hit = target?.hit;
+        const cropAbove = hit && campaign.isCropMature(index(hit[0], hit[1] + 1, hit[2]));
+        if (!cropAbove) { attack(weapon, aim); return; }
+      }
     }
     if (!target) return;
     const cell = place ? target.place : target.hit;

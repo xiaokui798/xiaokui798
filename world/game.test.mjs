@@ -3079,6 +3079,103 @@ test("a crop grows on game time: its stage flips after one stage of growth", () 
   assert.ok(Math.abs(cropTopY(game, cell) - (cell[1] + .6)) < .02, `grown top is ${cropTopY(game, cell)}`);
 });
 
+test("crafting pops the craft-complete toast with the item icon and name", () => {
+  const data = new Map([[SAVE_KEY, v5SaveForCooking({ techUnlocked: ["workbench", "stoneGear"] })]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 0;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  for (let i = 0; i < 5; i++) frame();
+  assert.equal(game.get("craft-toast").hidden, true, "the toast starts hidden");
+  game.key("KeyC");
+  frame();
+  game.click("tab-btn-workbench");
+  // The axe is the mapping trap: its recipe key is "axe" but
+  // the icon set names it stoneAxe.
+  game.click("craft-axe");
+  assert.equal(game.get("craft-toast").hidden, false, "the toast shows on craft");
+  assert.equal(game.get("craft-toast-icon").src, "icons/stoneAxe.svg");
+  assert.equal(game.get("craft-toast-name").textContent, "石斧");
+  // A dish rides the same craft funnel; crafting again while
+  // the toast is up swaps in the newest item (latest wins).
+  game.click("craft-bakedWheat");
+  assert.equal(game.get("craft-toast-icon").src, "icons/bakedWheat.svg");
+  assert.equal(game.get("craft-toast-name").textContent, "烤麦饼");
+});
+
+test("clicking the soil under a mature crop harvests it with the sword in hand", () => {
+  const soil = probeSoilCell();
+  const cropCell = voxelIndex(WORLD, soil[0], soil[1] + 1, soil[2]);
+  const data = new Map([[SAVE_KEY, v5SaveWithSeeds({ wheatSeed: 1, wheat: 0 },
+    { [cropCell]: { crop: "wheat", stage: 2, plantedAt: 30, growth: 240 } })]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 16;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  settledAimCell(game, frame);
+  assert.equal(game.target.join(","), soil.join(","), "the aim is the same soil as the probe");
+  // No slot switch: the spawn auto-equips the stone sword, and
+  // the click harvests instead of swinging (batch 70).
+  game.get("game").emit("mousedown", { button: 0 });
+  frame();
+  assert.equal(game.get("message").textContent, "收获了小麦 +2 · 小麦种子 +1");
+  assert.equal(game.get("weapon-recovery").value, 100, "the click harvested; no swing was spent");
+  const saved = JSON.parse(data.get(SAVE_KEY));
+  assert.equal(saved.seeds.wheat, 2);
+  assert.equal(saved.seeds.wheatSeed, 2);
+  assert.deepEqual(saved.crops, {});
+  assert.equal(saved.stats.cropsHarvested, 1);
+  game.document.emit("mouseup", { button: 0 });
+});
+
+test("with the sword in hand, clicks away from a mature crop still swing", () => {
+  const soil = probeSoilCell();
+  const cropCell = voxelIndex(WORLD, soil[0], soil[1] + 1, soil[2]);
+  // Case 1: plain soil, no crop — the click swings: nothing
+  // mined, nothing harvested, the swing spends the cooldown.
+  const data = new Map([[SAVE_KEY, v5SaveWithSeeds({ wheatSeed: 1, wheat: 0 })]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 16;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  settledAimCell(game, frame);
+  assert.equal(game.target.join(","), soil.join(","));
+  const messageBefore = game.get("message").textContent;
+  game.get("game").emit("mousedown", { button: 0 });
+  frame();
+  assert.ok(game.get("weapon-recovery").value < 100, "the click spent a swing");
+  assert.equal(game.get("message").textContent, messageBefore, "a swing writes no block message");
+  let saved = JSON.parse(data.get(SAVE_KEY));
+  assert.equal(saved.stats.blocksMined, 0);
+  assert.deepEqual(saved.edits, []);
+  game.document.emit("mouseup", { button: 0 });
+  // Case 2: an immature crop's soil — still a swing, so the
+  // crop is not uprooted either (only maturity earns the
+  // harvest preference).
+  const data2 = new Map([[SAVE_KEY, v5SaveWithSeeds({ wheatSeed: 1, wheat: 0 },
+    { [cropCell]: { crop: "wheat", stage: 0, plantedAt: 30, growth: 0 } })]]);
+  const storage2 = { getItem: key => data2.get(key) ?? null, setItem: (key, value) => data2.set(key, value) };
+  const game2 = mountGame({ storage: storage2, pointerLock: true });
+  let time2 = 16;
+  const frame2 = () => game2.frame(time2 += 20);
+  game2.click("start-button");
+  game2.grantPointerLock();
+  settledAimCell(game2, frame2);
+  game2.get("game").emit("mousedown", { button: 0 });
+  frame2();
+  assert.ok(game2.get("weapon-recovery").value < 100, "the immature crop's click also spent a swing");
+  saved = JSON.parse(data2.get(SAVE_KEY));
+  assert.deepEqual(Object.keys(saved.crops), [String(cropCell)], "the immature crop survives the sword click");
+  assert.equal(saved.stats.blocksMined, 0);
+  game2.document.emit("mouseup", { button: 0 });
+});
+
 test("clicking the soil under a mature crop harvests it", () => {
   const soil = probeSoilCell();
   const cropCell = voxelIndex(WORLD, soil[0], soil[1] + 1, soil[2]);
@@ -3092,7 +3189,9 @@ test("clicking the soil under a mature crop harvests it", () => {
   game.grantPointerLock();
   settledAimCell(game, frame);
   assert.equal(game.target.join(","), soil.join(","), "the aim is the same soil as the probe");
-  // A click with the sword selected swings; switch to a block slot first.
+  // This test keeps the block-slot route covered; since batch
+  // 70 the sword in hand harvests too (pinned by the tests
+  // below), so the slot switch is a choice here, not a need.
   game.key("Digit1");
   frame();
   game.get("game").emit("mousedown", { button: 0 });

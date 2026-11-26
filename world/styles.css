@@ -121,6 +121,32 @@ kbd {
 .game-status { text-align: right; }
 #stage-time { margin-top: .35rem; }
 #message { margin-top: .35rem; color: #e7d9a9; }
+
+/* Craft-complete toast (feedback 3): item icon with the green
+   check badge, the item name and the words 制作完成. It floats
+   under the top bar, clear of the crosshair, and never takes
+   pointer events. */
+#craft-toast {
+  position: absolute;
+  top: 16%;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  padding: .5rem .95rem .5rem .6rem;
+  background: rgba(24, 20, 14, .85);
+  border: 1px solid rgba(231, 217, 169, .45);
+  border-radius: .6rem;
+  color: #f3ead2;
+  font-size: 1.05rem;
+  pointer-events: none;
+}
+#craft-toast[hidden] { display: none; }
+.craft-toast-icon { position: relative; width: 36px; height: 36px; flex: none; }
+.craft-toast-icon img:first-child { width: 100%; height: 100%; display: block; }
+.craft-toast-check { position: absolute; right: -7px; bottom: -7px; width: 17px; height: 17px; }
+.craft-toast-done { color: #8fe388; }
 #look-hint, #weather-status { display: block; margin-top: .35rem; }
 
 #crosshair {

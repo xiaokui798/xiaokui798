@@ -9,10 +9,9 @@
 // transient message line and its timer. It imports nothing from
 // game.js and holds no game state.
 //
-// The factory also reserves the seat for the craft-complete toast
-// (Kui's feedback 3: item icon + name + green check): showToast is
-// declared now so the export surface has its home, and stays a
-// no-op until that batch gives it behaviour.
+// The factory also owns the craft-complete toast (Kui's feedback
+// 3: item icon + name + green check), filled in by batch 70: the
+// markup lives in index.html, hud.mjs only drives it.
 //
 // The timer pair is injected for the same reason the elements are:
 // game.js's window is its initGame parameter, not a global, so the
@@ -22,7 +21,8 @@ export function createHud(elements, timers) {
   const { setTimeout, clearTimeout } = timers;
   const { hud, bossHud, bossName, bossHealthValue, bossHealthTrack,
     bossCallout, bossWarning, bossPhaseBanner, bossSkills, bossSkillHeal,
-    bossSkillDragons, waveStatus, coordinates, message, buffLines, document } = elements;
+    bossSkillDragons, waveStatus, coordinates, message, buffLines, document,
+    craftToast, craftToastIcon, craftToastName } = elements;
 
   function setText(element, text) {
     if (element.textContent !== text) element.textContent = text;
@@ -173,10 +173,22 @@ export function createHud(elements, timers) {
     if (buff) setText(line, `${buff.label} +${buff.pct}% · 还剩 ${Math.ceil(buff.remaining)} 秒`);
   }
 
-  // Reserved seat for the craft-complete toast (icon + item name +
-  // "制作完成" + green check). No behaviour yet — the batch that
-  // builds the icon set gives it its DOM and its timing.
-  function showToast() {}
+  // The craft-complete toast: the item's icon (with the green
+  // check badge from the markup), its name and 制作完成, shown
+  // for 2.4s. Crafting again while it is up swaps in the newest
+  // item and restarts the clock — a queue would still be showing
+  // toasts long after a batch-crafting spree ends. It is separate
+  // from the message line: the toast is the celebration, the
+  // inventory notice keeps the screen's own record.
+  let toastTimer;
+  craftToast.hidden = true;
+  function showToast(iconKey, name) {
+    clearTimeout(toastTimer);
+    craftToastIcon.src = `icons/${iconKey}.svg`;
+    setText(craftToastName, name);
+    craftToast.hidden = false;
+    toastTimer = setTimeout(() => { craftToast.hidden = true; }, 2400);
+  }
 
   return { showMessage, setBossVisible, updateBossHud, clearBossAlerts,
     setWaveStatus, updateCoordinates, updateBuffLine, showToast };
