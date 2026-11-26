@@ -865,6 +865,34 @@ test("cooking needs the workbench, spends its costs and feeds per dish", () => {
   assert.deepEqual(reloaded.dressingsByRecipe, { dressing: 0, bandage: 0, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 0 });
 });
 
+
+test("a dish is refused when the bite would land under 1 hunger, and the dish is kept", () => {
+  // Batch 89: hunger is a float that drains from the first frame,
+  // so the belly that displays full is 99.9x, never exactly 100 —
+  // the refusal has to judge the gain, not the reading.
+  const stage = hunger => {
+    const save = JSON.stringify({ version: 5, edits: [], materials: [0, 0, 0, 0, 0, 0], axeUnlocked: false, hunger,
+      dressings: { dressing: 0, bandage: 0, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 1 },
+      seeds: { wheatSeed: 0, wheat: 0, fertilizer: 0 }, workbenchBuilt: true });
+    return createProgression(makeStorage([[SAVE_KEY, save]]), line(10));
+  };
+  // Half a point of headroom: the bite would land 0.5 — refused,
+  // the stew is still in the bag and the belly unmoved.
+  const half = stage(99.5);
+  assert.equal(half.useDressing("stew"), null);
+  assert.equal(half.dressingsByRecipe.stew, 1);
+  assert.equal(half.hunger, 99.5);
+  // A hair under full (the in-game case): same refusal.
+  const hair = stage(99.98);
+  assert.equal(hair.useDressing("stew"), null);
+  assert.equal(hair.dressingsByRecipe.stew, 1);
+  // Exactly 1 of headroom is a real bite: it lands, reported as 1.
+  const edge = stage(99);
+  assert.deepEqual(edge.useDressing("stew"), { saved: true, healed: 1 });
+  assert.equal(edge.hunger, 100);
+  assert.equal(edge.dressingsByRecipe.stew, 0);
+});
+
 test("the 急救 tech adds 10 healing to dressings but never to food", () => {
   const save = JSON.stringify({ version: 5, edits: [], materials: [0, 0, 0, 10, 10, 0], axeUnlocked: false, hunger: 0,
     dressings: { dressing: 1, bandage: 0, bigDressing: 0, stew: 1 },

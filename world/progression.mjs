@@ -952,12 +952,19 @@ export function createProgression(storage, layout = WORLD) {
     // A dish feeds hunger instead of health (batch 86): the gain is
     // applied inside the same change as the spend, capped at a full
     // belly, and reported as `healed` like a dressing's heal — the
-    // amount that actually landed. The caller refuses at a full
-    // belly, so the cap rarely bites.
+    // amount that actually landed. A bite that would land under 1
+    // hunger is refused outright, item unspent (batch 89): hunger
+    // drains in fractions from the first frame, so a belly that
+    // displays full sits at 99.9x, and the old exact-100 refusal
+    // never fired — the dish was spent for a +0.02 gain.
     let fed = 0;
+    if (recipe.cooking) {
+      fed = Math.min(recipe.healing, 100 - hunger);
+      if (fed < 1) return null;
+    }
     const result = change(() => {
       dressingCounts[key]--;
-      if (recipe.cooking) { fed = Math.min(recipe.healing, 100 - hunger); hunger += fed; }
+      if (recipe.cooking) hunger += fed;
     });
     if (recipe.cooking) return result.saved ? { ...result, healed: fed } : result;
     // The 急救 tech adds 10 healing to every dressing use (dressing,

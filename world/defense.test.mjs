@@ -58,23 +58,22 @@ test("the spitter is a ranged kind with its own numbers, and carries every wave 
   assert.ok(DEFENSE_WAVES.every(wave => wave.enemies.every(enemy => Boolean(ENEMIES[enemy]))));
 });
 
-test("defense rosters are the configured tables verbatim, and the final wave repeats", () => {
+test("defense rosters layer the kind ramps over the rebuilt tables", () => {
   assert.deepEqual(defenseWaveRoster(0), ["spitter", "spitter"]);
   assert.deepEqual(defenseWaveRoster(1), ["spitter", "spitter", "spitter"]);
-  assert.deepEqual(defenseWaveRoster(2), ["breaker", "spitter", "spitter"]);
-  assert.deepEqual(defenseWaveRoster(3), ["breaker", "spitter", "spitter", "spitter", "spitter"]);
-  assert.deepEqual(defenseWaveRoster(4), ["breaker", "breaker", "spitter", "spitter", "spitter", "spitter"]);
-  // Past the configured waves the final wave repeats verbatim — the
-  // tables carry the whole composition since the batch-88 deletion,
-  // with no code-side ramp left to strip or drift.
-  assert.deepEqual(defenseWaveRoster(5), DEFENSE_WAVES[4].enemies);
-  assert.deepEqual(defenseWaveRoster(6), DEFENSE_WAVES[4].enemies);
-  assert.deepEqual(defenseWaveRoster(9), DEFENSE_WAVES[4].enemies);
+  assert.deepEqual(defenseWaveRoster(2), ["breaker", "spitter", "spitter", "dasher"]);
+  assert.deepEqual(defenseWaveRoster(3), ["breaker", "spitter", "spitter", "spitter", "spitter", "dasher"]);
+  assert.deepEqual(defenseWaveRoster(4), ["breaker", "breaker", "spitter", "spitter", "spitter", "dasher", "juggernaut"]);
+  // Past the configured waves the final wave repeats with its ramps —
+  // the shipped defense roster is the batch-88 skeleton on the
+  // deletion's tables (batch 90).
+  assert.deepEqual(defenseWaveRoster(5), [...DEFENSE_WAVES[4].enemies, "dasher", "juggernaut", "exploder"]);
+  assert.deepEqual(defenseWaveRoster(9), [...DEFENSE_WAVES[4].enemies, "dasher", "juggernaut", "exploder"]);
   assert.deepEqual(defenseWaveRoster(-1), []);
   // The configured rosters are never mutated by the derivation.
   assert.deepEqual(DEFENSE_WAVES.map(wave => wave.enemies), [
     ["spitter", "spitter"], ["spitter", "spitter", "spitter"], ["breaker", "spitter", "spitter"],
-    ["breaker", "spitter", "spitter", "spitter", "spitter"], ["breaker", "breaker", "spitter", "spitter", "spitter", "spitter"]
+    ["breaker", "spitter", "spitter", "spitter", "spitter"], ["breaker", "breaker", "spitter", "spitter", "spitter"]
   ]);
   assert.ok(DEFENSE_WAVES.every(wave => wave.enemies.every(enemy => Boolean(ENEMIES[enemy]))));
 });
@@ -87,7 +86,7 @@ test("defense re-exports the wave and beacon registry from waves.mjs unchanged",
     { name: "交叉火力", enemies: ["spitter", "spitter", "spitter"], seconds: 49 },
     { name: "重型来袭", enemies: ["breaker", "spitter", "spitter"], seconds: 54 },
     { name: "两面夹击", enemies: ["breaker", "spitter", "spitter", "spitter", "spitter"], seconds: 58 },
-    { name: "黎明前的攻势", enemies: ["breaker", "breaker", "spitter", "spitter", "spitter", "spitter"], seconds: 64 }
+    { name: "黎明前的攻势", enemies: ["breaker", "breaker", "spitter", "spitter", "spitter"], seconds: 64 }
   ]);
   assert.deepEqual(BEACON, { hp: 120, radius: .43, height: 1.93, repairRange: 3.1, repairCost: 3, repairedHp: 30 });
   assert.ok(Object.isFrozen(DEFENSE_WAVES));
@@ -149,10 +148,15 @@ test("only clearing wave eight wins, and all three failure cases end the run", (
   assert.equal(defenseResult(5, 2, 80, 64, 0), "timeout");
 });
 
-test("waves six to eight repeat the final configured wave verbatim", () => {
-  for (const index of [5, 6, 7]) assert.deepEqual(defenseWaveRoster(index), DEFENSE_WAVES[4].enemies);
+test("waves six and eight repeat the final table with ramps, seven is the breather", () => {
+  // Past the configured waves the final wave repeats; the ramps still
+  // apply, so waves 6 and 8 carry the juggernaut and exploder while
+  // wave 7 (the breather) carries neither.
+  assert.deepEqual(defenseWaveRoster(5), [...DEFENSE_WAVES[4].enemies, "dasher", "juggernaut", "exploder"]);
+  assert.deepEqual(defenseWaveRoster(6), [...DEFENSE_WAVES[4].enemies, "dasher"]);
+  assert.deepEqual(defenseWaveRoster(7), [...DEFENSE_WAVES[4].enemies, "dasher", "juggernaut", "exploder"]);
   const roster = defenseWaveRoster(5);
-  assert.equal(roster.filter(kind => kind === "spitter").length, 4);
+  assert.equal(roster.filter(kind => kind === "spitter").length, 3);
   assert.equal(roster.filter(kind => kind === "breaker").length, 2);
 });
 
@@ -231,49 +235,50 @@ test("defense balance, computed from the config: what each wave deals vs what it
       stone * 10];
   });
   assert.deepEqual(balance, [
-    [1, 2, 110, 26, 84, 20], [2, 3, 174, 39, 114, 30], [3, 3, 293, 40, 99, 40],
-    [4, 5, 430, 66, 159, 60], [5, 6, 636, 80, 174, 80], [6, 6, 664, 80, 174, 80],
-    [7, 6, 692, 80, 174, 80], [8, 6, 714, 80, 150, 80]
+    [1, 2, 110, 26, 84, 20], [2, 3, 174, 39, 114, 30], [3, 4, 332, 46, 129, 40],
+    [4, 6, 470, 72, 189, 60], [5, 7, 828, 88, 174, 100], [6, 8, 902, 92, 174, 100],
+    [7, 6, 666, 73, 174, 70], [8, 8, 971, 92, 150, 100]
   ]);
   const total = column => balance.reduce((sum, row) => sum + row[column], 0);
-  assert.equal(total(1), 37);
-  assert.equal(total(2), 3713);
-  assert.equal(total(3), 491);
-  assert.equal(total(4), 1128);
-  assert.equal(total(5), 470);
+  assert.equal(total(1), 44);
+  assert.equal(total(2), 4453);
+  assert.equal(total(3), 528);
+  assert.equal(total(4), 1188);
+  assert.equal(total(5), 520);
   // Wave 5, checked rather than quoted below: two hits from every
-  // zombie in it deal 160, against 174 healing its kills buy and a
-  // 100-hp player bar. Over the whole run two hits per zombie is 982
-  // damage against 1128 healing — the totals favor healing, because
-  // the roster's spitters pay 2 leaves each. The run is still won by
-  // interrupting windups (a sword hit resets a non-armored zombie's
-  // windup), dodging throws and intercepting breakers, not by
-  // out-healing: from wave 4 on, a single wave's two full rounds
-  // (132–160) exceed the player's whole bar, so no amount of banked
-  // healing lets the player stand and take it.
+  // zombie in it deal 176, against 174 healing its kills buy and a
+  // 100-hp player bar. Over the whole run two hits per zombie is
+  // 1056 damage against 1188 healing — the totals favor healing,
+  // because the roster's spitters pay 2 leaves each. The run is
+  // still won by interrupting windups (a sword hit resets a
+  // non-armored zombie's windup), dodging throws and intercepting
+  // breakers, not by out-healing: from wave 4 on, a single wave's
+  // two full rounds (144–184) exceed the player's whole bar, so no
+  // amount of banked healing lets the player stand and take it.
   const wave5 = balance[4];
-  assert.equal(wave5[3] * 2, 160);
-  // Two full rounds of wave 5 deal 160 against 174 healing its kills
-  // buy — the deletion's spitter-heavy roster pays 2 leaves a kill,
-  // so on paper the wave's damage no longer beats its own healing.
-  // But 160 is still 1.6 times the player's whole 100-hp bar, and
-  // the leaves only drop as the kills land, so standing in the fire
-  // and out-healing it is not a line: every wave from wave 4 on
-  // deals more than a full health bar in two rounds.
+  assert.equal(wave5[3] * 2, 176);
+  // Two full rounds of wave 5 deal 176 against 174 healing its
+  // kills buy — the wave's damage still (just) beats its own
+  // healing even though the spitter-heavy roster pays 2 leaves a
+  // kill. And 176 is still 1.76 times the player's whole 100-hp
+  // bar, with the leaves only dropping as the kills land, so
+  // standing in the fire and out-healing it is not a line: every
+  // wave from wave 4 on deals more than a full health bar in two
+  // rounds.
   assert.ok(wave5[3] * 2 > 100);
   assert.ok(balance.slice(3).every(row => row[3] * 2 > 100));
   // The beacon's hard case is wave 5's focused fire: two breakers and
   // a spitter attack it at 2 × 14/1.55 + 13/2.1 ≈ 24.3 damage/s (the
   // other three spitters only make it worse), so an undefended beacon
-  // dies in under 5s. The wave's kills buy 80 of its 120 hp back; the
-  // rest has to come from stone banked in earlier waves (470 of
+  // dies in under 5s. The wave's kills buy 100 of its 120 hp back;
+  // the rest has to come from stone banked in earlier waves (520 of
   // repair purchasing power over the run) — the repair race is
   // winnable on paper and lost only by ignoring it.
   const beaconDps = 2 * ENEMIES.breaker.damage / ENEMIES.breaker.cooldown
     + ENEMIES.spitter.damage / ENEMIES.spitter.cooldown;
   assert.ok(beaconDps > 20 && beaconDps < 30);
   assert.ok(BEACON.hp / beaconDps < 5);
-  assert.equal(wave5[5], 80);
+  assert.equal(wave5[5], 100);
 });
 
 test("defenseCleared is the single victory predicate, and defenseResult routes through it", () => {

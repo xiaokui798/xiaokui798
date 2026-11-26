@@ -624,7 +624,10 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
         setText(cost, buff
           ? `恢复 ${RECIPES[key].healing} 点饥饿 · ${buffLabels[buff.kind]} +${buff.pct}%（${buff.seconds} 秒）`
           : `恢复 ${RECIPES[key].healing} 点饥饿 · 在工作台烹饪`);
-        use.disabled = !counts[key] || env.hunger >= 100;
+        // The lock follows the bite's own rule (batch 89): disabled
+        // when the bite would land under 1 hunger — a belly at 99.9x
+        // displays full but is not exactly 100.
+        use.disabled = !counts[key] || Math.min(RECIPES[key].healing, 100 - env.hunger) < 1;
         continue;
       }
       setText(cost, `${recipeCost(campaign, env, key)} · 恢复 ${RECIPES[key].healing + firstAid} 点生命`);

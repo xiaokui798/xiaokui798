@@ -3592,7 +3592,11 @@ export function initGame(window) {
       // A dish feeds hunger, never health directly (batch 86); a
       // full belly refuses the bite so no food is wasted. The buff
       // (R5) still applies on the bite.
-      if (campaign.hunger >= 100) notice = "已经吃饱了";
+      // Refuse on the gain the bite would actually land (batch
+      // 89): at 99.9x the belly displays full but is not exactly
+      // 100, and a >= 100 check lets the bite through to spend a
+      // whole dish on a fraction of a point.
+      if (Math.min(RECIPES[key].healing, 100 - campaign.hunger) < 1) notice = "已经吃饱了";
       else {
         const result = campaign.useDressing(key);
         if (checkSaveConflict(result)) return;
@@ -3602,7 +3606,9 @@ export function initGame(window) {
           applyBuff(RECIPES[key]?.buff);
           updateHunger();
           updateHotbar();
-          notice = `饥饿 +${Math.max(1, Math.round(result.healed))}`;
+          // Report the gain that actually landed — no rounding a
+          // fraction up to a whole point the player never got.
+          notice = `饥饿 +${Math.round(result.healed)}`;
         }
       }
     }
