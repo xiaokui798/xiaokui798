@@ -2245,7 +2245,8 @@ export function initGame(window) {
       damageNumbers.push({ x: hitPoint[0], y: hitPoint[1] + 1.0, z: hitPoint[2], text: `-${damage}`, age: 0, core: true });
       if (boss.phase !== oldPhase) {
         survival.zombies.length = 0;
-        const healed = Math.min(30, 100 - player.hp);
+        const healCap = boss.profile === COLOSSUS ? 30 : boss.phase >= 3 ? 45 : 30;
+        const healed = Math.min(healCap, 100 - player.hp);
         player.hp += healed;
         updateHealth();
         sound.play(boss.phase === 2 ? "forge-ignite" : "forge-overload", STONE);
