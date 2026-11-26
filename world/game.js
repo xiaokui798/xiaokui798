@@ -3,6 +3,7 @@ import { LOOK_SENSITIVITY_KEY, applyBlockEdits, mergeRunProgressRecord, saveImpo
 import { createHud } from "./hud.mjs";
 import { createInventoryUi, BUFF_LABELS } from "./inventory-ui.mjs";
 import { createBossRender } from "./boss-render.mjs";
+import { createInput } from "./input.mjs";
 import { WORLD, CHUNK_SIZE, FACES as faces, contains, voxelIndex, voxelPosition,
   seeded, generateTerrain, createChunkGrid, distanceSquared, buildChunkMesh,
   ATLAS_TILES, atlasTileFor, faceUV,
@@ -300,7 +301,6 @@ export function initGame(window) {
   const mouseLook = createMouseLook(savedSensitivity);
   let campaign = createProgression(storage, WORLD);
   const sound = createWorldAudio();
-  const keys = new Set();
   let selected = 0;
   const pulse = { rounds: pulseWeapon.capacity, recharge: 0, charge: null, chargeStarted: 0, shot: null };
   let actorMesh, viewModelMesh, skyMesh, rainMesh;
@@ -327,7 +327,6 @@ export function initGame(window) {
   let pendingProgressChoice = null;
   let inventoryFromPlay = false;
   let graphicsLost = false;
-  let drag = null;
   let { yaw, pitch } = spawnView;
   let jumpBuffer = 0;
   let movementTime = 0;
@@ -1338,16 +1337,16 @@ export function initGame(window) {
 
   function movePlayer(dt) {
     const lookRate = mouseLook.sensitivity / 40;
-    if (keys.has("ArrowLeft")) yaw -= 1.9 * lookRate * dt;
-    if (keys.has("ArrowRight")) yaw += 1.9 * lookRate * dt;
-    if (keys.has("ArrowUp")) adjustPitch(1.6 * lookRate * dt);
-    if (keys.has("ArrowDown")) adjustPitch(-1.6 * lookRate * dt);
-    const sprinting = keys.has("ShiftLeft") || keys.has("ShiftRight");
+    if (input.held("ArrowLeft")) yaw -= 1.9 * lookRate * dt;
+    if (input.held("ArrowRight")) yaw += 1.9 * lookRate * dt;
+    if (input.held("ArrowUp")) adjustPitch(1.6 * lookRate * dt);
+    if (input.held("ArrowDown")) adjustPitch(-1.6 * lookRate * dt);
+    const sprinting = input.held("ShiftLeft") || input.held("ShiftRight");
     const oldX = player.x, oldZ = player.z;
     const wasGrounded = player.grounded;
     const takeoffSpeed = wasGrounded && jumpBuffer > 0 ? Math.hypot(player.vx, player.vz) : null;
-    const forward = Number(keys.has("KeyW")) - Number(keys.has("KeyS"));
-    const side = Number(keys.has("KeyD")) - Number(keys.has("KeyA"));
+    const forward = Number(input.held("KeyW")) - Number(input.held("KeyS"));
+    const side = Number(input.held("KeyD")) - Number(input.held("KeyA"));
     const solidActor = boss ?? defense.beacon;
     const { radius, height } = boss ? boss.profile : BEACON;
     const obstacle = solidActor && [solidActor.x - radius, solidActor.y, solidActor.z - radius,
@@ -1931,6 +1930,7 @@ export function initGame(window) {
         sound.play("pulse-recharge", STONE);
       }
     }
+    const drag = input.getDrag();
     if (drag && isGun(weapons[selected - palette.length]) && !drag.moved && !drag.fired) {
       drag.holdTime += dt;
       if (drag.holdTime >= .22) firing = drag.fired = true;
@@ -3237,7 +3237,7 @@ export function initGame(window) {
     }
     if (selected === slot) return;
     firing = false;
-    cancelDrag();
+    input.cancelDrag();
     pulse.charge = null;
     selected = slot;
     updateHotbar();
@@ -3668,7 +3668,7 @@ export function initGame(window) {
       viewOrigin[0] += Math.sin(time * .11) * kick;
       viewOrigin[1] += Math.cos(time * .13) * kick * .6;
     }
-    const sprinting = (keys.has("ShiftLeft") || keys.has("ShiftRight")) && player.grounded && speed2d > 4.5;
+    const sprinting = (input.held("ShiftLeft") || input.held("ShiftRight")) && player.grounded && speed2d > 4.5;
     fovBoost += ((sprinting ? 1 : 0) - fovBoost) * Math.min(1, dt * 5);
     const [ex, ey, ez] = viewOrigin;
     const bossModel = !boss ? null : boss.profile === COLOSSUS ? posedColossus(boss) : posedGuardian(boss);
@@ -3741,101 +3741,83 @@ export function initGame(window) {
     }
   }
 
-  document.addEventListener("keydown", event => {
-    if (started && event.code === "KeyM" && !event.repeat) {
-      toggleSound();
-      return;
-    }
-    if (!inventoryScreen.hidden && (event.code === "Escape" || (event.code === "KeyC" && !event.repeat))) {
-      event.preventDefault();
-      // Esc and C both go straight back to the game when the bag was opened
-      // from play; when opened from the pause menu both go back there.
-      closeInventory(inventoryFromPlay);
-      return;
-    }
-    if (sowMode && event.code === "Escape") { exitSowMode(); return; }
-    if (event.code === "Escape" && (mouseMode !== "paused" || lockAttempt)) {
-      suspendGame();
-      return;
-    }
-    if (mouseMode === "paused") return;
-    if (!event.repeat) wakeAudio();
-    if (boss?.profile === COLOSSUS && ["Digit1", "Digit4"].includes(event.code)) {
-      if (event.repeat || finished || !player.hp) return;
-      if (event.code === "Digit1") {
-        if (player.hp >= 100) { showMessage("生命已满"); return; }
-        if (boss.elapsed < boss.healReady) {
-          showMessage(`回血还需 ${Math.ceil(boss.healReady - boss.elapsed)} 秒`);
-          return;
-        }
-        const restored = Math.min(35, 100 - player.hp);
-        player.hp += restored;
-        boss.healReady = boss.elapsed + 12;
-        updateHealth();
-        showMessage(`恢复 ${restored} 点生命`);
-      } else if (boss.elapsed >= boss.dragonsReady) {
-        boss.dragonHits = 0;
-        const angle = Math.atan2(boss.x - player.x, boss.z - player.z);
-        for (let i = 0; i < 5; i++) {
-          boss.dragons.push({ x: player.x, y: player.y + 1.3, z: player.z,
-            ox: player.x, oy: player.y + 1.3, oz: player.z, c: Math.cos(angle), s: Math.sin(angle),
-            lane: [0,-1,1,-2,2][i] * 1.85, duration: 1.45, start: boss.elapsed + i * .62, trail: [] });
-        }
-        boss.dragonsReady = boss.elapsed + 20;
-        sound.play("pulse-burst", STONE);
-      } else showMessage(`五龙冲击还需 ${Math.ceil(boss.dragonsReady - boss.elapsed)} 秒`);
-      return;
-    }
-    if (event.code === "KeyR" && !event.repeat && isGun(weapons[selected - palette.length])) { rechargePulse(); return; }
-    if (event.code === "KeyC" && !event.repeat) { openInventory(); return; }
-    if (event.code === "KeyH" && !event.repeat) { healWithDressing(); return; }
-    if (event.code === "KeyE" && !event.repeat) { repairBeacon(); return; }
-    if (event.code === "KeyF" && !event.repeat) {
-      // F plants directly when the aim is plantable (the R2 action,
-      // unchanged); when the aim is not plantable it arms sow mode
-      // instead, so the player can aim and click — the backup entry.
-      const status = plantSeed();
-      if (status === "planted") { if (sowMode) exitSowMode(); }
-      else if (!sowMode && ["no-target", "not-grass", "blocked"].includes(status)) enterSowMode("wheatSeed");
-      return;
-    }
-    if (event.code === "KeyG" && !event.repeat) { fertilizeCropAtAim(); return; }
-    if (event.code === "KeyB" && !event.repeat && defense.beacon && !survival.zombies.length) {
-      survival.countdown = 0;
-      return;
-    }
-    if (event.code === "KeyT" && !event.repeat && !boss) cycleWeather();
-    keys.add(event.code);
-    if (event.code.startsWith("Arrow")) event.preventDefault();
-    if (event.code === "Space") {
-      event.preventDefault();
-      if (!event.repeat) jumpBuffer = .18;
-    }
-    if (event.code.startsWith("Digit")) selectSlot((Number(event.code.slice(5)) || 10) - 1);
-  });
-  document.addEventListener("keyup", event => keys.delete(event.code));
-
-  function updateLookControl() {
-    const current = mouseLook.sensitivity;
-    sensitivitySlider.value = String(current);
-    sensitivitySlider.setAttribute("aria-valuetext", `${current}%`);
-    sensitivityValue.value = `${current}%`;
+  // The colossus court skills (Digit1 heal / Digit4 dragons),
+  // executed here: input.mjs routes the keys, this runs them.
+  function colossusSkillKey(code) {
+    if (code === "Digit1") {
+      if (player.hp >= 100) { showMessage("生命已满"); return; }
+      if (boss.elapsed < boss.healReady) {
+        showMessage(`回血还需 ${Math.ceil(boss.healReady - boss.elapsed)} 秒`);
+        return;
+      }
+      const restored = Math.min(35, 100 - player.hp);
+      player.hp += restored;
+      boss.healReady = boss.elapsed + 12;
+      updateHealth();
+      showMessage(`恢复 ${restored} 点生命`);
+    } else if (boss.elapsed >= boss.dragonsReady) {
+      boss.dragonHits = 0;
+      const angle = Math.atan2(boss.x - player.x, boss.z - player.z);
+      for (let i = 0; i < 5; i++) {
+        boss.dragons.push({ x: player.x, y: player.y + 1.3, z: player.z,
+          ox: player.x, oy: player.y + 1.3, oz: player.z, c: Math.cos(angle), s: Math.sin(angle),
+          lane: [0,-1,1,-2,2][i] * 1.85, duration: 1.45, start: boss.elapsed + i * .62, trail: [] });
+      }
+      boss.dragonsReady = boss.elapsed + 20;
+      sound.play("pulse-burst", STONE);
+    } else showMessage(`五龙冲击还需 ${Math.ceil(boss.dragonsReady - boss.elapsed)} 秒`);
   }
 
-  sensitivitySlider.addEventListener("input", () => {
-    mouseLook.setSensitivity(sensitivitySlider.value);
-    updateLookControl();
-  });
-  sensitivitySlider.addEventListener("change", () => {
-    try { storage?.setItem(sensitivityKey, String(mouseLook.sensitivity)); } catch { /* Session-local settings still work. */ }
+  // KeyF: plants directly when the aim is plantable (the R2 action,
+  // unchanged); when the aim is not plantable it arms sow mode
+  // instead, so the player can aim and click — the backup entry.
+  function plantKey() {
+    const status = plantSeed();
+    if (status === "planted") { if (sowMode) exitSowMode(); }
+    else if (!sowMode && ["no-target", "not-grass", "blocked"].includes(status)) enterSowMode("wheatSeed");
+  }
+
+  // Releasing the right button with a pulse charge held: fire the
+  // burst if the charge reached the windup, spend it either way.
+  function releasePulseCharge() {
+    if (pulse.charge === null) return;
+    const charged = Math.max(pulse.charge, (performance.now() - pulse.chargeStarted) / 1000) >= pulseBurst.windup;
+    pulse.charge = null;
+    if (charged && mouseMode !== "paused") firePulse(true);
+  }
+
+  // Input wiring (input.mjs, split piece 5): the module owns the
+  // listeners, the held-keys table and the drag state; everything
+  // it can trigger is an action here, and everything it needs to
+  // know arrives in the getState snapshot, taken per event.
+  const input = createInput({
+    document, canvas, storage, mouseLook, sensitivitySlider, sensitivityValue,
+    getState: () => ({
+      started, playerAlive: Boolean(player.hp), finished,
+      inventoryOpen: !inventoryScreen.hidden, inventoryFromPlay,
+      sowMode, sowSeed, mouseMode, lockPending: Boolean(lockAttempt),
+      colossusFight: boss?.profile === COLOSSUS,
+      gunSelected: isGun(weapons[selected - palette.length]),
+      beaconWaiting: Boolean(defense.beacon && !survival.zombies.length),
+      bossPresent: Boolean(boss),
+      wheelFirst: boss ? palette.length : 0,
+      wheelSlots: encounterSlots() - (boss ? palette.length : 0) - (axeAvailable() ? 0 : 1),
+      selected
+    }),
+    actions: {
+      toggleSound, closeInventory, exitSowMode, suspendGame, wakeAudio,
+      colossusSkill: (code, repeat) => { if (!repeat && !finished && player.hp) colossusSkillKey(code); },
+      rechargePulse, openInventory, healWithDressing, repairBeacon,
+      plantKey, fertilize: fertilizeCropAtAim, plantSeed,
+      skipCountdown: () => { survival.countdown = 0; },
+      cycleWeather, selectSlot,
+      bufferJump: () => { jumpBuffer = .18; },
+      interact, releasePulse: releasePulseCharge,
+      setFiring: value => { firing = value; },
+      setMouseHeld: value => { mouseHeld = value; if (value) mouseHeldRepeat = 0; }
+    }
   });
 
-  function cancelDrag() {
-    if (!drag) return;
-    const { pointerId } = drag;
-    drag = null;
-    if (canvas.hasPointerCapture(pointerId)) canvas.releasePointerCapture(pointerId);
-  }
 
   function setMouseMode(mode) {
     firing = false;
@@ -3843,8 +3825,8 @@ export function initGame(window) {
     mouseMode = mode;
     if (mode === "paused") pulse.charge = null;
     mouseLook.reset();
-    cancelDrag();
-    keys.clear();
+    input.cancelDrag();
+    input.clearKeys();
     jumpBuffer = 0;
     movementTime = 0;
     lastTime = null;
@@ -3940,87 +3922,6 @@ export function initGame(window) {
     }
   }
 
-  document.addEventListener("mousemove", event => {
-    if (mouseMode === "locked" && document.pointerLockElement === canvas) mouseLook.push(event.movementX, event.movementY, "locked");
-  });
-
-  canvas.addEventListener("mousedown", event => {
-    if (!started || !player.hp || (event.button !== 0 && event.button !== 2)) return;
-    if (mouseMode === "paused") return;
-    wakeAudio();
-    // Sow mode (farm tab): a right-click cancels the mode instead of
-    // placing a block; a left-click plants when the aim is plantable,
-    // and otherwise cancels the mode and falls through to the normal
-    // action so the mode never swallows a click. A failed plant attempt
-    // (no seed, already planted, save conflict) spends the click and
-    // keeps the mode armed — the message says why. Click planting needs
-    // the pointer lock; in drag mode the click only starts a drag, and
-    // F still plants.
-    if (sowMode) {
-      if (event.button === 2) { exitSowMode(); return; }
-      if (event.button === 0 && mouseMode === "locked") {
-        const cropId = Object.keys(CROPS).find(id => CROPS[id].seed === sowSeed) ?? "wheat";
-        const status = plantSeed(cropId);
-        if (status === "planted") { exitSowMode(); return; }
-        if (["no-target", "not-grass", "blocked"].includes(status)) exitSowMode();
-        else return;
-      }
-    }
-    if (mouseMode === "locked" && event.button === 0 && isGun(weapons[selected - palette.length])) firing = true;
-    if (mouseMode === "locked" && event.button === 0) { mouseHeld = true; mouseHeldRepeat = 0; }
-    if (mouseMode === "locked" || event.button === 2) interact(event.button === 2);
-  });
-  document.addEventListener("mouseup", event => {
-    if (event.button === 0) { firing = false; mouseHeld = false; }
-    if (event.button !== 2 || pulse.charge === null) return;
-    const charged = Math.max(pulse.charge, (performance.now() - pulse.chargeStarted) / 1000) >= pulseBurst.windup;
-    pulse.charge = null;
-    if (charged && mouseMode !== "paused") firePulse(true);
-  });
-
-  canvas.addEventListener("pointerdown", event => {
-    if (mouseMode !== "drag" || event.button !== 0 || drag) return;
-    drag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, moved: false, fired: false, holdTime: 0 };
-    canvas.setPointerCapture(event.pointerId);
-  });
-
-  function trackDrag(event) {
-    if (drag?.pointerId !== event.pointerId) return;
-    const dx = event.clientX - drag.x;
-    const dy = event.clientY - drag.y;
-    if (!drag.moved && Math.hypot(dx, dy) < 5) return;
-    drag.moved = true;
-    drag.x = event.clientX;
-    drag.y = event.clientY;
-    mouseLook.push(dx, dy, "drag");
-  }
-
-  canvas.addEventListener("pointermove", trackDrag);
-  canvas.addEventListener("pointerup", event => {
-    if (drag?.pointerId !== event.pointerId || event.button !== 0) return;
-    trackDrag(event);
-    const clicked = !drag.moved && !drag.fired;
-    firing = false;
-    cancelDrag();
-    if (clicked && mouseMode === "drag") {
-      wakeAudio();
-      interact(false);
-    }
-  });
-  for (const type of ["pointercancel", "lostpointercapture"]) {
-    canvas.addEventListener(type, event => {
-      if (drag?.pointerId === event.pointerId) { firing = false; mouseHeld = false; cancelDrag(); }
-    });
-  }
-
-  canvas.addEventListener("wheel", event => {
-    if (mouseMode === "paused" || event.deltaY === 0) return;
-    event.preventDefault();
-    const first = boss ? palette.length : 0;
-    const slots = encounterSlots() - first - (axeAvailable() ? 0 : 1);
-    selectSlot(first + (selected - first + Math.sign(event.deltaY) + slots) % slots);
-  }, { passive: false });
-  canvas.addEventListener("contextmenu", event => event.preventDefault());
   document.addEventListener("pointerlockchange", () => {
     if (document.pointerLockElement === canvas) {
       if (!lockAttempt || document.hidden) { document.exitPointerLock(); return; }
@@ -4046,7 +3947,7 @@ export function initGame(window) {
     if (event.storageArea !== storage) return;
     if (event.key === sensitivityKey || event.key === null) {
       mouseLook.setSensitivity(event.newValue);
-      updateLookControl();
+      input.updateLookControl();
     }
     if ((event.key === null || [SAVE_KEY, PREVIOUS_SAVE_KEY, LEGACY_KEY].includes(event.key)) && started && !finished && !boss && campaign.stale) {
       checkSaveConflict({ conflict: true });
@@ -4229,7 +4130,7 @@ export function initGame(window) {
   loadEdits(); placePlayerAtSpawn(); rebuildRenderer();
   if (!graphicsLost) prepareTerrain(8);
   setText(landingSpeedLabel, `落地 → ${LANDING_SAMPLE_TIME.toFixed(2)} 秒后`);
-  updateHotbar(); updateSoundButton(); updateLookControl(); showMenuRecord(); window.requestAnimationFrame(render);
+  updateHotbar(); updateSoundButton(); input.updateLookControl(); showMenuRecord(); window.requestAnimationFrame(render);
 }
 
 if (typeof window !== "undefined") initGame(window);
