@@ -1,4 +1,5 @@
-import { BLOCK, RECIPES, HEALING_KEYS, COOKING_KEYS, BOSS_DROPS, RARE_MATERIALS, SAVE_KEY, PREVIOUS_SAVE_KEY, LEGACY_KEY, createProgression, recordBossKill } from "./progression.mjs";
+import { BLOCK, RECIPES, HEALING_KEYS, COOKING_KEYS, BOSS_DROPS, RARE_MATERIALS, SAVE_KEY, PREVIOUS_SAVE_KEY, LEGACY_KEY, createProgression } from "./progression.mjs";
+import { LOOK_SENSITIVITY_KEY, applyBlockEdits, mergeRunProgressRecord, saveImportFailureReason } from "./save.mjs";
 import { WORLD, CHUNK_SIZE, FACES as faces, contains, voxelIndex, voxelPosition,
   seeded, generateTerrain, createChunkGrid, distanceSquared, buildChunkMesh,
   ATLAS_TILES, atlasTileFor, faceUV,
@@ -449,8 +450,7 @@ export function initGame(window) {
     }
     const result = campaign.importSave(text);
     if (!result.imported) {
-      const reason = { "invalid-json": "文件不是有效的 JSON", "unknown-version": "无法识别的存档版本",
-        "invalid-save": "存档内容损坏", quota: "存储空间不足", conflict: "另一标签页更新了存档", error: "保存失败" }[result.reason];
+      const reason = saveImportFailureReason(result.reason);
       setText(saveIoNote, `导入失败：${reason ?? "未知原因"}`);
       importSaveFile.value = "";
       return;
@@ -542,7 +542,7 @@ export function initGame(window) {
   let bossPhaseSeen = 0, phaseBanner = null;
   let storage;
   try { storage = window.localStorage; } catch { /* A blocked store does not prevent play. */ }
-  const sensitivityKey = "block-world:look-sensitivity:v1";
+  const sensitivityKey = LOOK_SENSITIVITY_KEY;
   let savedSensitivity;
   try { savedSensitivity = storage?.getItem(sensitivityKey); } catch { /* Use the default. */ }
   const mouseLook = createMouseLook(savedSensitivity);
@@ -1263,12 +1263,7 @@ export function initGame(window) {
   }
 
   function loadEdits() {
-    // Saved player edits overwrite generated blocks, and their variants
-    // with them: a block placed where a flower stood renders plain.
-    for (const [cell, type] of campaign.blockEdits()) {
-      homeWorld[cell] = type;
-      if (homeWorld.variants) homeWorld.variants[cell] = 0;
-    }
+    applyBlockEdits(homeWorld, campaign.blockEdits());
   }
 
   function selectTerrain() {
@@ -1944,27 +1939,16 @@ export function initGame(window) {
   function mergeRunProgress() {
     if (mergedProgress) return mergedProgress;
     const base = savedProgress ?? campaign.loadProgress();
-    mergedProgress = {
-      version: 2,
-      wave: Math.max(base.wave, survival.wave),
-      kills: base.kills + survival.kills,
-      bossesDefeated: { ...base.bossesDefeated, ...(runBossDefeated ? { [runBossDefeated]: true } : {}) },
-      // Carry the base's kill counts forward: without this spread a run
-      // that kills no boss would wipe the counts on save, and a boss win
-      // would count from zero instead of from the stored total.
-      bossKills: { ...base.bossKills },
-      bestWave: Math.max(base.bestWave ?? base.wave, survival.wave),
-      defense: defense.beacon ? {
-        wave: Math.max(base.defense.wave, survival.wave),
-        cleared: base.defense.cleared || defense.victory,
-        bestWave: Math.max(base.defense.bestWave, survival.wave)
-      } : base.defense
-    };
-    // A boss win counts as a kill, not just a defeat: the kill count for
-    // that boss goes up by one (recordBossKill also marks it defeated).
-    // The merge is cached, so a stale choice that re-merges after the
-    // first merge was discarded counts the same win exactly once.
-    if (runBossDefeated) mergedProgress = recordBossKill(mergedProgress, runBossDefeated);
+    // The record shape lives in save.mjs; the per-run cache and the
+    // savedProgress slot stay here. The merge is cached, so a stale
+    // choice that re-merges after the first merge was discarded
+    // counts the same win exactly once.
+    mergedProgress = mergeRunProgressRecord(base, {
+      wave: survival.wave,
+      kills: survival.kills,
+      bossDefeated: runBossDefeated,
+      defense: defense.beacon ? { wave: survival.wave, victory: defense.victory } : null
+    });
     savedProgress = mergedProgress;
     return mergedProgress;
   }
