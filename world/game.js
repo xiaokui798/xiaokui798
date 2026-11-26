@@ -1968,6 +1968,41 @@ export function initGame(window) {
       - (campaign.techUnlocked.includes("swiftHands") ? TECH_EFFECTS.swiftHandsSeconds : 0));
   }
 
+  // An exploder whose fuse ran out bursts where it stands: area
+  // damage to the player and (separately tuned) to the beacon, and
+  // no loot — its drops only pay when it is killed before the burst.
+  function explodeZombie(zombie, profile) {
+    zombie.fuse = undefined;
+    zombie.dying = .5;
+    zombie.kx = 0; zombie.kz = 0;
+    survival.kills++;
+    spawnBurst3D(zombie.x, zombie.y + 1.0, zombie.z, 16,
+      { colors: [[1, .55, .15], [.9, .25, .05], profile.coat], speed: 3.4, up: 3.6,
+        size: 0.12, life: 0.6, gravity: 14, floor: floorUnder(zombie.x, zombie.y, zombie.z) });
+    sound.play("pulse-burst", STONE);
+    showMessage("爆裂者爆炸了！");
+    if (player.hp > 0 && Math.hypot(player.x - zombie.x, player.z - zombie.z) <= profile.blastRadius
+      && Math.abs(player.y - zombie.y) <= 2.2) {
+      takeDamage(profile.blastDamage);
+      if (finished) return;
+    }
+    if (defense.beacon && Math.hypot(defense.beacon.x - zombie.x, defense.beacon.z - zombie.z) <= profile.blastRadius) {
+      damageBeacon(profile.blastBeaconDamage);
+      if (finished) return;
+    }
+    // The burst can clear a wave just like a sword kill can.
+    const alive = survival.zombies.filter(other => other.dying === undefined).length;
+    if (!alive && !boss) {
+      if (defense.beacon && defenseCleared(survival.wave, alive)) { finishDefense("cleared"); return; }
+      if (!defense.beacon) {
+        const healed = Math.min(24, 100 - player.hp);
+        player.hp += healed;
+        updateHealth();
+        showMessage(healed ? `本波清空 · 生命 +${healed}` : "本波清空");
+      }
+    }
+  }
+
   function updateCombat(dt) {
     guardianFx.charge = Math.max(0, guardianFx.charge - dt / .52);
     guardianFx.strike = Math.max(0, guardianFx.strike - dt / .34);
@@ -2184,7 +2219,7 @@ export function initGame(window) {
         zombie.y -= dt * 1.2;
         continue;
       }
-      const profile = ENEMIES[zombie.kind] ?? ENEMIES.walker;
+      const profile = ENEMIES[zombie.kind] ?? ENEMIES.spitter;
       // Ranged kinds (attack: "ranged") throw from profile.range instead
       // of closing to melee reach; kinds without an attack field stay
       // melee — a missing field is never read as ranged.
@@ -2204,6 +2239,24 @@ export function initGame(window) {
       const origin = [zombie.x, zombie.y + 1.26 * profile.height, zombie.z];
       const delta = [dx, goal.y + 1.2 - origin[1], dz];
       const reach = Math.hypot(...delta);
+      // Exploders never melee: inside blastTrigger of their goal they
+      // stop, light the fuse (flashing core, windup sound) and count
+      // it down standing still. A kill during the fuse lands in the
+      // sword path instead — normal drops, no burst — because a dying
+      // zombie never reaches this block.
+      if (profile.blastRadius !== undefined) {
+        if (zombie.fuse !== undefined) {
+          zombie.fuse -= dt;
+          if (zombie.fuse <= 0) { explodeZombie(zombie, profile); if (finished) break; }
+          continue;
+        }
+        if (distance <= profile.blastTrigger) {
+          zombie.fuse = profile.fuseSeconds;
+          zombie.windup = 0;
+          sound.play("pulse-windup", STONE);
+          continue;
+        }
+      }
       // The height window is a melee rule: a thrown glob flies in 3D, so
       // ranged attacks only need the line of sight to be clear.
       if (distance <= attackRange && (ranged || Math.abs(goal.y - zombie.y) <= 1.06) && reach > .01
@@ -2415,7 +2468,7 @@ export function initGame(window) {
     }
     sound.play("hit", STONE);
     if (zombie.hp > 0) {
-      showMessage(`命中${(ENEMIES[zombie.kind] ?? ENEMIES.walker).name} · 伤害 ${damage}`);
+      showMessage(`命中${(ENEMIES[zombie.kind] ?? ENEMIES.spitter).name} · 伤害 ${damage}`);
       return;
     }
     // Death is a 0.5s sink instead of an instant splice; the zombie stays in
@@ -2425,7 +2478,7 @@ export function initGame(window) {
     zombie.kx = 0; zombie.kz = 0;
     // Death debris: coat- and skin-coloured cubes burst out of the body as
     // it starts to sink, and land on the ground under it.
-    const style = ENEMIES[zombie.kind] ?? ENEMIES.walker;
+    const style = ENEMIES[zombie.kind] ?? ENEMIES.spitter;
     spawnBurst3D(zombie.x, zombie.y + 1.1 * (style.height ?? 1), zombie.z, 12,
       { colors: [style.coat, style.skin, [.16, .14, .12]], speed: 2.6, up: 3.2,
         size: 0.10, life: 0.6, gravity: 14, floor: floorUnder(zombie.x, zombie.y, zombie.z) });
@@ -2448,11 +2501,11 @@ export function initGame(window) {
     sound.play("defeat", DIRT);
     // The message lists what this kind actually dropped, from the same
     // registry table grantLoot just paid — a breaker pays 2 stone and a
-    // runner pays a wood, so the old fixed "石头 +1 · 树叶 +1" would lie.
+    // spitter pays a wheat seed, so a fixed "石头 +1 · 树叶 +1" would lie.
     // A string id is a farm or rare material, not a block, so it reads
     // its display name from the matching table instead of blockNames.
     const drops = ENEMIES[zombie.kind]?.drops ?? [[STONE, 1], [LEAF, 1]];
-    const loot = `${drops.map(([id, amount]) => `${typeof id === "string" ? (FARM_MATERIALS[id] ?? RARE_MATERIALS[id]) : blockNames[id]} +${amount}`).join(" · ")}${lootResult.saved ? "" : " · 未保存"}`;
+    const loot = `${drops.map(([id, amount]) => `${typeof id === "string" ? (FARM_MATERIALS[id] ?? RARE_MATERIALS[id]) : blockNames[id]} +${amount}`).join(" · ")}${lootResult.bonus && lootResult.saved ? ` · ${RARE_MATERIALS[lootResult.bonus]} +1` : ""}${lootResult.saved ? "" : " · 未保存"}`;
     if (!alive) {
       if (defense.beacon && defenseCleared(survival.wave, alive)) { finishDefense("cleared"); return; }
       const healed = Math.min(24, 100 - player.hp);
@@ -2564,7 +2617,7 @@ export function initGame(window) {
       bossRender.drawBossSection(pen, { boss, bossModel, player, finished, covered: bossHasCover(), decals: groundDecals, box });
     }
     for (const zombie of survival.zombies) {
-      const style = ENEMIES[zombie.kind] ?? ENEMIES.walker;
+      const style = ENEMIES[zombie.kind] ?? ENEMIES.spitter;
       const s = Math.sin(zombie.angle), c = Math.cos(zombie.angle);
       zombieParts(zombie, style, (...part) => box(zombie, s, c, ...part));
     }
@@ -3389,7 +3442,7 @@ export function initGame(window) {
         : aim.turret != null ? `星尘晶体 ${boss.attack.turrets[aim.turret].hp} / ${BOSS_ATTACKS.turret.crystalHp} · 打碎它能停掉炮台`
         : backOpen ? "背部炉门暴露" : exposed ? "核心暴露" : boss.state === "recovery" ? "瞄准青色核心" : "护甲生效中 · 现在打不动，等核心张开");
     } else if (target) {
-      const style = ENEMIES[target.kind] ?? ENEMIES.walker;
+      const style = ENEMIES[target.kind] ?? ENEMIES.spitter;
       const hint = !inReach ? " · 超出攻击距离" : target.windup > 0 ? " · 蓄力" : "";
       setText(targetStatus, `${style.name} ${target.hp} / ${style.hp}${hint}`);
     }
@@ -3804,7 +3857,7 @@ export function initGame(window) {
     }
     const [x, y, z] = cell;
     if (place && survival.zombies.some(zombie => {
-      const style = ENEMIES[zombie.kind] ?? ENEMIES.walker;
+      const style = ENEMIES[zombie.kind] ?? ENEMIES.spitter;
       const r = .38 * style.width;
       return zombie.x + r > x && zombie.x - r < x + 1 && zombie.z + r > z && zombie.z - r < z + 1
         && zombie.y + 1.74 * style.height > y && zombie.y < y + 1;

@@ -11,12 +11,16 @@ export const SURVIVAL_DIFFICULTY = Object.freeze({
   // A survival wave never fields more than this many zombies.
   maxZombies: 7,
   // Mix-in rules, first match wins: a kind joins the roster from its first
-  // wave, on every period-th slot starting at its offset. (walker fills
-  // every slot no rule claims.)
+  // wave, on every period-th slot starting at its offset. (The spitter
+  // fills every slot no rule claims — since the walker deletion it is
+  // the roster's base kind. The batch-88 mechanism kinds keep their
+  // original slots; the deleted runner's rule is gone, its slots fall
+  // to the fill.)
   mixIns: Object.freeze([
-    Object.freeze({ kind: "breaker", fromWave: 7, period: 5, offset: 4 }),
-    Object.freeze({ kind: "runner", fromWave: 5, period: 3, offset: 2 }),
-    Object.freeze({ kind: "spitter", fromWave: 6, period: 4, offset: 3 })
+    Object.freeze({ kind: "dasher", fromWave: 4, period: 6, offset: 0 }),
+    Object.freeze({ kind: "exploder", fromWave: 5, period: 6, offset: 1 }),
+    Object.freeze({ kind: "juggernaut", fromWave: 6, period: 7, offset: 2 }),
+    Object.freeze({ kind: "breaker", fromWave: 7, period: 5, offset: 4 })
   ])
 });
 
@@ -27,7 +31,7 @@ export function survivalRoster(wave) {
     for (const rule of SURVIVAL_DIFFICULTY.mixIns) {
       if (wave >= rule.fromWave && i % rule.period === rule.offset) return rule.kind;
     }
-    return "walker";
+    return "spitter";
   });
 }
 

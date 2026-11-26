@@ -1090,7 +1090,7 @@ test("an unflushed session keeps its synchronous saves and loses only the batche
   // pause both do) loses nothing.
   const storage = makeStorage();
   const game = createProgression(storage, line(20));
-  game.grantLoot("walker");
+  game.grantLoot("spitter");
   assert.ok(game.editBlock(1, BLOCK.WOOD, BLOCK.AIR, true).saved);
   assert.ok(game.editBlock(2, BLOCK.WOOD, BLOCK.AIR, true).saved);
   // Both edits batch: the 300ms window runs from the loot's write,
@@ -1410,19 +1410,20 @@ test("each kind pays its own drops, and an unknown kind pays the old fixed drop"
     return [game.count(BLOCK.STONE) - before[0], game.count(BLOCK.WOOD) - before[1],
       game.count(BLOCK.LEAF) - before[2]];
   };
-  assert.deepEqual(delta("walker"), [1, 0, 1]);
-  assert.deepEqual(delta("runner"), [1, 1, 1]);
   assert.deepEqual(delta("breaker"), [2, 0, 1]);
   assert.deepEqual(delta("spitter"), [1, 0, 2]);
+  assert.deepEqual(delta("dasher"), [0, 0, 2]);
+  assert.deepEqual(delta("juggernaut"), [3, 0, 0]);
+  assert.deepEqual(delta("exploder"), [0, 0, 0]);
   assert.deepEqual(delta("zombie"), [1, 0, 1]);
   assert.deepEqual(delta(undefined), [1, 0, 1]);
-  assert.equal(game.count(BLOCK.STONE), 7);
-  assert.equal(game.count(BLOCK.WOOD), 3);
+  assert.equal(game.count(BLOCK.STONE), 8);
+  assert.equal(game.count(BLOCK.WOOD), 2);
   assert.equal(game.count(BLOCK.LEAF), 7);
   // The drops persist across a reload.
   const reloaded = createProgression(storage, line(10));
-  assert.equal(reloaded.count(BLOCK.STONE), 7);
-  assert.equal(reloaded.count(BLOCK.WOOD), 3);
+  assert.equal(reloaded.count(BLOCK.STONE), 8);
+  assert.equal(reloaded.count(BLOCK.WOOD), 2);
   assert.equal(reloaded.count(BLOCK.LEAF), 7);
 });
 
@@ -1531,7 +1532,10 @@ test("the workbench gates equipment, and crafting it locks itself out", () => {
   const storage = makeStorage();
   const game = createProgression(storage, line(10));
   for (let i = 0; i < 5; i++) game.grantLoot("breaker");
-  for (let i = 0; i < 5; i++) game.grantLoot("runner");
+  for (let i = 0; i < 5; i++) game.grantLoot("spitter");
+  // Wood is chopped from the world, not looted: the deleted runner
+  // was the last kind that paid it.
+  for (let i = 0; i < 5; i++) game.editBlock(1, BLOCK.WOOD, BLOCK.AIR, true);
   assert.equal(game.count(BLOCK.STONE), 15);
   assert.equal(game.count(BLOCK.WOOD), 7);
   // No workbench yet: equipment cannot be made, whatever the materials.
@@ -1558,7 +1562,8 @@ test("the workbench gates equipment, and crafting it locks itself out", () => {
   assert.equal(game.canCraft("stoneArmor"), false);
   assert.equal(game.craft("stoneArmor"), null);
   // The pickaxe (stone 3 + wood 2) still crafts.
-  for (let i = 0; i < 2; i++) game.grantLoot("runner");
+  for (let i = 0; i < 2; i++) game.grantLoot("spitter");
+  for (let i = 0; i < 2; i++) game.editBlock(1, BLOCK.WOOD, BLOCK.AIR, true);
   assert.ok(game.craft("stonePickaxe").saved);
   assert.deepEqual(game.equipment.tool, { key: "stonePickaxe", tier: "stone", durability: 100 });
   // Both survive a reload.
@@ -1572,7 +1577,10 @@ test("a quota failure rolls back the workbench with its materials", () => {
   const storage = makeStorage();
   const game = createProgression(storage, line(10));
   for (let i = 0; i < 5; i++) game.grantLoot("breaker");
-  for (let i = 0; i < 5; i++) game.grantLoot("runner");
+  for (let i = 0; i < 5; i++) game.grantLoot("spitter");
+  // Wood is chopped from the world, not looted: the deleted runner
+  // was the last kind that paid it.
+  for (let i = 0; i < 5; i++) game.editBlock(1, BLOCK.WOOD, BLOCK.AIR, true);
   const quota = new Error("quota exceeded");
   quota.name = "QuotaExceededError";
   storage.setItem = () => { throw quota; };
@@ -1674,7 +1682,10 @@ test("ember weapons need a guardian kill and spend ember cores; star needs a col
   const storage = makeStorage();
   const game = createProgression(storage, line(10));
   for (let i = 0; i < 8; i++) game.grantLoot("breaker");
-  for (let i = 0; i < 7; i++) game.grantLoot("runner");
+  for (let i = 0; i < 7; i++) game.grantLoot("spitter");
+  // Wood is chopped from the world, not looted: the deleted runner
+  // was the last kind that paid it.
+  for (let i = 0; i < 7; i++) game.editBlock(1, BLOCK.WOOD, BLOCK.AIR, true);
   game.grantBossLoot("boss", 2);
   game.grantBossLoot("colossus", 2);
   assert.equal(game.count(BLOCK.STONE), 23);
@@ -1714,7 +1725,8 @@ test("ember weapons need a guardian kill and spend ember cores; star needs a col
   assert.ok(game.unlockTech("starTech").saved);
   assert.ok(game.unlockTech("starGear").saved);
   assert.equal(game.canCraft("starSword"), false);
-  for (let i = 0; i < 4; i++) game.grantLoot("runner");
+  for (let i = 0; i < 4; i++) game.grantLoot("spitter");
+  for (let i = 0; i < 4; i++) game.editBlock(1, BLOCK.WOOD, BLOCK.AIR, true);
   game.grantBossLoot("boss", 1);
   assert.ok(game.craft("starSword").saved);
   assert.deepEqual(game.equipment.weapon, { key: "starSword", tier: "star", durability: 300 });
@@ -1733,7 +1745,10 @@ test("a quota failure rolls back an ember craft with its cores", () => {
     bossKills: { boss: 1 }, bestWave: 0, defense: { wave: 0, cleared: false, bestWave: 0 } })]]);
   const game = createProgression(storage, line(10));
   for (let i = 0; i < 8; i++) game.grantLoot("breaker");
-  for (let i = 0; i < 7; i++) game.grantLoot("runner");
+  for (let i = 0; i < 7; i++) game.grantLoot("spitter");
+  // Wood is chopped from the world, not looted: the deleted runner
+  // was the last kind that paid it.
+  for (let i = 0; i < 7; i++) game.editBlock(1, BLOCK.WOOD, BLOCK.AIR, true);
   game.grantBossLoot("boss", 2);
   assert.ok(game.craft("workbench").saved);
   assert.ok(game.unlockTech("workbench").saved);
@@ -1754,7 +1769,10 @@ test("ember armor needs a guardian kill and spends its cores; star needs a colos
   const storage = makeStorage();
   const game = createProgression(storage, line(10));
   for (let i = 0; i < 8; i++) game.grantLoot("breaker");
-  for (let i = 0; i < 7; i++) game.grantLoot("runner");
+  for (let i = 0; i < 7; i++) game.grantLoot("spitter");
+  // Wood is chopped from the world, not looted: the deleted runner
+  // was the last kind that paid it.
+  for (let i = 0; i < 7; i++) game.editBlock(1, BLOCK.WOOD, BLOCK.AIR, true);
   game.grantBossLoot("boss", 2);
   game.grantBossLoot("colossus", 2);
   assert.ok(game.craft("workbench").saved);
@@ -1781,7 +1799,8 @@ test("ember armor needs a guardian kill and spends its cores; star needs a colos
   assert.ok(game.unlockTech("starTech").saved);
   assert.ok(game.unlockTech("starGear").saved);
   assert.equal(game.canCraft("starArmor"), false);
-  for (let i = 0; i < 4; i++) game.grantLoot("runner");
+  for (let i = 0; i < 4; i++) game.grantLoot("spitter");
+  for (let i = 0; i < 4; i++) game.editBlock(1, BLOCK.WOOD, BLOCK.AIR, true);
   game.grantBossLoot("boss", 1);
   assert.ok(game.craft("starArmor").saved);
   assert.deepEqual(game.equipment.armor, { key: "starArmor", tier: "star", durability: 300 });
@@ -1793,7 +1812,10 @@ test("ember pickaxe needs a guardian kill and spends its cores; star needs a col
   const storage = makeStorage();
   const game = createProgression(storage, line(10));
   for (let i = 0; i < 8; i++) game.grantLoot("breaker");
-  for (let i = 0; i < 7; i++) game.grantLoot("runner");
+  for (let i = 0; i < 7; i++) game.grantLoot("spitter");
+  // Wood is chopped from the world, not looted: the deleted runner
+  // was the last kind that paid it.
+  for (let i = 0; i < 7; i++) game.editBlock(1, BLOCK.WOOD, BLOCK.AIR, true);
   game.grantBossLoot("boss", 2);
   game.grantBossLoot("colossus", 2);
   assert.ok(game.craft("workbench").saved);
@@ -1820,7 +1842,8 @@ test("ember pickaxe needs a guardian kill and spends its cores; star needs a col
   assert.ok(game.unlockTech("starTech").saved);
   assert.ok(game.unlockTech("starGear").saved);
   assert.equal(game.canCraft("starPickaxe"), false);
-  for (let i = 0; i < 4; i++) game.grantLoot("runner");
+  for (let i = 0; i < 4; i++) game.grantLoot("spitter");
+  for (let i = 0; i < 4; i++) game.editBlock(1, BLOCK.WOOD, BLOCK.AIR, true);
   game.grantBossLoot("boss", 1);
   assert.ok(game.craft("starPickaxe").saved);
   assert.deepEqual(game.equipment.tool, { key: "starPickaxe", tier: "star", durability: 300 });
@@ -2357,7 +2380,9 @@ function assertLaterDefaults(game) {
 function roundTrip(storage, layout) {
   const first = createProgression(storage, layout);
   const loaded = stateOf(first);
-  first.grantLoot("walker");
+  // A breaker: its stone and leaf are original fields, so the
+  // later-field snapshot taken above stays untouched by the grant.
+  first.grantLoot("breaker");
   assert.equal(JSON.parse(storage.getItem(SAVE_KEY)).version, SAVE_VERSION);
   const second = createProgression(storage, layout);
   assert.deepEqual(stateOf(second), stateOf(first), "the written v5 save reads back identical");
@@ -2448,4 +2473,28 @@ test("audit: pre-R6 crops and a durability-less piece land on their defaults", (
   const loaded = roundTrip(storage, line(20));
   assert.equal(loaded.crops["5"].watered, false);
   assert.equal(loaded.equipment.weapon.durability, 200);
+});
+
+test("the new kinds pay their signature loot: exploder cores, dasher seeds, the juggernaut's chance core", t => {
+  const storage = makeStorage();
+  const game = createProgression(storage, line(10));
+  // The exploder's table drop is an ember core, every time.
+  assert.equal(game.rareMaterials.emberCore ?? 0, 0);
+  game.grantLoot("exploder");
+  assert.equal(game.rareMaterials.emberCore, 1);
+  // The dasher pays a wheat seed alongside its leaves.
+  const seedsBefore = game.seeds.wheatSeed;
+  game.grantLoot("dasher");
+  assert.equal(game.seeds.wheatSeed, seedsBefore + 1);
+  // The juggernaut's core is a 25% bonus on top of its stone: a low
+  // roll pays it (and says so on the result), a high roll does not.
+  t.mock.method(Math, "random", () => .1);
+  const lucky = game.grantLoot("juggernaut");
+  assert.equal(lucky.bonus, "emberCore");
+  assert.equal(game.rareMaterials.emberCore, 2);
+  t.mock.method(Math, "random", () => .9);
+  const plain = game.grantLoot("juggernaut");
+  assert.equal(plain.bonus, undefined);
+  assert.equal(game.rareMaterials.emberCore, 2);
+  assert.equal(game.count(BLOCK.STONE), 6, "both juggernauts still paid their 3 stone");
 });

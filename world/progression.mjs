@@ -993,12 +993,19 @@ export function createProgression(storage, layout = WORLD) {
   // fixed drop, so existing callers keep working unchanged.
   function grantLoot(kind) {
     const drops = ENEMIES[kind]?.drops ?? DEFAULT_DROPS;
-    return change(() => {
+    // The juggernaut's ember core is a 25% bonus rolled outside the
+    // deterministic drop table (the caller reads `bonus` off the
+    // result; a rolled-back save reports saved: false, so a bonus the
+    // save rejected is never announced).
+    const coreBonus = kind === "juggernaut" && Math.random() < .25;
+    const result = change(() => {
       for (const [id, amount] of drops) {
         if (typeof id === "string") { const table = stringCounts(id); if (table) table[id] = Math.min(stackLimit, (table[id] ?? 0) + amount); }
         else materials[id] = Math.min(stackLimit, materials[id] + amount);
       }
+      if (coreBonus) rareMaterials.emberCore = Math.min(stackLimit, (rareMaterials.emberCore ?? 0) + 1);
     });
+    return coreBonus ? { ...result, bonus: "emberCore" } : result;
   }
 
   // Pays a boss win's rare material: 2 for a first kill, 1 for a repeat

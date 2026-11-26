@@ -535,7 +535,7 @@ test("the boss arena can be won and replayed, paying its reward without touching
       game.key("Space");
       game.release("Space");
     }
-    if (exposed || /游荡者|突袭者|破城者/.test(game.get("target-status").textContent)) attack();
+    if (exposed || /疾行者|破城者/.test(game.get("target-status").textContent)) attack();
   }
   // Death presentation window (batch 76): the killing blow has
   // landed (the last bar reads 0) but the settlement screen waits
@@ -782,7 +782,7 @@ test("boss trial: beating the guardian leaves the main save byte-identical", () 
       game.key("Space");
       game.release("Space");
     }
-    if (exposed || /游荡者|突袭者|破城者/.test(game.get("target-status").textContent)) attack();
+    if (exposed || /疾行者|破城者/.test(game.get("target-status").textContent)) attack();
   }
   assert.ok(overcharged);
   assert.deepEqual([...summonWaves], [1, 2, 3]);
@@ -1663,7 +1663,7 @@ test("falling to the tuned guardian records no boss defeat in saved progress", t
       game.key("Space");
       game.release("Space");
     }
-    if (exposed || /游荡者|突袭者|破城者/.test(game.get("target-status").textContent)) attack();
+    if (exposed || /疾行者|破城者/.test(game.get("target-status").textContent)) attack();
   }
   // Batch 69 re-scope: at the tuned bars (520/420/500) this
   // conservative challenger no longer wins — Kui judges the
@@ -1743,176 +1743,38 @@ test("the block atlas paints all nine tiles", () => {
   assert.deepEqual(game.atlasTiles, [0, 1, 2, 3, 4, 5, 6, 7, 8]);
 });
 
-test("survival wave 6 spawns a spitter whose throw wounds the player", t => {
+test("a spitter's throw wounds the player from range in the first survival wave", t => {
   let seed = 1;
   t.mock.method(Math, "random", () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296));
-  // A Map-backed storage: without one, every kill's loot is rolled back
-  // by the failed save, so leaves never accumulate into dressings.
   const data = new Map();
   const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
   const game = mountGame({ storage, pointerLock: true });
-  const attack = () => game.get("game").emit("mousedown", { button: 0 });
   let time = 0;
   const frame = () => game.frame(time += 20);
   game.click("start-button");
   game.grantPointerLock();
   frame();
+  // Since the batch-88 deletion the spitter is the roster's base
+  // kind — the first survival wave already fields two, and the old
+  // wave-6 staging (fight five waves to reach the first spitter)
+  // went with the mix-in rule that delayed it. What this test still
+  // guards is the throw itself: the player stands still, no zombie
+  // ever gets adjacent, and the first wound is exactly one throw —
+  // 13 damage, which turns the even 100 odd. (At full health the
+  // satiety regen cannot mask the sample, and the batch-88 exploder
+  // game-layer test is parked until the wiring step fields it
+  // again; its registry and loot pins live in defense/progression.)
   const hp = () => Number(game.get("health-value").textContent);
-  const waveStatus = () => game.get("wave-status").textContent;
-  // The nearest zombie's closest vertex: when zombies are on the field
-  // the actor buffer holds only their parts, so the closest vertex
-  // belongs to the closest zombie. It is only a coarse aim — a corner
-  // of a foot or an arm can sit half a block off the body — so the loop
-  // below trusts the game's own target-status instead: once a zombie's
-  // name shows, the aim is on it and the player holds still and swings.
-  // (With no zombies the buffer keeps stale data from another mesh, so
-  // callers only use this during combat.)
-  const nearest = () => {
-    const vertices = game.actorVertices;
-    if (!vertices?.length) return null;
-    let best = null, bestD = Infinity;
-    for (let v = 0; v < vertices.length; v += 12) {
-      const dx = vertices[v] - game.camera[0], dz = vertices[v + 2] - game.camera[2];
-      const d = dx * dx + dz * dz;
-      if (d < bestD) { bestD = d; best = { x: vertices[v], y: vertices[v + 1], z: vertices[v + 2] }; }
-    }
-    return best ? { ...best, distance: Math.sqrt(bestD) } : null;
-  };
-  const turnToward = ({ x, y, z }, offset = 0) => {
-    const dx = x - game.camera[0], dz = z - game.camera[2];
-    const turn = Math.atan2(dx, -dz) + offset - Math.atan2(game.direction[0], -game.direction[2]);
-    const dist = Math.hypot(dx, dz);
-    // Aim the pitch too: a zombie a block below the player is invisible
-    // to a level ray, so point the view at the vertex itself — but clamp
-    // the pitch, because a foot vertex would otherwise dive the view
-    // into the ground and a head vertex would lift it over the body.
-    const desiredPitch = Math.max(-0.55, Math.min(0.35, Math.atan2(y - game.camera[1], dist)));
-    const currentPitch = Math.asin(Math.max(-1, Math.min(1, game.direction[1])));
-    const clamp = radians => Math.max(-65, Math.min(65, radians / .0013));
-    game.document.emit("mousemove", {
-      movementX: clamp(Math.atan2(Math.sin(turn), Math.cos(turn))),
-      movementY: clamp(-(desiredPitch - currentPitch))
-    });
-    return dist;
-  };
-  // Pitch correction toward a vertex, for the sweep branch: it turns the
-  // yaw on its own, so it still needs the view kept near the zombie's
-  // height while it scans.
-  const pitchDelta = ({ x, y, z }) => {
-    const dist = Math.hypot(x - game.camera[0], z - game.camera[2]);
-    const desiredPitch = Math.max(-0.55, Math.min(0.35, Math.atan2(y - game.camera[1], dist)));
-    const currentPitch = Math.asin(Math.max(-1, Math.min(1, game.direction[1])));
-    return Math.max(-65, Math.min(65, -(desiredPitch - currentPitch) / .0013));
-  };
-  let spitterSeen = false;
-  // Phase 1: fight waves 1-5 until wave 6 is announced. The player
-  // stands their ground and faces the closest zombie: the sword
-  // outranges every zombie, and clearing a wave heals 24. Sustaining
-  // five waves also needs the dressing loop: kills drop leaves, and
-  // between waves (the game pauses while the bag is open) the leaves
-  // become dressings; KeyH spends one for 30 health mid-fight.
-  let announcedSix = false;
-  let maxWave = 0;
-  let craftedThisGap = false;
-  let noNameFrames = 0;
-  for (let i = 0; i < 12000 && game.get("death-screen").hidden && !announcedSix; i++) {
+  let prev = hp(), firstDrop = 0;
+  for (let i = 0; i < 6000 && !firstDrop; i++) {
     frame();
-    // target-status keeps its old text when hidden, so a name only
-    // counts while the element is shown.
-    const statusEl = game.get("target-status");
-    const status = statusEl.hidden ? "" : statusEl.textContent;
-    if (/投掷者/.test(status)) spitterSeen = true;
-    const live = /第 (\d+) 波 · 剩余/.exec(waveStatus());
-    if (live) {
-      maxWave = Math.max(maxWave, Number(live[1]));
-      craftedThisGap = false;
-    }
-    const upcoming = /第 (\d+) 波 · \d+ 秒后/.exec(waveStatus());
-    if (upcoming && Number(upcoming[1]) === 6) announcedSix = true;
-    if (upcoming && !craftedThisGap && Number(upcoming[1]) > 1) {
-      craftedThisGap = true;
-      game.key("KeyC");
-      frame();
-      game.click("craft-dressing");
-      game.click("craft-dressing");
-      game.click("craft-dressing");
-      game.key("KeyC");
-      game.grantPointerLock();
-      frame();
-    }
-    const named = /游荡者|突袭者|破城者|投掷者/.test(status);
-    if (named) {
-      noNameFrames = 0;
-      if (status.includes("超出攻击距离")) {
-        // The aimed zombie is not closing in — likely stuck where its
-        // route cannot reach — so walk toward it instead of waiting.
-        game.key("KeyW");
-      } else {
-        game.release("KeyW");
-        attack();
-      }
-    } else if (live) {
-      // No zombie in the sights: turn toward the closest one, and if
-      // that finds nothing for a while, sweep the view in a full circle
-      // instead of chasing a jumping aim point.
-      game.release("KeyW");
-      if (++noNameFrames > 40) {
-        const foe = nearest();
-        game.document.emit("mousemove", { movementX: 40, movementY: foe ? pitchDelta(foe) : 0 });
-      } else {
-        const foe = nearest();
-        if (foe) turnToward(foe, 0);
-      }
-    } else {
-      game.release("KeyW");
-    }
-    if (hp() <= 70) game.key("KeyH");
+    const now = hp();
+    if (now < prev) firstDrop = prev - now;
+    prev = now;
   }
-  assert.equal(game.get("death-screen").hidden, true, `the player must survive to wave 6 (reached wave ${maxWave})`);
-  assert.ok(announcedSix, "wave 6 must be announced");
-  // Phase 2: keep fighting while waiting for the throw. Every melee hit
-  // deals an even amount (walker 10, runner 6, breaker 14), so only a
-  // spitter throw (13) can turn the health odd. The spitter throws from
-  // 7.5 units out, so the player cannot reach it before the glob is in
-  // the air — walking at it and swinging is safe for the proof. The loop
-  // only ends once the throw has landed AND the spitter has been seen:
-  // the throw usually lands while the player is still busy with the
-  // walkers, and the spitter is only aimed at once they are down.
-  let thrown = false;
-  let phase2NoName = 0;
-  for (let i = 0; i < 2400 && game.get("death-screen").hidden && (!thrown || !spitterSeen); i++) {
-    frame();
-    const statusEl = game.get("target-status");
-    const status = statusEl.hidden ? "" : statusEl.textContent;
-    if (/投掷者/.test(status)) spitterSeen = true;
-    const live = /第 (\d+) 波 · 剩余/.exec(waveStatus());
-    const named = /游荡者|突袭者|破城者|投掷者/.test(status);
-    if (named) {
-      phase2NoName = 0;
-      if (status.includes("超出攻击距离")) {
-        game.key("KeyW");
-      } else {
-        game.release("KeyW");
-        attack();
-      }
-    } else if (live) {
-      game.release("KeyW");
-      if (++phase2NoName > 40) {
-        const foe = nearest();
-        game.document.emit("mousemove", { movementX: 40, movementY: foe ? pitchDelta(foe) : 0 });
-      } else {
-        const foe = nearest();
-        if (foe) turnToward(foe, 0);
-      }
-    } else {
-      game.release("KeyW");
-    }
-    if (hp() <= 70) game.key("KeyH");
-    thrown = hp() % 2 === 1;
-  }
-  assert.ok(spitterSeen, "wave 6 must spawn a spitter (投掷者)");
-  assert.ok(thrown, `a spitter throw must land (health turned odd, now ${hp()})`);
-  assert.equal(game.get("death-screen").hidden, true, "the player must survive the throw");
+  assert.equal(firstDrop, 13, "the first wound is one spitter throw");
+  assert.equal(prev % 2, 1, "100 minus a 13-damage throw is odd — no melee hit in this wave can fake it");
+  assert.match(game.get("wave-status").textContent, /剩余 2 只/, "both spitters are still on the field — the wound came from range");
 });
 
 test("defense runs all eight waves end to end and clears wave 8", t => {
@@ -1922,9 +1784,14 @@ test("defense runs all eight waves end to end and clears wave 8", t => {
   // by the failed save, so leaves never accumulate into dressings.
   const data = new Map();
   const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
-  const game = mountGame({ storage, pointerLock: true });
-  const attack = () => game.get("game").emit("mousedown", { button: 0 });
   let time = 0;
+  // The run is seeded, so its clock must be virtual too: with the
+  // wall clock, the sound throttle (320 real-ms windows in game.js)
+  // eats a varying number of LCG draws and the same seed lands on
+  // different spawn rolls from run to run — a registry-only diff
+  // with waves 1-3 untouched was enough to flip this bot's fate.
+  const game = mountGame({ storage, pointerLock: true, now: () => time });
+  const attack = () => game.get("game").emit("mousedown", { button: 0 });
   const frame = () => game.frame(time += 20);
   game.click("defense-button");
   game.grantPointerLock();
@@ -1992,8 +1859,8 @@ test("defense runs all eight waves end to end and clears wave 8", t => {
   };
   // Breakers by colour ratio: their coat (g/b 1.04, r/g 1.04), skin
   // (1.10, 1.00) and eyes (2.86, 2.23) sit apart from every other
-  // kind's parts at a 0.10 tolerance (nearest neighbours: runner skin
-  // 1.15/1.26, walker eyes 2.81/1.63). They are the only kind that
+  // kind's parts at a 0.10 tolerance (nearest neighbours: spitter
+  // skin 1.71/1.07, juggernaut skin 1.17/1.24). They are the only kind that
   // walks to the beacon regardless of the player, so they are killed
   // first whenever one is near it.
   const breakerRatios = [ENEMIES.breaker.coat, ENEMIES.breaker.skin, ENEMIES.breaker.eyes]
@@ -2039,8 +1906,12 @@ test("defense runs all eight waves end to end and clears wave 8", t => {
     const dist = Math.hypot(dx, dz);
     // The pitch window is wider than the survival test's: a zombie on a
     // hilltop above the player needs up to ~0.6 rad of look-up, and a
-    // foot vertex needs a matching look-down.
-    const desiredPitch = Math.max(-0.9, Math.min(0.9, Math.atan2(y - game.camera[1], dist)));
+    // foot vertex needs a matching look-down. Batch 88 widened it to
+    // 1.35: a dasher parked at the player's feet on a slope sits ~75°
+    // below the eye line, and at the old 0.9 clamp the ray passed over
+    // it forever while it chewed through the player's health — a real
+    // player just looks down, so the bot's clamp was the blind spot.
+    const desiredPitch = Math.max(-1.35, Math.min(1.35, Math.atan2(y - game.camera[1], dist)));
     const currentPitch = Math.asin(Math.max(-1, Math.min(1, game.direction[1])));
     const clamp = radians => Math.max(-65, Math.min(65, radians / .0013));
     game.document.emit("mousemove", {
@@ -2072,7 +1943,7 @@ test("defense runs all eight waves end to end and clears wave 8", t => {
   };
   // Target lock: the nearest vertex flips between zombies' parts from
   // frame to frame, so an aim point built from it jumps around and the
-  // ray never settles — one hit landed in 8s on a runner standing 0.6
+  // ray never settles — one hit landed in 8s on a zombie standing 0.6
   // away. Instead, lock onto one zombie and keep aiming at it until it
   // dies or leaves; only then pick a new target. The lock anchors on
   // the vertex closest to the lock position (one zombie's part) and
@@ -2115,7 +1986,7 @@ test("defense runs all eight waves end to end and clears wave 8", t => {
   // within one wave: the wave status only shows the previous runs'
   // record (savedProgress loads at run start and merges at run end),
   // so it reads zero all through a fresh run and cannot feed this.
-  let repairs = 0, liveKills = 0, prevRem = 0, prevWave = 0;
+  let repairs = 0, liveKills = 0, prevRem = 0, prevWave = 0, swingStall = 0;
   // Victory margins: the lowest beacon / player HP seen all run. A bot
   // win with the beacon at 5 hp proves far less than a win at 60 — the
   // margins are the number that says how much slack a human has.
@@ -2139,7 +2010,7 @@ test("defense runs all eight waves end to end and clears wave 8", t => {
     if (wave) { maxWave = Math.max(maxWave, wave); seenWaves.add(wave); }
     if (fighting()) {
       const rem = remaining();
-      if (wave === prevWave && rem < prevRem) liveKills += prevRem - rem;
+      if (wave === prevWave && rem < prevRem) { liveKills += prevRem - rem; swingStall = 0; }
       prevRem = rem; prevWave = wave;
     }
     if (wave === 6 && fighting() && wave6Frames < 300) {
@@ -2209,7 +2080,7 @@ test("defense runs all eight waves end to end and clears wave 8", t => {
     // dies: re-picking from the nearest vertex every frame makes the
     // aim jump between zombies' parts and the ray never settles. A
     // breaker already at the beacon outranks whatever is locked:
-    // switch off a walker or runner and go kill it, or the beacon
+    // switch off anything else and go kill it, or the beacon
     // dies while the player finishes the wrong zombie.
     const breakerThreat = nearestBreakerToBeacon();
     const forcedBreaker = breakerThreat && breakerThreat.beaconDistance < 3 && !/破城者/.test(status)
@@ -2246,7 +2117,8 @@ test("defense runs all eight waves end to end and clears wave 8", t => {
       const beacon = findBeaconPos();
       foe.beaconDistance = beacon ? Math.hypot(foe.x - beacon.x, foe.z - beacon.z) : Infinity;
     }
-    const named = /游荡者|突袭者|破城者|投掷者/.test(status);
+    const named = /破城者|投掷者/.test(status);
+    if (named) swingStall = 0;
     if (named && !forcedBreaker) {
       noNameFrames = 0;
       // Track the locked foe while fighting: the ray stays on one
@@ -2288,6 +2160,17 @@ test("defense runs all eight waves end to end and clears wave 8", t => {
         noNameFrames = 0;
         turnToward(foe, 0);
         if (foe.distance > 3) { game.key("KeyW"); hop(); walking = true; }
+        else if (!status && foe.distance > 0.4 && ++swingStall > 60) {
+          // Anti-stall (batch 88): the foe is in swing range on paper
+          // but the sights stay empty — the classic case is a zombie
+          // stuck below a ledge, its parts behind the terrain edge the
+          // ray stops at. Standing still swings at air forever while
+          // the wave cannot clear, so step in and change the geometry
+          // (a player walks over and looks down the ledge). The stall
+          // counter resets whenever a name shows or a kill lands.
+          game.key("KeyW"); hop(); walking = true;
+          attack();
+        }
         else {
           // In range: swing at any distance, even point-blank — the
           // ray test returns a hit at distance 0 when the eye is
@@ -2330,22 +2213,24 @@ test("defense runs all eight waves end to end and clears wave 8", t => {
   assert.deepEqual([...seenWaves].sort((a, b) => a - b), [1, 2, 3, 4, 5, 6, 7, 8]);
   assert.equal(maxWave, 8);
   assert.ok(wave6SpitterSeen, "wave 6 must show a spitter (投掷者) in the target status");
-  assert.equal(wave6Spitters, 2, `wave 6 must spawn two spitters at once (saw at most ${wave6Spitters} clusters)`);
-  // Victory margins, seeded run (R9): beacon bottomed at 72/120,
-  // player at 60/100. The floors sit below those with headroom, so they
-  // trip only when a change really eats the slack — a win at 5 hp would
-  // prove almost nothing about a human's chances.
+  assert.equal(wave6Spitters, 4, `wave 6 must spawn four spitters at once (saw at most ${wave6Spitters} clusters)`);
+  // Victory margins, seeded run: the batch-88 deletion roster
+  // bottoms the beacon at 78/120 and the player at 60/100 (measured
+  // on the shipped tables; the earlier R9 roster read 72/60). The
+  // floors sit below those with headroom, so they trip only when a
+  // change really eats the slack — a win at 5 hp would prove almost
+  // nothing about a human's chances.
   assert.ok(minBeaconHp >= 60, `beacon must never drop below 60 (bottomed at ${minBeaconHp})`);
   assert.ok(minPlayerHp >= 40, `player must never drop below 40 (bottomed at ${minPlayerHp})`);
-  // The run's whole stone income is the kills' drops added up: 45 kills
-  // over waves 1–8 pay 55 stone (breakers pay 2, and waves 4–8 each
-  // bring a spitter), so 8 repairs (24 stone) must fit inside it — a
-  // bot that repaired on credit would prove nothing about the real economy.
+  // The run's whole stone income is the kills' drops added up: 37 kills
+  // over waves 1–8 pay 47 stone (spitters pay 1 each, breakers 2), so
+  // the repairs must fit inside it — a bot that repaired on credit
+  // would prove nothing about the real economy.
   const stoneFor = kind => (ENEMIES[kind].drops ?? []).filter(([id]) => id === BLOCK.STONE)
     .reduce((sum, [, amount]) => sum + amount, 0);
   const totalStone = [0, 1, 2, 3, 4, 5, 6, 7].reduce((sum, i) =>
     sum + defenseWaveRoster(i).reduce((wave, kind) => wave + stoneFor(kind), 0), 0);
-  assert.equal(totalStone, 55);
+  assert.equal(totalStone, 47);
   assert.ok(repairs * 3 <= totalStone, `repairs (${repairs} × 3 stone) must stay within the ${totalStone} stone the kills earned`);
 });
 
@@ -2418,8 +2303,9 @@ test("using a healing item heals by its own recipe amount", t => {
   const hp = () => Number(game.get("health-value").textContent);
   const openBag = () => { game.key("KeyC"); frame(); assert.equal(game.get("inventory-screen").hidden, false); };
   const closeBag = () => { game.key("KeyC"); game.grantPointerLock(); frame(); assert.equal(game.get("inventory-screen").hidden, true); };
-  // Stand still and let wave 1 walkers hit until the health is at most the
-  // target: each hit is 12, so the wait stops on a known, unclamped range.
+  // Stand still and let wave 1 spitters throw until the health is at
+  // most the target: each throw is 13, so the wait stops on a known,
+  // unclamped range.
   const takeHitsUntil = target => {
     for (let i = 0; i < 3000 && game.get("death-screen").hidden && hp() > target; i++) frame();
   };
@@ -2469,54 +2355,57 @@ test("using a healing item heals by its own recipe amount", t => {
 });
 
 test("survival difficulty comes from the config table, unchanged", () => {
-  // The table itself, verbatim from the values game.js used to carry
-  // inline: +5% HP per wave past the first, at most 7 zombies a wave,
-  // runners from wave 5, spitters from wave 6, breakers from wave 7.
+  // The table itself, verbatim: +5% HP per wave past the first, at
+  // most 7 zombies a wave, and — since the batch-88 deletion — the
+  // spitter as the fill kind with breakers mixing in from wave 7.
+  // The mechanism kinds (dasher, exploder, juggernaut) rejoin through
+  // this table in the wiring step that follows the deletion.
   assert.deepEqual(SURVIVAL_DIFFICULTY, {
     hpPerWave: 0.05,
     maxZombies: 7,
     mixIns: [
-      { kind: "breaker", fromWave: 7, period: 5, offset: 4 },
-      { kind: "runner", fromWave: 5, period: 3, offset: 2 },
-      { kind: "spitter", fromWave: 6, period: 4, offset: 3 }
+      { kind: "breaker", fromWave: 7, period: 5, offset: 4 }
     ]
   });
   assert.ok(Object.isFrozen(SURVIVAL_DIFFICULTY));
   assert.ok(Object.isFrozen(SURVIVAL_DIFFICULTY.mixIns));
   for (const rule of SURVIVAL_DIFFICULTY.mixIns) assert.ok(Object.isFrozen(rule));
   // Rosters per wave, exactly as the old inline formula produced them.
-  assert.deepEqual(survivalRoster(1), ["walker", "walker"]);
-  assert.deepEqual(survivalRoster(2), ["walker", "walker", "walker"]);
-  assert.deepEqual(survivalRoster(4), ["walker", "walker", "walker", "walker", "walker"]);
-  assert.deepEqual(survivalRoster(5), ["walker", "walker", "runner", "walker", "walker", "runner"]);
-  assert.deepEqual(survivalRoster(6), ["walker", "walker", "runner", "spitter", "walker", "runner", "walker"]);
-  assert.deepEqual(survivalRoster(7), ["walker", "walker", "runner", "spitter", "breaker", "runner", "walker"]);
-  assert.deepEqual(survivalRoster(10), ["walker", "walker", "runner", "spitter", "breaker", "runner", "walker"]);
+  assert.deepEqual(survivalRoster(1), ["spitter", "spitter"]);
+  assert.deepEqual(survivalRoster(2), ["spitter", "spitter", "spitter"]);
+  assert.deepEqual(survivalRoster(4), ["spitter", "spitter", "spitter", "spitter", "spitter"]);
+  assert.deepEqual(survivalRoster(5), ["spitter", "spitter", "spitter", "spitter", "spitter", "spitter"]);
+  assert.deepEqual(survivalRoster(6), ["spitter", "spitter", "spitter", "spitter", "spitter", "spitter", "spitter"]);
+  assert.deepEqual(survivalRoster(7), ["spitter", "spitter", "spitter", "spitter", "breaker", "spitter", "spitter"]);
+  assert.deepEqual(survivalRoster(10), ["spitter", "spitter", "spitter", "spitter", "breaker", "spitter", "spitter"]);
   assert.equal(survivalRoster(20).length, 7, "the wave-size cap holds past wave 6");
   // Each kind first appears in the same wave as before.
   const firstSeen = kind => {
     for (let wave = 1; wave <= 10; wave++) if (survivalRoster(wave).includes(kind)) return wave;
     return null;
   };
-  assert.equal(firstSeen("walker"), 1);
-  assert.equal(firstSeen("runner"), 5);
-  assert.equal(firstSeen("spitter"), 6);
+  assert.equal(firstSeen("spitter"), 1);
   assert.equal(firstSeen("breaker"), 7);
+  // The mechanism kinds are registered but unwired this step: no
+  // survival wave fields them until the wiring step adds their rules.
+  assert.equal(firstSeen("dasher"), null);
+  assert.equal(firstSeen("exploder"), null);
+  assert.equal(firstSeen("juggernaut"), null);
   // HP curve: 1 at wave 1, then +5% per wave past it.
   assert.equal(hpMultiplier(1), 1);
   assert.equal(hpMultiplier(2), 1.05);
   assert.equal(hpMultiplier(5), 1.2);
   assert.equal(hpMultiplier(7), 1.3);
   assert.equal(hpMultiplier(0), 1);
-  // Scaled HP, rounded the way addEnemies() always has (a wave-5 walker
-  // at 84 is what the survival test watches in the target status).
-  assert.equal(scaledHp(70, 1), 70);
-  assert.equal(scaledHp(70, 2), 74);
-  assert.equal(scaledHp(70, 5), 84);
-  assert.equal(scaledHp(43, 5), 52);
+  // Scaled HP, rounded the way addEnemies() always has, on the
+  // surviving kinds' base numbers.
+  assert.equal(scaledHp(35, 1), 35);
+  assert.equal(scaledHp(35, 2), 37);
+  assert.equal(scaledHp(35, 5), 42);
+  assert.equal(scaledHp(30, 5), 36);
   assert.equal(scaledHp(55, 6), 69);
   assert.equal(scaledHp(155, 7), 202);
-  assert.equal(scaledHp(70), 70);
+  assert.equal(scaledHp(35), 35);
 });
 
 test("the pause menu exports the save and imports a file back", async () => {
@@ -3091,6 +2980,105 @@ function swingAtAdjacentZombie(game, frame) {
   return false;
 }
 
+
+// The nearest zombie's closest actor vertex, or null when no zombie
+// is on the field. During combat the actor buffer holds only zombie
+// parts, so the closest vertex belongs to the closest zombie; it is
+// a coarse aim (a corner can sit half a block off the body), which
+// is why the drivers below trust the crosshair, not the vertex, for
+// the swing itself.
+function nearestZombieVertex(game) {
+  const vertices = game.actorVertices;
+  if (!vertices?.length) return null;
+  let best = null, bestD = Infinity;
+  for (let v = 0; v < vertices.length; v += 12) {
+    const dx = vertices[v] - game.camera[0], dz = vertices[v + 2] - game.camera[2];
+    const d = dx * dx + dz * dz;
+    if (d < bestD) { bestD = d; best = { x: vertices[v], y: vertices[v + 1], z: vertices[v + 2] }; }
+  }
+  // Before a wave spawns (or after it clears) the buffer holds stale
+  // data from another mesh, sometimes at sentinel distances — a
+  // "nearest" that far away is not a zombie.
+  if (!best || bestD > 30 * 30) return null;
+  // Aim at the cluster's mean height, not the corner's: the nearest
+  // vertex can be a foot, and a ray to it passes under the body box.
+  let ySum = 0, yCount = 0;
+  for (let v = 0; v < vertices.length; v += 12) {
+    if (Math.hypot(vertices[v] - best.x, vertices[v + 2] - best.z) > 1.5) continue;
+    ySum += vertices[v + 1];
+    yCount++;
+  }
+  return { x: best.x, y: yCount ? ySum / yCount : best.y, z: best.z, distance: Math.sqrt(bestD) };
+}
+
+// Turn the view toward a vertex, pitch included (clamped, so a foot
+// vertex cannot dive the view into the ground).
+function steerTowardVertex(game, { x, y, z }) {
+  const dx = x - game.camera[0], dz = z - game.camera[2];
+  const turn = Math.atan2(dx, -dz) - Math.atan2(game.direction[0], -game.direction[2]);
+  const dist = Math.hypot(dx, dz);
+  const desiredPitch = Math.max(-0.55, Math.min(0.35, Math.atan2(y - game.camera[1], dist)));
+  const currentPitch = Math.asin(Math.max(-1, Math.min(1, game.direction[1])));
+  const clamp = radians => Math.max(-65, Math.min(65, radians / .0013));
+  game.document.emit("mousemove", {
+    movementX: clamp(Math.atan2(Math.sin(turn), Math.cos(turn))),
+    movementY: clamp(-(desiredPitch - currentPitch))
+  });
+}
+
+// Close with the nearest zombie and swing. Since the deletion the
+// roster's base kind is ranged — a spitter holds its distance and
+// never walks into sword reach — so the standing sweep above finds
+// nothing; this driver walks the player to the zombie instead.
+// Returns true when a swing produced a hit message.
+function swingAtNearestZombie(game, frame) {
+  game.get("message").textContent = "";
+  let holding = false;
+  let lastX = game.camera[0], lastZ = game.camera[2], stillFrames = 0, closeFrames = 0;
+  for (let i = 0; i < 3000; i++) {
+    if (game.get("crosshair").classList.contains("on-target")) {
+      if (holding) { game.release("KeyW"); holding = false; }
+      game.get("game").emit("mousedown", { button: 0 });
+      frame();
+      for (let j = 0; j < 25; j++) frame();
+      if (game.get("message").textContent) return true;
+      continue;
+    }
+    const target = nearestZombieVertex(game);
+    if (!target) { frame(); continue; }
+    // Stuck against terrain (the camera stops while W is held):
+    // hop and strafe off the lip, then resume the approach.
+    if (Math.hypot(game.camera[0] - lastX, game.camera[2] - lastZ) > .05) {
+      lastX = game.camera[0]; lastZ = game.camera[2]; stillFrames = 0;
+    } else if (holding && ++stillFrames > 30) {
+      game.key("Space");
+      game.key("KeyD");
+      for (let j = 0; j < 15; j++) frame();
+      game.release("Space");
+      game.release("KeyD");
+      stillFrames = 0;
+      continue;
+    }
+    // Adjacent but never on target (a height gap or the zombie just
+    // off-axis): fall back to the standing sweep's rotate-scan.
+    if (target.distance < 1.8 && ++closeFrames > 40) {
+      if (holding) { game.release("KeyW"); holding = false; }
+      for (let j = 0; j < 80; j++) {
+        if (game.get("crosshair").classList.contains("on-target")) break;
+        game.document.emit("mousemove", { movementX: 600, movementY: 0 });
+        frame();
+      }
+      closeFrames = 0;
+      continue;
+    }
+    steerTowardVertex(game, target);
+    if (!holding) { game.key("KeyW"); holding = true; }
+    frame();
+  }
+  if (holding) game.release("KeyW");
+  return false;
+}
+
 test("hitting a zombie wears the equipped sword by 1 and the HUD shows the durability", () => {
   const data = new Map([[SAVE_KEY, v5SaveWithWeapon({ key: "emberSword", tier: "ember", durability: 200 })]]);
   const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
@@ -3100,7 +3088,7 @@ test("hitting a zombie wears the equipped sword by 1 and the HUD shows the durab
   game.click("start-button");
   game.grantPointerLock();
   waitForZombieHit(game, frame);
-  assert.ok(swingAtAdjacentZombie(game, frame), "the sweep should find the zombie");
+  assert.ok(swingAtNearestZombie(game, frame), "the walk-to should reach the zombie");
   // One hit: 200 -> 199, which is 99% of the ember maximum.
   assert.match(game.get("weapon-label").textContent, /耐久 99%/);
   game.key("KeyC");
@@ -3119,7 +3107,7 @@ test("a sword at 1 durability breaks on the next hit: fist fallback, broken labe
   game.click("start-button");
   game.grantPointerLock();
   waitForZombieHit(game, frame);
-  assert.ok(swingAtAdjacentZombie(game, frame), "the sweep should find the zombie");
+  assert.ok(swingAtNearestZombie(game, frame), "the walk-to should reach the zombie");
   assert.equal(game.get("weapon-label").textContent, "熔火剑已损坏（按 C 修理）");
   game.key("KeyC");
   frame();
@@ -3188,18 +3176,27 @@ test("the 25% warning fires once when the sword crosses below 25%", () => {
   // missed or still-buffered swing cannot skip a step.
   const savedDurability = () => JSON.parse(data.get(SAVE_KEY)).equipment.weapon.durability;
   const swingAndRead = () => {
+    let holding = false;
     for (let attempt = 0; attempt < 40; attempt++) {
       const before = savedDurability();
       let swung = false;
-      for (let i = 0; i < 80 && !swung; i++) {
+      // The sweep is a walk-to since the deletion: the roster's base
+      // kind is ranged and never steps into a standing sweep's reach.
+      for (let i = 0; i < 3000 && !swung; i++) {
         if (game.get("crosshair").classList.contains("on-target")) {
+          if (holding) { game.release("KeyW"); holding = false; }
           game.get("game").emit("mousedown", { button: 0 });
           swung = true;
         } else {
-          game.document.emit("mousemove", { movementX: 600, movementY: 0 });
+          const target = nearestZombieVertex(game);
+          if (target) {
+            steerTowardVertex(game, target);
+            if (!holding) { game.key("KeyW"); holding = true; }
+          }
           frame();
         }
       }
+      if (holding) { game.release("KeyW"); holding = false; }
       if (!swung) continue;
       // A buffered swing fires when the cooldown ends (<= 0.38s);
       // 40 frames covers it with room to spare.
@@ -3235,9 +3232,10 @@ test("a hit on the player wears the armor by 1; at 0 the reduction is gone", () 
   const frame = () => game.frame(time += 20);
   game.click("start-button");
   game.grantPointerLock();
-  // Record the first two hits the player takes. A walker hits 10 (9
-  // with stone armor), a runner 6 (5 with it): a drop of 5 or 9 means
-  // the armor was still working, 6 or 10 means it was gone.
+  // Record the first two hits the player takes. Since the deletion
+  // the first hits are a spitter's throws: 13 a hit, 11 while the
+  // stone armor still reduces it — a drop of 11 means the armor was
+  // working, 13 means it was gone.
   const drops = [];
   let hp = 100;
   for (let i = 0; i < 3000 && drops.length < 2; i++) {
@@ -3246,8 +3244,11 @@ test("a hit on the player wears the armor by 1; at 0 the reduction is gone", () 
     if (now < hp) { drops.push(hp - now); hp = now; }
   }
   assert.equal(drops.length, 2, "the player should have taken two hits");
-  assert.ok([5, 9].includes(drops[0]), `first hit should be reduced (dropped ${drops[0]})`);
-  assert.ok([6, 10].includes(drops[1]), `second hit should be full (dropped ${drops[1]})`);
+  // A satiety regen tick (+1) can land between the two samples and
+  // shave a point off either drop; the bands still separate cleanly,
+  // because a reduced throw reads 10-11 and a full one 12-13.
+  assert.ok(drops[0] === 10 || drops[0] === 11, `first hit should be reduced (dropped ${drops[0]})`);
+  assert.ok(drops[1] === 12 || drops[1] === 13, `second hit should be full (dropped ${drops[1]})`);
   game.key("KeyC");
   frame();
   game.click("tab-btn-equipment");
@@ -3608,18 +3609,22 @@ test("a kill's loot message names every drop, never \"undefined\"", () => {
   game.click("start-button");
   game.grantPointerLock();
   for (let i = 0; i < 60; i++) frame();
-  // Wait for the first survival wave and kill its first zombie the way
-  // the swing helper does, then read the loot message.
+  // Wait for the first survival wave and kill its first zombie with
+  // the walk-to helper, then read the loot message. Hit messages do
+  // not count: the loop only stops at the defeat line itself, which
+  // is the one that names the drops.
   game.key("Digit6");
   frame();
   let looted = null;
-  for (let attempt = 0; attempt < 5 && !looted; attempt++) {
-    game.get("message").textContent = "";
-    swingAtAdjacentZombie(game, frame);
-    if (game.get("message").textContent) looted = game.get("message").textContent;
+  for (let attempt = 0; attempt < 30 && !looted; attempt++) {
+    swingAtNearestZombie(game, frame);
+    const text = game.get("message").textContent;
+    // The loot line is the drop list itself; only it names the seed.
+    if (text.includes("小麦种子")) looted = text;
   }
   assert.ok(looted, "a zombie was killed and its loot messaged");
   assert.ok(!looted.includes("undefined"), `loot names every drop: ${looted}`);
+  assert.ok(looted.includes("石头 +1") && looted.includes("树叶 +2"), `the whole spitter table is named: ${looted}`);
 });
 
 // Farming (R6): the watering can (KeyJ), batch harvest (KeyE away
@@ -4209,7 +4214,7 @@ function measureSpeedReadout(game, frame, expected) {
 // tests assert on — and it is exact.)
 
 // Pass game time standing still, topping up with a KeyH dressing
-// whenever the wave-1 walkers chew the player to 50: circling or
+// whenever the wave-1 zombies chew the player to 50: circling or
 // running out the clock gets the player cornered or killed. Since
 // batch 86 food feeds hunger instead of health, the top-up is a
 // dressing — KeyH needs no bag detour, so the buff clock never
@@ -4223,28 +4228,37 @@ function passGameTime(game, frame, frames, hp) {
   }
 }
 
-// Turn in small steps until a walker is in the crosshair AND inside
+// Turn in small steps until a zombie is in the crosshair AND inside
 // sword reach (the status line names zombies beyond reach too, with
 // a 超出攻击距离 hint), then swing at it — repeating like the combat
 // tests do, since a single click can land between the zombie's steps
 // — until a hit message with exactly the expected damage appears.
 // The survival sword is the stone sword (27 base damage).
-function punchWalker(game, frame, damageText) {
-  const wanted = `命中游荡者 · 伤害 ${damageText}`;
-  for (let i = 0; i < 600; i++) {
+function punchSpitter(game, frame, damageText) {
+  const wanted = `命中投掷者 · 伤害 ${damageText}`;
+  let holding = false;
+  for (let i = 0; i < 3000; i++) {
     frame();
     // The status line keeps its last text when the aim empties (it
-    // only hides), so a match counts only while it is visible.
+    // only hides), so a match counts only while it is visible. The
+    // spitter holds its distance, so the player walks to it (the
+    // shared steering helpers) until the status reads in-range.
     const statusElement = game.get("target-status");
     const status = statusElement.textContent;
-    if (!statusElement.hidden && status.includes("游荡者") && !status.includes("超出攻击距离")) {
+    if (!statusElement.hidden && status.includes("投掷者") && !status.includes("超出攻击距离")) {
+      if (holding) { game.release("KeyW"); holding = false; }
       game.get("game").emit("mousedown", { button: 0 });
       if (game.get("message").textContent === wanted) return;
     } else {
-      game.document.emit("mousemove", { movementX: 50, movementY: 0 });
+      const target = nearestZombieVertex(game);
+      if (target) {
+        steerTowardVertex(game, target);
+        if (!holding) { game.key("KeyW"); holding = true; }
+      }
     }
   }
-  assert.fail(`no hit with damage ${damageText} landed within 600 frames (last message: ${game.get("message").textContent})`);
+  if (holding) game.release("KeyW");
+  assert.fail(`no hit with damage ${damageText} landed within 3000 frames (last message: ${game.get("message").textContent})`);
 }
 
 // The whole seconds a HUD buff line currently claims.
@@ -4319,13 +4333,13 @@ test("re-eating refreshes without stacking, buffs coexist, and the stew's punch 
   assert.equal(game.get("hud-buff-attack").textContent, "攻击 +10% · 还剩 30 秒");
   assert.equal(measureSpeedReadout(game, frame, Number((4.15 * 1.1).toFixed(2))), Number((4.15 * 1.1).toFixed(2)),
     "the attack buff must not change the speed");
-  punchWalker(game, frame, "29.7");
+  punchSpitter(game, frame, "29.7");
   // After both buffs expire the sword is back to its exact base 27.
   passGameTime(game, frame, 1600, hp);
   assert.equal(game.get("hud-buff-speed").hidden, true);
   assert.equal(game.get("hud-buff-attack").hidden, true);
   assert.ok(hp() > 0, "the player must still be alive after the run-out");
-  punchWalker(game, frame, "27");
+  punchSpitter(game, frame, "27");
 });
 
 test("buffs never reach the save: a reload starts with none", t => {
@@ -4518,7 +4532,7 @@ test("boss health bar: segments per bar, the current one drains, broken ones go 
       game.key("Space");
       game.release("Space");
     }
-    if (exposed || /游荡者|突袭者|破城者/.test(game.get("target-status").textContent)) attack();
+    if (exposed || /疾行者|破城者/.test(game.get("target-status").textContent)) attack();
     const hpNow = Number(game.get("boss-health-value").textContent.split(" / ")[0]);
     if (!fracChecked && hpNow < 520) {
       fracChecked = true;
@@ -4794,7 +4808,7 @@ test("hunger: a belly at 80 slowly restores health, one at 65 does not", () => {
     assert.equal(hp(), 97);
     // Eat the dishes from the bag (paused: no time passes), which
     // sets the belly to an exact mark, then watch 8 game seconds —
-    // still ahead of the first walker's arrival.
+    // still ahead of the first zombie's arrival.
     game.key("KeyC");
     frame();
     for (const [key, count] of Object.entries(dishes)) for (let i = 0; i < count; i++) game.click(`use-${key}`);
@@ -4816,7 +4830,7 @@ test("hunger: starving to death ends the run, and respawn refills the belly", ()
   const frame = () => game.frame(time += 20);
   game.click("start-button");
   game.grantPointerLock();
-  // Starvation alone kills at 200 game seconds; the wave walkers
+  // Starvation alone kills at 200 game seconds; the wave's zombies
   // only hasten it. Either way the run ends on the death screen.
   for (let i = 0; i < 14000 && game.get("death-screen").hidden; i++) frame();
   assert.equal(game.get("death-screen").hidden, false, "an empty belly ends the run");

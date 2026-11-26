@@ -8,11 +8,11 @@
 import { ENEMIES } from "./enemies.mjs";
 
 export const DEFENSE_WAVES = Object.freeze([
-  { name: "前哨接触", enemies: ["walker", "runner"], seconds: 45 },
-  { name: "快速突袭", enemies: ["runner", "runner", "walker"], seconds: 49 },
-  { name: "重型来袭", enemies: ["breaker", "walker", "runner"], seconds: 54 },
-  { name: "两面夹击", enemies: ["breaker", "runner", "runner", "walker", "walker"], seconds: 58 },
-  { name: "黎明前的攻势", enemies: ["breaker", "breaker", "runner", "runner", "walker", "walker"], seconds: 64 }
+  { name: "前哨接触", enemies: ["spitter", "spitter"], seconds: 45 },
+  { name: "交叉火力", enemies: ["spitter", "spitter", "spitter"], seconds: 49 },
+  { name: "重型来袭", enemies: ["breaker", "spitter", "spitter"], seconds: 54 },
+  { name: "两面夹击", enemies: ["breaker", "spitter", "spitter", "spitter", "spitter"], seconds: 58 },
+  { name: "黎明前的攻势", enemies: ["breaker", "breaker", "spitter", "spitter", "spitter", "spitter"], seconds: 64 }
 ]);
 
 export const BEACON = Object.freeze({ hp: 120, radius: .43, height: 1.93, repairRange: 3.1, repairCost: 3, repairedHp: 30 });

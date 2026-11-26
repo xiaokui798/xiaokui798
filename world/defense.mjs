@@ -13,22 +13,26 @@ export function choosesBeacon(kind, hasBeacon, distanceToPlayer, playerReachable
   if (!hasBeacon) return false;
   if (kind === "breaker") return beaconReachable || !playerReachable;
   if (!playerReachable && beaconReachable) return true;
-  return kind === "runner" && distanceToPlayer > 5.5 && beaconReachable;
+  return kind === "exploder" && distanceToPlayer > 5.5 && beaconReachable;
 }
 
-// The roster a defense wave actually spawns: the configured roster from
-// waves.mjs, except the later waves gain one spitter, so the beacon
-// faces ranged pressure from wave 4 on without rebalancing the first
-// three waves. Returns a copy — the configured roster is never mutated.
+// The roster a defense wave actually spawns: the configured roster
+// from waves.mjs plus the batch-88 kind ramps, appended after the
+// table's own entries. The tables (rebuilt by the deletion on
+// spitters and breakers) carry the base composition; the ramps add
+// one dasher per wave from wave 3, the juggernaut in waves 5, 6
+// and 8, and the exploder in waves 6 and 8 — wave 7 stays the
+// breather before the finale. Past the configured waves the final
+// wave repeats, ramps included. Returns a fresh array — the
+// configured roster is never mutated.
 export function defenseWaveRoster(waveIndex) {
   if (!Number.isInteger(waveIndex) || waveIndex < 0) return [];
-  // Past the configured waves the final wave repeats, so the ramp stays
-  // defined for any wave number.
   const wave = DEFENSE_WAVES[waveIndex] ?? DEFENSE_WAVES[DEFENSE_WAVES.length - 1];
-  // The spitter count ramps with the wave number (1-based): none before
-  // wave 4, one on waves 4-5, two from wave 6 on.
-  const spitters = waveIndex >= 5 ? 2 : waveIndex >= 3 ? 1 : 0;
-  return [...wave.enemies, ...Array(spitters).fill("spitter")];
+  const dashers = waveIndex >= 2 ? 1 : 0;
+  const juggernauts = waveIndex >= 4 && waveIndex !== 6 ? 1 : 0;
+  const exploders = waveIndex >= 5 && waveIndex !== 6 ? 1 : 0;
+  return [...wave.enemies, ...Array(dashers).fill("dasher"),
+    ...Array(juggernauts).fill("juggernaut"), ...Array(exploders).fill("exploder")];
 }
 
 export function selectWaveSpawns(roster, candidates, alternateSides) {
@@ -112,6 +116,13 @@ export function zombieParts(zombie, style, part) {
     part(-.31, .98, -.2, .62, .22, .4, .53, .49, .38);
     part(-.25, 1.6, -.20, .50, .14, .40, .59, .54, .42);
   }
+  // A lit exploder wears its warning on its chest: a core plate that
+  // strobes bright orange until the fuse ends. Only exploders ever
+  // carry `fuse`, so every other kind's part list is unchanged.
+  if (zombie.fuse !== undefined) {
+    const lit = Math.sin(zombie.fuse * 26) > 0;
+    part(-.13, .82, .15, .26, .30, .06, ...(lit ? [1, .62, .16] : [.30, .10, .03]));
+  }
 }
 
 export function beaconParts(beacon, elapsed, fixed, rotating) {
@@ -136,7 +147,7 @@ export function findMeleeTarget(origin, direction, nearest, zombies, beacon, ela
   }
   for (const zombie of zombies) {
     if (zombie.dying !== undefined) continue;
-    const profile = ENEMIES[zombie.kind] ?? ENEMIES.walker;
+    const profile = ENEMIES[zombie.kind] ?? ENEMIES.spitter;
     const hit = actorRay(origin, direction, zombie, zombie.angle, profile.width, profile.height);
     let distance = nearest;
     zombieParts(zombie, profile, (...part) => { distance = Math.min(distance, hit(...part)); });

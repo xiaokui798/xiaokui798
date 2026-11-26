@@ -21,9 +21,9 @@ const [BASALT, TILE, BRONZE, EMBER, ASH, INK, SLATE, SILVER, VIOLET, AURORA] = A
 // cadence, windup scale, speed, recovery, damage scale — so no
 // second table exists anywhere.
 export const GUARDIAN_WAVES = [
-  { name: "起火", hp: 520, armor: 0, windup: 1, pursuit: 1.2, speed: 3.8, recovery: 1.9, damageScale: 1, attacks: ["shock", "sweep"], minions: ["walker"] },
-  { name: "烈火", hp: 420, armor: .10, windup: .86, pursuit: 1, speed: 4.4, recovery: 1.8, damageScale: 1, attacks: ["flare", "sweep"], minions: ["runner", "walker"] },
-  { name: "过载", hp: 500, armor: .20, windup: .72, pursuit: .75, speed: 5.2, recovery: 1.45, damageScale: 1.15, attacks: ["ram", "nova", "flare"], minions: ["runner", "breaker"] }
+  { name: "起火", hp: 520, armor: 0, windup: 1, pursuit: 1.2, speed: 3.8, recovery: 1.9, damageScale: 1, attacks: ["shock", "sweep"], minions: ["dasher"] },
+  { name: "烈火", hp: 420, armor: .10, windup: .86, pursuit: 1, speed: 4.4, recovery: 1.8, damageScale: 1, attacks: ["flare", "sweep"], minions: ["dasher", "breaker"] },
+  { name: "过载", hp: 500, armor: .20, windup: .72, pursuit: .75, speed: 5.2, recovery: 1.45, damageScale: 1.15, attacks: ["ram", "nova", "flare"], minions: ["dasher", "breaker"] }
 ];
 export const BOSS = Object.freeze({ id: "boss", name: "熔炉守卫", arena: ARENA, maxHp: GUARDIAN_WAVES[0].hp, radius: .86, height: 3.45 });
 export const COLOSSUS = Object.freeze({ id: "colossus", name: "断星巨像", arena: SKY_COURT, maxHp: 700, radius: 1.95, height: 8.3,

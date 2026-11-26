@@ -10,25 +10,41 @@ import { FARM_MATERIALS } from "./crops.mjs";
 export const RARE_MATERIALS = Object.freeze({ emberCore: "熔火核心", starShard: "断星碎片" });
 
 export const ENEMIES = Object.freeze({
-  walker: { name: "游荡者", hp: 70, speed: 1.52, reach: 1.18, damage: 10, strikeDelay: .32, cooldown: 1.28,
-    width: 1, height: 1, armor: false, coat: [.24, .31, .36], skin: [.54, .57, .40], eyes: [.96, .59, .21],
-    drops: [[BLOCK.STONE, 1], [BLOCK.LEAF, 1]] },
-  runner: { name: "突袭者", hp: 43, speed: 2.52, reach: 1.14, damage: 6, strikeDelay: .18, cooldown: .94,
-    width: .8, height: .86, armor: false, coat: [.36, .26, .27], skin: [.58, .46, .40], eyes: [.91, .34, .20],
-    drops: [[BLOCK.STONE, 1], [BLOCK.LEAF, 1], [BLOCK.WOOD, 1]] },
   breaker: { name: "破城者", hp: 155, speed: 1.13, reach: 1.44, damage: 14, strikeDelay: .70, cooldown: 1.55,
     width: 1.20, height: 1.13, armor: true, coat: [.28, .27, .26], skin: [.55, .55, .50], eyes: [.89, .40, .14],
     drops: [[BLOCK.STONE, 2], [BLOCK.LEAF, 1]] },
   // Ranged thrower: keeps its distance and lobs projectiles instead of
-  // closing in. Registry-only for now — no wave roster lists it, and
-  // game.js has no ranged attack or spawn path for it yet (see the
-  // wiring notes in the S8 report). Melee kinds carry no `attack` field
-  // and stay melee by default; ranged kinds carry `attack: "ranged"`,
-  // a `range`, and a `projectileSpeed`.
+  // closing in. Since the batch-88 deletion it is the base kind of
+  // every wave roster (the survival fill and the defense tables' core).
+  // Melee kinds carry no `attack` field and stay melee by default;
+  // ranged kinds carry `attack: "ranged"`, a `range`, and a
+  // `projectileSpeed`.
   spitter: { name: "投掷者", hp: 55, speed: 1.25, reach: 1.0, damage: 13, strikeDelay: .55, cooldown: 2.1,
     width: .85, height: .95, armor: false, attack: "ranged", range: 7.5, projectileSpeed: 6,
     coat: [.32, .42, .22], skin: [.62, .58, .34], eyes: [.45, .85, .30],
-    drops: [[BLOCK.STONE, 1], [BLOCK.LEAF, 2], ["wheatSeed", 1]] }
+    drops: [[BLOCK.STONE, 1], [BLOCK.LEAF, 2], ["wheatSeed", 1]] },
+  // Dasher: fast and fragile, built to punish positioning — the
+  // fastest kind in the registry on a thin health pool.
+  dasher: { name: "疾行者", hp: 35, speed: 2.74, reach: 1.1, damage: 6, strikeDelay: .15, cooldown: .9,
+    width: .82, height: .82, armor: false, coat: [.30, .48, .22], skin: [.55, .62, .38], eyes: [.95, .85, .25],
+    drops: [[BLOCK.LEAF, 2], ["wheatSeed", 1]] },
+  // Juggernaut: the tank — the slowest kind in the registry, by far
+  // the thickest health pool outside the bosses, and the hardest
+  // melee hit of any regular kind. Its ember core
+  // is a chance bonus in progression.grantLoot, not a table drop, so
+  // the table below stays deterministic.
+  juggernaut: { name: "重甲者", hp: 180, speed: .91, reach: 1.5, damage: 15, strikeDelay: .8, cooldown: 2.5,
+    width: 1.45, height: 1.3, armor: true, coat: [.38, .20, .14], skin: [.52, .42, .36], eyes: [1, .45, .15],
+    drops: [[BLOCK.STONE, 3]] },
+  // Exploder: closes to blastTrigger of its goal, lights a 1s fuse
+  // (flashing core + windup sound), then bursts for blastDamage to
+  // the player / blastBeaconDamage to the beacon inside blastRadius.
+  // Killing it before the fuse ends pays its drops and no blast.
+  exploder: { name: "爆裂者", hp: 30, speed: 1.82, reach: 1.1, damage: 4, strikeDelay: .3, cooldown: 1.2,
+    width: .9, height: .95, armor: false, fuseSeconds: 1, blastTrigger: 2.0, blastRadius: 2.5,
+    blastDamage: 18, blastBeaconDamage: 10,
+    coat: [.55, .30, .12], skin: [.66, .50, .30], eyes: [1, .75, .2],
+    drops: [["emberCore", 1]] }
 });
 
 // Validate an enemy registry (defaults to this module's own): every kind
@@ -56,6 +72,15 @@ export function validateEnemies(enemies = ENEMIES) {
     }
     if (profile.attack !== undefined && profile.attack !== "melee" && profile.attack !== "ranged") {
       errors.push(`${label}：attack 必须是 melee 或 ranged（现在是 ${profile.attack}）`);
+    }
+    // A kind carrying any blast field must carry them all, positive.
+    const blastFields = ["fuseSeconds", "blastTrigger", "blastRadius", "blastDamage", "blastBeaconDamage"];
+    if (blastFields.some(field => profile[field] !== undefined)) {
+      for (const field of blastFields) {
+        if (typeof profile[field] !== "number" || !Number.isFinite(profile[field]) || profile[field] <= 0) {
+          errors.push(`${label}：${field} 不是正数`);
+        }
+      }
     }
     if (profile.attack === "ranged") {
       for (const field of ["range", "projectileSpeed"]) {
