@@ -584,6 +584,27 @@ test("the boss arena can be won and replayed, paying its reward without touching
   assert.equal(storage.getItem(SAVE_KEY), afterWin);
 });
 
+
+test("PROBE pause-menu exit hides the boss hud", () => {
+  for (const [button, label] of [["trial-guardian-button", "guardian trial"], ["trial-colossus-button", "colossus trial"], ["boss-button", "main boss"]]) {
+    const data = new Map();
+    const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+    const game = mountGame({ storage, pointerLock: true });
+    let time = 0;
+    const frame = () => game.frame(time += 20);
+    game.click(button);
+    game.grantPointerLock();
+    for (let i = 0; i < 5; i++) frame();
+    assert.equal(game.get("boss-hud").hidden, false, `${label}: hud up in the fight`);
+    game.key("Escape");
+    frame();
+    assert.equal(game.get("pause-screen").hidden, false, `${label}: pause screen up`);
+    game.click("pause-menu-button");
+    frame();
+    console.log(`${label}: start-screen hidden=${game.get("start-screen").hidden} boss-hud hidden=${game.get("boss-hud").hidden}`);
+  }
+});
+
 test("boss trial: beating the guardian leaves the main save byte-identical", () => {
   const data = new Map();
   const storage = sharedStorage(data);
@@ -944,7 +965,12 @@ test("court skills heal after damage and five delayed dragon impacts bypass the 
   assert.equal(game.get("boss-health-value").textContent, "620 / 700");
 });
 
-test("the pulse weapon can interrupt the crystal and win the colossus fight through both phases", () => {
+test("the pulse weapon can interrupt the crystal and win the colossus fight through both phases", t => {
+  // Seeded random (batch 77): this choreography used to face the
+  // raw Math.random stream and intermittently lost the fight under
+  // load; on the fixed LCG stream it wins deterministically.
+  let seed = 1;
+  t.mock.method(Math, "random", () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296));
   const data = new Map();
   const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
   const game = mountGame({ pointerLock: true, storage });
@@ -3129,6 +3155,7 @@ test("repairing at the workbench restores the sword to full and hides the row", 
   assert.equal(game.get("equip-weapon-state").textContent, "已装备");
 });
 
+
 test("the 25% warning fires once when the sword crosses below 25%", () => {
   const data = new Map([[SAVE_KEY, v5SaveWithWeapon({ key: "emberSword", tier: "ember", durability: 51 })]]);
   const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
@@ -3138,15 +3165,57 @@ test("the 25% warning fires once when the sword crosses below 25%", () => {
   game.click("start-button");
   game.grantPointerLock();
   waitForZombieHit(game, frame);
+  // Deterministic swing driver (batch 77). The shared sweep helper
+  // reads the message line after a fixed 25-frame settle — exactly
+  // when a killing blow's loot line lands (a zombie's death pays
+  // out 0.5s after the hit), so the second hit's warning raced the
+  // loot for the same line and lost ~1 run in 8. This driver keys
+  // everything off the save instead: sweep to a target, swing, then
+  // step one frame at a time until the saved durability drops —
+  // that frame is the hit's own frame, whose step ends by flushing
+  // the pending durability warning, so the message read on that
+  // exact frame is the hit's final word, a full 0.5s before any
+  // loot can land. A whiff never wears, so re-sweeping after a
+  // missed or still-buffered swing cannot skip a step.
+  const savedDurability = () => JSON.parse(data.get(SAVE_KEY)).equipment.weapon.durability;
+  const swingAndRead = () => {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const before = savedDurability();
+      let swung = false;
+      for (let i = 0; i < 80 && !swung; i++) {
+        if (game.get("crosshair").classList.contains("on-target")) {
+          game.get("game").emit("mousedown", { button: 0 });
+          swung = true;
+        } else {
+          game.document.emit("mousemove", { movementX: 600, movementY: 0 });
+          frame();
+        }
+      }
+      if (!swung) continue;
+      // A buffered swing fires when the cooldown ends (<= 0.38s);
+      // 40 frames covers it with room to spare.
+      for (let i = 0; i < 40; i++) {
+        frame();
+        if (savedDurability() < before) return game.get("message").textContent;
+      }
+    }
+    return null;
+  };
   // First hit: 51 -> 50, exactly 25% — not below, no warning.
-  assert.ok(swingAtAdjacentZombie(game, frame), "the sweep should find a zombie");
-  assert.doesNotMatch(game.get("message").textContent, /耐久不足/);
+  const first = swingAndRead();
+  assert.ok(first !== null, "the sweep should find a zombie");
+  assert.equal(savedDurability(), 50);
+  assert.doesNotMatch(first, /耐久不足/);
   // Second hit: 50 -> 49, 24% — the warning fires once.
-  assert.ok(swingAtAdjacentZombie(game, frame), "the sweep should find a zombie again");
-  assert.match(game.get("message").textContent, /熔火剑耐久不足（24%），按 C 在工作台修理/);
+  const second = swingAndRead();
+  assert.ok(second !== null, "the sweep should find a zombie again");
+  assert.equal(savedDurability(), 49);
+  assert.match(second, /熔火剑耐久不足（24%），按 C 在工作台修理/);
   // Third hit: 49 -> 48 — already below 25%, no second warning.
-  assert.ok(swingAtAdjacentZombie(game, frame), "the sweep should find a zombie a third time");
-  assert.doesNotMatch(game.get("message").textContent, /耐久不足/);
+  const third = swingAndRead();
+  assert.ok(third !== null, "the sweep should find a zombie a third time");
+  assert.equal(savedDurability(), 48);
+  assert.doesNotMatch(third, /耐久不足/);
 });
 
 test("a hit on the player wears the armor by 1; at 0 the reduction is gone", () => {
