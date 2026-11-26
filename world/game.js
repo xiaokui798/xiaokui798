@@ -1990,6 +1990,14 @@ export function initGame(window) {
       const covered = bossHasCover();
       const lastFootfall = Math.floor(boss.stride / Math.PI);
       const { cue, damage, push, fire } = advanceBoss(boss, { ...player, covered }, dt);
+      if (boss.halfHealPending && boss.hp && boss.state !== "windup" && boss.state !== "attack") {
+        boss.halfHealPending = false;
+        boss.halfHealDone = true;
+        const healed = Math.min(30, 100 - player.hp);
+        player.hp += healed;
+        updateHealth();
+        showMessage(`第三管过半 · 炉火回能 · 生命 +${healed}`);
+      }
       // Ghost bookkeeping: a fresh drop (re)starts the 0.6s drain
       // from wherever the ghost currently sits; a heal or a new
       // phase (hp jumps up) snaps it straight to the real value.
@@ -2245,14 +2253,35 @@ export function initGame(window) {
       damageNumbers.push({ x: hitPoint[0], y: hitPoint[1] + 1.0, z: hitPoint[2], text: `-${damage}`, age: 0, core: true });
       if (boss.phase !== oldPhase) {
         survival.zombies.length = 0;
-        const healCap = boss.profile === COLOSSUS ? 30 : boss.phase >= 3 ? 45 : 30;
+        const healCap = boss.profile === COLOSSUS ? 30 : boss.phase >= 3 ? 60 : 30;
         const healed = Math.min(healCap, 100 - player.hp);
         player.hp += healed;
         updateHealth();
         sound.play(boss.phase === 2 ? "forge-ignite" : "forge-overload", STONE);
         showMessage(`击破第 ${oldPhase} 管血 · 生命 +${healed} · 第 ${boss.phase} 波开始`);
       }
-      else if (boss.hp) showMessage(`${profile === pulseBurst ? "爆发命中核心" : "命中核心"} · 伤害 ${damage}`);
+      else if (boss.hp) {
+        // Bar-3 half heal (batch 68, Kui's extra budget tier):
+        // crossing half of the guardian's last bar returns 30
+        // health, once per fight, with its own message. Guardian
+        // damage only lands during recovery, so the trigger
+        // cannot land inside a windup in practice; the pending
+        // flag still defers it past any windup or attack window,
+        // flushed by the frame step.
+        let note = null;
+        if (boss.profile === BOSS && boss.phase === 3 && !boss.halfHealDone
+            && boss.hp <= bossBar(boss).maxHp / 2) {
+          if (boss.state === "windup" || boss.state === "attack") boss.halfHealPending = true;
+          else {
+            boss.halfHealDone = true;
+            const healed = Math.min(30, 100 - player.hp);
+            player.hp += healed;
+            updateHealth();
+            note = `第三管过半 · 炉火回能 · 生命 +${healed}`;
+          }
+        }
+        showMessage(note ?? `${profile === pulseBurst ? "爆发命中核心" : "命中核心"} · 伤害 ${damage}`);
+      }
       else finishBoss(true);
       return;
     }

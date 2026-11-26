@@ -381,7 +381,7 @@ test("the boss arena can be won and replayed, paying its reward without touching
   assert.match(game.get("weapon-label").textContent, /石斧/);
   attack();
   assert.equal(game.get("boss-health-value").textContent, "260 / 260");
-  let overcharged = false, guardianBreakSeen = false;
+  let overcharged = false, guardianBreakSeen = false, halfHealSeen = 0, halfHealWasShown = false;
   const summonWaves = new Set();
   let jumpPrimed = false;
   const jumpQueue = [];
@@ -396,6 +396,18 @@ test("the boss arena can be won and replayed, paying its reward without touching
       assert.ok(first.classList.contains("broken") && first.classList.contains("shattering"),
         "the guardian's broken segment flashes on the break frame");
     }
+    // Bar-3 half heal (batch 68): the message's rising edge
+    // fires exactly once, in the last bar, at or below half
+    // of that bar, and never inside a windup (the callout
+    // reads a warning sentence while a move is winding up).
+    const halfShown = game.get("message").textContent.includes("第三管过半");
+    if (halfShown && !halfHealWasShown) {
+      halfHealSeen++;
+      assert.ok(game.get("boss-name").textContent.includes("第 3 / 3 管"), "the half heal fires in the last bar");
+      assert.ok(Number(game.get("boss-health-value").textContent.split(" / ")[0]) <= 200, "the half heal fires at or below half of the bar");
+      assert.ok(!/要冲|砸地|冲击波|火圈/.test(game.get("boss-callout").textContent), "the half heal never lands inside a windup");
+    }
+    halfHealWasShown = halfShown;
     // Track the guardian's helmet as it circles between attacks.
     let dx = 0, dz = 0, helmetVertices = 0, bossDistNow = 5;
     const vertices = game.actorVertices;
@@ -520,6 +532,7 @@ test("the boss arena can be won and replayed, paying its reward without touching
     if (exposed || /游荡者|突袭者|破城者/.test(game.get("target-status").textContent)) attack();
   }
   assert.ok(overcharged);
+  assert.equal(halfHealSeen, 1, "the bar-3 half heal fires exactly once");
   assert.deepEqual([...summonWaves], [1, 2, 3]);
   assert.equal(game.get("death-title").textContent, "熔炉守卫已击败");
   assert.match(game.get("death-summary").textContent, /获得：熔火核心 ×2/);
