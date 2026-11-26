@@ -2379,7 +2379,12 @@ export function initGame(window) {
 
   function drawActors(bossModel) {
     if (!survival.zombies.length && !defense.beacon && !boss) return;
-    actorMesh ??= createActorMesh(2048);
+    // 4096 quads (batch 65): a measured guardian flare frame
+    // with minions up wrote 2138 quads into the old 2048 mesh
+    // and silently lost its tail — the boss model alone is
+    // ~830, its afterimage another ~830, and telegraphs,
+    // fire zones and minions share the same pen.
+    actorMesh ??= createActorMesh(4096);
     const { vertices } = actorMesh;
     // One pen for the whole pass: the boss section (boss-render.mjs)
     // writes through it too, so the mesh's contents and order are
