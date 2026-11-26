@@ -371,7 +371,7 @@ test("the boss arena can be won and replayed, paying its reward without touching
   game.click("boss-button");
   game.grantPointerLock();
   frame();
-  assert.equal(game.get("boss-health-value").textContent, "260 / 260");
+  assert.equal(game.get("boss-health-value").textContent, "520 / 520");
   assert.equal(game.get("vitals").hidden, false);
   assert.equal(game.get("defense-hud").hidden, true);
   game.key("KeyW");
@@ -380,7 +380,7 @@ test("the boss arena can be won and replayed, paying its reward without touching
   game.release("KeyW");
   assert.match(game.get("weapon-label").textContent, /石斧/);
   attack();
-  assert.equal(game.get("boss-health-value").textContent, "260 / 260");
+  assert.equal(game.get("boss-health-value").textContent, "520 / 520");
   let overcharged = false, guardianBreakSeen = false, halfHealSeen = 0, halfHealWasShown = false;
   const summonWaves = new Set();
   let jumpPrimed = false;
@@ -404,7 +404,7 @@ test("the boss arena can be won and replayed, paying its reward without touching
     if (halfShown && !halfHealWasShown) {
       halfHealSeen++;
       assert.ok(game.get("boss-name").textContent.includes("第 3 / 3 管"), "the half heal fires in the last bar");
-      assert.ok(Number(game.get("boss-health-value").textContent.split(" / ")[0]) <= 200, "the half heal fires at or below half of the bar");
+      assert.ok(Number(game.get("boss-health-value").textContent.split(" / ")[0]) <= 250, "the half heal fires at or below half of the bar");
       assert.ok(!/要冲|砸地|冲击波|火圈/.test(game.get("boss-callout").textContent), "the half heal never lands inside a windup");
     }
     halfHealWasShown = halfShown;
@@ -545,11 +545,18 @@ test("the boss arena can be won and replayed, paying its reward without touching
   assert.equal(won.axeUnlocked, base.axeUnlocked);
   assert.deepEqual(won.dressings, base.dressings);
   assert.deepEqual(won.rareMaterials, { emberCore: 2, starShard: 0 });
+  // The live defeat still lands in the cross-run progress
+  // record (this coverage moved here from the seeded
+  // challenger test in batch 69, whose robot no longer wins
+  // at the tuned bars): defeated flag set, kill count one.
+  const progress = JSON.parse(storage.getItem(PROGRESS_KEY));
+  assert.equal(progress.bossesDefeated.boss, true);
+  assert.equal(progress.bossKills.boss, 1);
   const afterWin = storage.getItem(SAVE_KEY);
   game.click("respawn-button");
   game.grantPointerLock();
   frame();
-  assert.equal(game.get("boss-health-value").textContent, "260 / 260");
+  assert.equal(game.get("boss-health-value").textContent, "520 / 520");
   assert.equal(game.get("health-value").textContent, "100");
   game.key("Escape");
   game.click("pause-menu-button");
@@ -913,7 +920,7 @@ test("the pulse weapon can interrupt the crystal and win the colossus fight thro
   game.key("Digit8");
   frame();
   assert.equal(game.get("pulse-info").hidden, true);
-  assert.equal(game.get("boss-health-value").textContent, "260 / 260");
+  assert.equal(game.get("boss-health-value").textContent, "520 / 520");
   assert.equal(game.get("weather-status").textContent, "熔炉遗迹");
 });
 
@@ -1232,7 +1239,7 @@ test("dying to the boss writes the merged progress without touching the boss rec
     { version: 2, wave: 3, kills: 42, bossesDefeated: {}, bossKills: {}, bestWave: 3, defense: { wave: 0, cleared: false, bestWave: 0 } });
 });
 
-test("defeating the guardian records the boss in saved progress", t => {
+test("falling to the tuned guardian records no boss defeat in saved progress", t => {
   let seed = 1;
   t.mock.method(Math, "random", () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296));
   const storage = sharedStorage();
@@ -1252,8 +1259,13 @@ test("defeating the guardian records the boss in saved progress", t => {
   const jumpQueue = [];
   let prevHpBot = 100, fireStep = 0;
   let ramParity = 0, wasRamWindup = false;
+  let deepestBar = 1, halfHealSeen = false;
   for (let i = 0; i < 12000 && game.get("death-screen").hidden; i++) {
     frame();
+    const barNow = game.get("boss-name").textContent.includes("过载") ? 3
+      : game.get("boss-name").textContent.includes("烈火") ? 2 : 1;
+    if (barNow > deepestBar) deepestBar = barNow;
+    if (game.get("message").textContent.includes("第三管过半")) halfHealSeen = true;
     let dx = 0, dz = 0, helmetVertices = 0, bossDistNow = 5;
     const vertices = game.actorVertices;
     for (let v = 0; v < vertices.length; v += 12) {
@@ -1375,21 +1387,28 @@ test("defeating the guardian records the boss in saved progress", t => {
     }
     if (exposed || /游荡者|突袭者|破城者/.test(game.get("target-status").textContent)) attack();
   }
-  assert.equal(game.get("death-title").textContent, "熔炉守卫已击败");
+  // Batch 69 re-scope: at the tuned bars (520/420/500) this
+  // conservative challenger no longer wins — Kui judges the
+  // tuning by playing it himself, and this test now guards
+  // the loss path plus how deep the fight still runs: both
+  // bars break (both break heals land), the third bar's half
+  // heal fires, and the challenger takes over half of the
+  // last bar before falling (it ends at 115 / 500).
+  assert.equal(game.get("death-title").textContent, "挑战失败");
+  assert.equal(deepestBar, 3, "the challenger still breaks both bars");
+  assert.ok(halfHealSeen, "the bar-3 half heal fired during the run");
+  const finalBossHp = Number(game.get("boss-health-value").textContent.split(" / ")[0]);
+  assert.ok(finalBossHp <= 250, `the challenger took over half of the last bar: ${finalBossHp}`);
+  // A loss records no defeat and no kill for the boss, while
+  // the seeded progress around it is preserved.
   const progress = JSON.parse(storage.getItem(PROGRESS_KEY));
   assert.equal(progress.wave, 2);
-  assert.equal(progress.bossesDefeated.boss, true);
-  // The win counts as a kill, not just a defeat: the guardian's kill
-  // count goes from the seeded zero to one.
-  assert.equal(progress.bossKills.boss, 1);
-  // Returning to the menu shows the kill on the main-menu record line.
+  assert.ok(!progress.bossesDefeated.boss, "a loss must not record the boss as defeated");
+  assert.ok(!progress.bossKills.boss, "a loss must not record a boss kill");
   game.click("death-menu-button");
   const menuStatus = game.get("menu-status");
   assert.equal(menuStatus.hidden, false);
-  assert.match(menuStatus.textContent, /熔炉守卫 1 次/);
-  // This deterministic run kills no summoned minions, so the seeded kill
-  // total is preserved rather than grown; the merge adds run kills on top
-  // of the base by the same addition.
+  assert.ok(!/熔炉守卫 [1-9]/.test(menuStatus.textContent), "the menu shows no guardian kill after a loss");
   assert.ok(progress.kills >= 10, `kills preserved from the fight: ${progress.kills}`);
 });
 
@@ -1435,7 +1454,7 @@ test("a stale progress save at death offers keeping this run's progress instead"
   game.grantPointerLock();
   game.frame(0);
   assert.equal(game.get("death-screen").hidden, true);
-  assert.equal(game.get("boss-health-value").textContent, "260 / 260");
+  assert.equal(game.get("boss-health-value").textContent, "520 / 520");
 });
 
 test("the block atlas paints all nine tiles", () => {
@@ -3907,9 +3926,9 @@ test("boss health bar: segments per bar, the current one drains, broken ones go 
     }
     if (exposed || /游荡者|突袭者|破城者/.test(game.get("target-status").textContent)) attack();
     const hpNow = Number(game.get("boss-health-value").textContent.split(" / ")[0]);
-    if (!fracChecked && hpNow < 260) {
+    if (!fracChecked && hpNow < 520) {
       fracChecked = true;
-      assert.equal(segFill(segments[0]).style.width, `${Math.round(hpNow / 260 * 1000) / 10}%`);
+      assert.equal(segFill(segments[0]).style.width, `${Math.round(hpNow / 520 * 1000) / 10}%`);
     }
     advanced = game.get("boss-name").textContent.includes("第 2 / 3 管");
   }

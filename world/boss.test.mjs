@@ -180,7 +180,7 @@ test("damage only applies during recovery and defeating the boss ends its attack
   assert.equal(strikeBoss(boss, 60), 60);
   assert.equal(strikeBoss(boss, BOSS.maxHp), BOSS.maxHp - 60);
   assert.equal(boss.hits, 2);
-  for (const [phase, maxHp, expected] of [[2, 320, 18], [3, 400, 16]]) {
+  for (const [phase, maxHp, expected] of [[2, 420, 18], [3, 500, 16]]) {
     assert.equal(boss.phase, phase);
     assert.equal(boss.hp, maxHp);
     assert.equal(strikeBoss(boss, 50), 0);
@@ -501,7 +501,7 @@ test("breaking a colossus bar raises the 2 second shift and refills the next bar
 test("the bar tables carry the design values and windups respect the 0.65 floor", () => {
   assert.deepEqual(COLOSSUS.bars.map(bar => bar.hp), [700, 750, 800, 850]);
   assert.deepEqual(COLOSSUS.bars.map(bar => bar.recovery), [2.55, 2.3, 2, 1.7]);
-  assert.deepEqual(GUARDIAN_WAVES.map(wave => wave.hp), [260, 320, 400]);
+  assert.deepEqual(GUARDIAN_WAVES.map(wave => wave.hp), [520, 420, 500]);
   // Bar 4 repel: .78 windup x .78 scale would be .61 — clamped.
   const fight = createBossFight(COLOSSUS);
   fight.phase = 4;
