@@ -568,6 +568,231 @@ test("the boss arena can be won and replayed, paying its reward without touching
   assert.equal(storage.getItem(SAVE_KEY), afterWin);
 });
 
+test("boss trial: beating the guardian leaves the main save byte-identical", () => {
+  const data = new Map();
+  const storage = sharedStorage(data);
+  seedProgress(storage, { wave: 3, kills: 42, bossKills: { boss: 2, colossus: 1 } });
+  data.set(SAVE_KEY, v5SaveWithSeeds({ wheatSeed: 3, wheat: 1 }));
+  const game = mountGame({ storage, pointerLock: true });
+  const attack = () => game.get("game").emit("mousedown", { button: 0 });
+  let time = 0;
+  const frame = () => game.frame(time += 20);
+  frame();
+  // Snapshot after construction, at the menu: from here on, only
+  // the trial may run, and it must not move a single byte.
+  const beforeSave = data.get(SAVE_KEY), beforeProgress = data.get(PROGRESS_KEY);
+  game.click("trial-guardian-button");
+  game.grantPointerLock();
+  frame();
+  // The trial boss is the real tuned guardian, and the loadout
+  // is the star tier, not the player's own gear.
+  assert.equal(game.get("boss-health-value").textContent, "520 / 520");
+  assert.match(game.get("weapon-label").textContent, /断星剑/);
+  let overcharged = false, guardianBreakSeen = false, halfHealSeen = 0, halfHealWasShown = false;
+  const summonWaves = new Set();
+  let jumpPrimed = false;
+  const jumpQueue = [];
+  let prevHpBot = 100, fireStep = 0;
+  let ramParity = 0, wasRamWindup = false;
+  for (let i = 0; i < 12000 && game.get("death-screen").hidden; i++) {
+    frame();
+    if (!guardianBreakSeen && game.get("boss-name").textContent.includes("烈火")) {
+      guardianBreakSeen = true;
+      assert.equal(game.get("boss-phase-banner").textContent, "守卫进入第二管：火焰变强了！先清随从能打断它放火");
+      const first = game.get("boss-health-track").children[0];
+      assert.ok(first.classList.contains("broken") && first.classList.contains("shattering"),
+        "the guardian's broken segment flashes on the break frame");
+    }
+    // Bar-3 half heal (batch 68): the message's rising edge
+    // fires exactly once, in the last bar, at or below half
+    // of that bar, and never inside a windup (the callout
+    // reads a warning sentence while a move is winding up).
+    const halfShown = game.get("message").textContent.includes("第三管过半");
+    if (halfShown && !halfHealWasShown) {
+      halfHealSeen++;
+      assert.ok(game.get("boss-name").textContent.includes("第 3 / 3 管"), "the half heal fires in the last bar");
+      assert.ok(Number(game.get("boss-health-value").textContent.split(" / ")[0]) <= 250, "the half heal fires at or below half of the bar");
+      assert.ok(!/要冲|砸地|冲击波|火圈/.test(game.get("boss-callout").textContent), "the half heal never lands inside a windup");
+    }
+    halfHealWasShown = halfShown;
+    // Track the guardian's helmet as it circles between attacks.
+    let dx = 0, dz = 0, helmetVertices = 0, bossDistNow = 5;
+    const vertices = game.actorVertices;
+    for (let v = 0; v < vertices.length; v += 12) {
+      if (vertices[v + 1] < 7.6) continue;
+      helmetVertices++;
+      dx += vertices[v] - game.camera[0];
+      dz += vertices[v + 2] - game.camera[2];
+    }
+    bossDistNow = helmetVertices ? Math.hypot(dx, dz) / helmetVertices : 5;
+    // In bars 2-3, aim at the guardian's minions when they are
+    // the right target: while it only approaches (the dodge
+    // branches all assume the robot faces the boss, so attack
+    // charges keep boss aim), and during its recovery when a
+    // minion stands adjacent — minions camp at the guardian
+    // and their chip damage over a long bar is lethal.
+    // Low-band vertices away from the guardian's own cluster
+    // are a zombie's model.
+    if ((dx || dz) && /烈火|过载/.test(game.get("boss-name").textContent)
+      && (game.get("boss-callout").textContent.includes("守卫靠近中")
+        || game.get("boss-callout").textContent.includes("现在打"))) {
+      const cx = dx / helmetVertices + game.camera[0], cz = dz / helmetVertices + game.camera[2];
+      let zx = 0, zz = 0, zn = 0;
+      for (let v = 0; v < vertices.length; v += 12) {
+        const y = vertices[v + 1];
+        if (y < 5.2 || y > 7.1) continue;
+        if (Math.hypot(vertices[v] - cx, vertices[v + 2] - cz) < 2.2) continue;
+        zx += vertices[v] - game.camera[0];
+        zz += vertices[v + 2] - game.camera[2];
+        zn++;
+      }
+      if (zn > 30) {
+        const minionDist = Math.hypot(zx, zz) / zn;
+        if (game.get("boss-callout").textContent.includes("守卫靠近中")
+          || (minionDist < 3.2 && minionDist <= bossDistNow + 0.5)) {
+          dx = zx; dz = zz; helmetVertices = zn;
+        }
+      }
+    }
+    if (dx || dz) {
+      const turn = Math.atan2(dx, -dz) - Math.atan2(game.direction[0], -game.direction[2]);
+      game.document.emit("mousemove", { movementX: Math.max(-65, Math.min(65, Math.atan2(Math.sin(turn), Math.cos(turn)) / .0013)), movementY: 0 });
+      if (Math.hypot(dx, dz) > 1.8 * helmetVertices) game.key("KeyW");
+      else game.release("KeyW");
+    }
+    const ramWindupNow = game.get("boss-callout").textContent.includes("守卫要冲过来了");
+    if (ramWindupNow && !wasRamWindup) ramParity ^= 1;
+    wasRamWindup = ramWindupNow;
+    const exposed = game.get("boss-callout").textContent.includes("现在打");
+    const summoned = /第 (\d) \/ 3 管/.exec(game.get("boss-name").textContent);
+    if (summoned) summonWaves.add(Number(summoned[1]));
+    overcharged ||= game.get("boss-name").textContent.includes("过载");
+    const callout = game.get("boss-callout").textContent;
+    if (/火球要砸下来了|炉火坠落/.test(callout)) {
+      game.release("KeyW");
+      game.release("KeyD");
+      game.key("KeyS");
+      game.key("ShiftLeft");
+    } else if (/冲过来了|熔锤冲锋/.test(callout)) {
+      // Back away while strafing: at point-blank the guardian's
+      // own body blocks a pure sideways escape from the strip.
+      game.release("KeyW");
+      game.key("KeyS");
+      game.key(ramParity ? "KeyA" : "KeyD");
+      game.release(ramParity ? "KeyD" : "KeyA");
+      game.key("ShiftLeft");
+    } else if (/横扫来了|扇形横扫/.test(callout)) {
+      game.release("KeyW");
+      game.release("KeyS");
+      game.release("KeyA");
+      game.key("KeyD");
+      game.key("ShiftLeft");
+    } else if (exposed) {
+      game.release("KeyS");
+      game.release("KeyA");
+      game.release("KeyD");
+      if (Math.hypot(dx, dz) > 1.8 * helmetVertices) game.key("ShiftLeft");
+      else game.release("ShiftLeft");
+    } else {
+      game.release("KeyS");
+      game.release("KeyA");
+      game.key("KeyD");
+      game.release("ShiftLeft");
+    }
+    // Timed jumps, scheduled on the windup hint: the ring leaves
+    // the guardian at ~10 units/s, so from the robot's distance
+    // estimate it arrives (dist - start) / 10 seconds after the
+    // attack starts; jump 0.25s before that so the player is
+    // rising through the safe height as the band crosses. The
+    // nova's second ring follows 0.82s later (+42 frames).
+    const bossDist = bossDistNow;
+    if ((callout.includes("守卫要砸地了") || callout.includes("两圈冲击波") || callout.includes("三圈冲击波")) && !jumpPrimed) {
+      jumpPrimed = true;
+      const nova = callout.includes("两圈冲击波") || callout.includes("三圈冲击波");
+      const bar = game.get("boss-name").textContent.includes("过载") ? 3
+        : game.get("boss-name").textContent.includes("烈火") ? 2 : 1;
+      const wind = nova ? 1.35 * [1, .86, .72][bar - 1] : bar === 2 ? .35 : 1.04 * [1, .86, .72][bar - 1];
+      const arrive = (bossDist - (nova ? 1.72 : 1.35)) / 10;
+      // The combo shock (bar 2) is primed at its 0.35s gap, not a
+      // full windup: the helmet-distance estimate runs ~0.2s long
+      // there, so the jump lead grows to keep the takeoff centred
+      // in the ring's safe window.
+      const lead = bar === 2 && !nova ? .45 : .25;
+      const first = i + Math.round((wind + arrive - lead) / 0.02);
+      if (nova && bar === 3) {
+        jumpQueue.push(first - 2, first + 34, first + 72);
+      } else {
+        jumpQueue.push(first);
+        if (nova) jumpQueue.push(first + 42);
+      }
+    }
+    if (!callout.includes("砸地") && !callout.includes("冲击波") && !callout.includes("· 跳！")) jumpPrimed = false;
+    const hpBot = Number(game.get("health-value").textContent);
+    if (prevHpBot - hpBot === 1 || prevHpBot - hpBot === 2) fireStep = 25;
+    prevHpBot = hpBot;
+    if (fireStep > 0) { fireStep--; game.key("KeyA"); }
+    if (jumpQueue.length && i >= jumpQueue[0]) {
+      jumpQueue.shift();
+      game.key("Space");
+      game.release("Space");
+    }
+    if (exposed || /游荡者|突袭者|破城者/.test(game.get("target-status").textContent)) attack();
+  }
+  assert.ok(overcharged);
+  assert.deepEqual([...summonWaves], [1, 2, 3]);
+  assert.equal(game.get("death-title").textContent, "熔炉守卫已击败");
+  game.click("death-menu-button");
+  frame();
+  assert.equal(data.get(SAVE_KEY), beforeSave, "the trial win must not touch the main save");
+  assert.equal(data.get(PROGRESS_KEY), beforeProgress, "the trial win must not record a boss defeat");
+});
+
+test("boss trial: falling to the colossus leaves the main save byte-identical", () => {
+  const data = new Map();
+  const storage = sharedStorage(data);
+  seedProgress(storage, { wave: 3, kills: 42, bossKills: { boss: 2, colossus: 1 } });
+  data.set(SAVE_KEY, v5SaveWithSeeds({ wheatSeed: 3, wheat: 1 }));
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 0;
+  const frame = () => game.frame(time += 20);
+  frame();
+  const beforeSave = data.get(SAVE_KEY), beforeProgress = data.get(PROGRESS_KEY);
+  game.click("trial-colossus-button");
+  game.grantPointerLock();
+  frame();
+  assert.equal(game.get("boss-health-value").textContent, "700 / 700");
+  // Stand in the sky court's fire until the trial ends in defeat.
+  for (let i = 0; i < 15000 && game.get("death-screen").hidden; i++) frame();
+  assert.equal(game.get("death-title").textContent, "挑战失败");
+  game.click("death-menu-button");
+  frame();
+  assert.equal(data.get(SAVE_KEY), beforeSave, "the trial loss must not touch the main save");
+  assert.equal(data.get(PROGRESS_KEY), beforeProgress, "the trial loss must not touch the main progress");
+});
+
+test("boss trial: giving up from the pause menu leaves the main save byte-identical", () => {
+  const data = new Map();
+  const storage = sharedStorage(data);
+  seedProgress(storage, { wave: 3, kills: 42, bossKills: { boss: 2, colossus: 1 } });
+  data.set(SAVE_KEY, v5SaveWithSeeds({ wheatSeed: 3, wheat: 1 }));
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 0;
+  const frame = () => game.frame(time += 20);
+  frame();
+  const beforeSave = data.get(SAVE_KEY), beforeProgress = data.get(PROGRESS_KEY);
+  game.click("trial-guardian-button");
+  game.grantPointerLock();
+  for (let i = 0; i < 30; i++) frame();
+  assert.equal(game.get("boss-health-value").textContent, "520 / 520");
+  game.key("Escape");
+  frame();
+  game.click("pause-menu-button");
+  frame();
+  assert.equal(game.get("start-screen").hidden, false, "giving up lands back on the main menu");
+  assert.equal(data.get(SAVE_KEY), beforeSave, "giving up must not touch the main save");
+  assert.equal(data.get(PROGRESS_KEY), beforeProgress, "giving up must not touch the main progress");
+});
+
 test("the boss deals fatal damage to an idle target and the retry restores health", () => {
   const game = mountGame();
   game.click("boss-button");

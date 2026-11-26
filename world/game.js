@@ -33,6 +33,8 @@ export function initGame(window) {
   const defenseButton = document.querySelector("#defense-button");
   const bossButton = document.querySelector("#boss-button");
   const colossusButton = document.querySelector("#colossus-button");
+  const trialGuardianButton = document.querySelector("#trial-guardian-button");
+  const trialColossusButton = document.querySelector("#trial-colossus-button");
   const bossHud = document.querySelector("#boss-hud");
   const bossName = document.querySelector("#boss-name");
   const bossHealthValue = document.querySelector("#boss-health-value");
@@ -222,7 +224,7 @@ export function initGame(window) {
   const gl = canvas.getContext("webgl2", { antialias: true });
 
   if (!gl) {
-    startButton.disabled = defenseButton.disabled = bossButton.disabled = colossusButton.disabled = buildButton.disabled = soundButton.disabled = true;
+    startButton.disabled = defenseButton.disabled = bossButton.disabled = colossusButton.disabled = trialGuardianButton.disabled = trialColossusButton.disabled = buildButton.disabled = soundButton.disabled = true;
     menuStatus.hidden = false;
     menuStatus.textContent = "图形渲染需要启用 WebGL 2 的浏览器。";
     return;
@@ -4070,7 +4072,7 @@ export function initGame(window) {
 
   function setGraphicsStatus(notice) {
     graphicsLost = Boolean(notice);
-    startButton.disabled = defenseButton.disabled = bossButton.disabled = colossusButton.disabled = buildButton.disabled = respawnButton.disabled = graphicsLost;
+    startButton.disabled = defenseButton.disabled = bossButton.disabled = colossusButton.disabled = trialGuardianButton.disabled = trialColossusButton.disabled = buildButton.disabled = respawnButton.disabled = graphicsLost;
     resumeButton.disabled = graphicsLost || saveConflict;
     graphicsWarning.hidden = !graphicsLost;
     setText(graphicsWarning, notice);
@@ -4124,7 +4126,9 @@ export function initGame(window) {
     Object.assign(defense, { beacon: null, routes: null, seconds: 0, elapsed: 0, victory: false });
     inventoryScreen.hidden = true;
     suspendGame();
-    loadLatestSave();
+    const wasTrial = trialBossId !== null;
+    trialBossId = null;
+    loadLatestSave(wasTrial);
     deathScreen.hidden = true;
     hud.hidden = true;
     startScreen.hidden = false;
@@ -4141,8 +4145,44 @@ export function initGame(window) {
     returnToMenu();
   });
 
+  // Boss trial mode (batch 72): a throwaway campaign bound to an
+  // in-memory storage seeded with a full star-tier loadout, so a
+  // trial fight — win, loss or give-up — can never write to the
+  // main save: every campaign write during the trial lands in the
+  // Map, and leaving restores a fresh campaign over the real
+  // storage (returnToMenu force-reloads). The boss itself is the
+  // real profile object; nothing about the fight is copied.
+  let trialBossId = null;
+  function enterTrial(profile) {
+    const data = new Map();
+    const trialStorage = {
+      getItem: key => data.get(key) ?? null,
+      setItem: (key, value) => data.set(key, String(value)),
+      removeItem: key => data.delete(key)
+    };
+    data.set(SAVE_KEY, JSON.stringify({
+      version: 5, edits: [], materials: [0, 0, 0, 40, 40, 40], axeUnlocked: true,
+      dressings: { dressing: 3, bandage: 2, bigDressing: 1, bakedWheat: 2, veggieSalad: 1, stew: 1 },
+      rareMaterials: { emberCore: 4, starShard: 4 },
+      equipment: {
+        weapon: { key: "starSword", tier: "star", durability: 300 },
+        armor: { key: "starArmor", tier: "star", durability: 300 },
+        tool: { key: "starPickaxe", tier: "star", durability: 300 }
+      },
+      techUnlocked: ["workbench", "stoneGear", "emberTech", "emberGear", "starTech", "starGear", "toughness", "swiftHands", "firstAid"],
+      workbenchBuilt: true,
+      stats: { blocksMined: 0, cropsPlanted: 0, cropsHarvested: 0 },
+      seeds: { wheatSeed: 4, wheat: 4, fertilizer: 2 }, crops: {}
+    }));
+    campaign = createProgression(trialStorage, WORLD);
+    saveConflict = false;
+    trialBossId = profile.id;
+  }
+
   function startWorld(mode) {
     if (graphicsLost) return;
+    const trialProfile = mode === "trial-boss" ? BOSS : mode === "trial-colossus" ? COLOSSUS : null;
+    if (trialProfile) { enterTrial(trialProfile); mode = trialProfile.id; }
     const bossProfile = mode === COLOSSUS.id ? COLOSSUS : mode === BOSS.id ? BOSS : null;
     boss = bossProfile ? createBossFight(bossProfile) : null;
     bossGhostHp = boss?.hp ?? 0;
@@ -4216,11 +4256,13 @@ export function initGame(window) {
   defenseButton.addEventListener("click", () => startWorld("defense"));
   bossButton.addEventListener("click", () => startWorld("boss"));
   colossusButton.addEventListener("click", () => startWorld(COLOSSUS.id));
+  trialGuardianButton.addEventListener("click", () => startWorld("trial-boss"));
+  trialColossusButton.addEventListener("click", () => startWorld("trial-colossus"));
   startButton.addEventListener("click", () => startWorld("survival"));
   buildButton.addEventListener("click", () => startWorld("creative"));
   respawnButton.addEventListener("click", () => {
     if (pendingProgressChoice) { resolveProgressChoice(true); return; }
-    if (boss) { startWorld(boss.profile.id); return; }
+    if (boss) { startWorld(trialBossId ? `trial-${boss.profile.id}` : boss.profile.id); return; }
     if (campaign.stale) {
       startWorld(defense.beacon ? "defense" : "survival");
       return;
