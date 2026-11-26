@@ -34,6 +34,18 @@ test("the speed readout captures takeoff, peak, and 200ms after landing", () => 
   assert.equal(meters.landing, null);
 });
 
+test("a speedScale raises the ground speed cap by its factor, and 1 is the old cap", () => {
+  const buffed = playerAt();
+  repeat(60, buffed, { side: 1, speedScale: 1.1 });
+  nearly(Math.hypot(buffed.vx, buffed.vz), 4.15 * 1.1);
+  const sprinting = playerAt();
+  repeat(60, sprinting, { side: 1, sprint: true, speedScale: 1.1 });
+  nearly(Math.hypot(sprinting.vx, sprinting.vz), 7.1 * 1.1);
+  const plain = playerAt();
+  repeat(60, plain, { side: 1, speedScale: 1 });
+  nearly(Math.hypot(plain.vx, plain.vz), 4.15);
+});
+
 test("running accelerates, release coasts, and counter-strafing brakes sooner", () => {
   const player = playerAt();
   tick(player, { side: 1 });

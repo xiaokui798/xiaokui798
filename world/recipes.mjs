@@ -40,20 +40,43 @@ export const RECIPES = Object.freeze({
   starArmor: { name: "断星甲", cost: [[BLOCK.STONE, 10], [BLOCK.WOOD, 2], ["starShard", 2], ["emberCore", 1]], equipment: "armor", tier: "star" },
   // Ember- and star-tier pickaxes, mirroring the armor costs.
   emberPickaxe: { name: "熔火镐", cost: [[BLOCK.STONE, 8], [BLOCK.WOOD, 2], ["emberCore", 2]], equipment: "tool", tier: "ember" },
-  starPickaxe: { name: "断星镐", cost: [[BLOCK.STONE, 10], [BLOCK.WOOD, 2], ["starShard", 2], ["emberCore", 1]], equipment: "tool", tier: "star" }
+  starPickaxe: { name: "断星镐", cost: [[BLOCK.STONE, 10], [BLOCK.WOOD, 2], ["starShard", 2], ["emberCore", 1]], equipment: "tool", tier: "star" },
+  // Cooking (R4): dishes are healing recipes, so they ride the existing
+  // HEALING_KEYS road — per-recipe counts, the backpack rows and the HUD
+  // consumables line all pick them up with no second food system. The
+  // `cooking` flag is what separates them from dressings: crafting is
+  // gated on the workbench (progression.mjs canCraft, the same gate the
+  // equipment recipes use) and the backpack row offers eating, not
+  // crafting. Costs spend the farm material "wheat" (a string id, routed
+  // by progression.mjs to the farm counts) alongside block materials.
+  // Values are pinned by the R4 dispatch: no hunger, no buffs (the
+  // salad's speed buff is R5, not here).
+  bakedWheat: { name: "烤麦饼", cost: [["wheat", 2]], healing: 40, cooking: true },
+  veggieSalad: { name: "果蔬沙拉", cost: [[BLOCK.LEAF, 2], ["wheat", 1]], healing: 25, cooking: true,
+    buff: { kind: "speed", pct: 10, seconds: 30 } },
+  stew: { name: "炖菜", cost: [["wheat", 2], [BLOCK.WOOD, 1]], healing: 60, cooking: true,
+    buff: { kind: "attack", pct: 10, seconds: 30 } }
 });
 
 // Validate a recipe table (defaults to this module's own): every cost
-// entry must reference a registered block id or a rare material id, and
-// carry a positive integer count; every recipe with healing must have a
-// cost, and no two recipes may share a name. An equipment recipe names
-// one of the three slots and a non-empty tier, and must have a cost like
-// any other craftable. A string cost id is checked against the passed
-// rare-material registry when one is given (the startup check in
-// progression.mjs always passes RARE_MATERIALS); without a registry only
-// non-emptiness is checked. Returns { valid, errors } so callers can
-// report every problem at once instead of failing on the first one.
-export function validateRecipes(recipes = RECIPES, rareMaterials = null) {
+// entry must reference a registered block id or a registered string
+// material id, and carry a positive integer count; every recipe with
+// healing must have a cost, and no two recipes may share a name. An
+// equipment recipe names one of the three slots and a non-empty tier,
+// and must have a cost like any other craftable. A cooking recipe must
+// heal and have a cost (a dish that heals nothing is a dressing-table
+// bug, not a dish). A buff, when present, names one of the two buff
+// kinds (speed / attack) with a positive percent and duration. A string cost id is checked against the passed
+// string-material registries when any are given — rare materials and
+// farm materials are separate registries, so callers pass both (the
+// startup check in progression.mjs passes RARE_MATERIALS and
+// FARM_MATERIALS); without a registry only non-emptiness is checked.
+// Returns { valid, errors } so callers can report every problem at
+// once instead of failing on the first one.
+export function validateRecipes(recipes = RECIPES, ...registries) {
+  const stringMaterials = registries.length
+    ? Object.assign({}, ...registries.filter(registry => registry && typeof registry === "object"))
+    : null;
   const errors = [];
   if (!recipes || typeof recipes !== "object") return { valid: false, errors: ["配方表不是对象"] };
   const names = new Map();
@@ -76,13 +99,29 @@ export function validateRecipes(recipes = RECIPES, rareMaterials = null) {
       if (typeof id === "number") {
         if (!Object.values(BLOCK).includes(id)) errors.push(`${key}：cost 引用未注册方块 ${id}`);
       } else if (typeof id === "string") {
-        if (!id || (rareMaterials && !Object.hasOwn(rareMaterials, id))) errors.push(`${key}：cost 引用未注册材料 ${id}`);
+        if (!id || (stringMaterials && !Object.hasOwn(stringMaterials, id))) errors.push(`${key}：cost 引用未注册材料 ${id}`);
       } else {
         errors.push(`${key}：cost[${index}] 不是 [材料, 数量]`);
       }
       if (!Number.isInteger(amount) || amount <= 0) errors.push(`${key}：cost[${index}] 数量不是正整数`);
     });
     if (recipe.healing > 0 && cost.length === 0) errors.push(`${key}：回血配方没有 cost`);
+    if (recipe.cooking !== undefined) {
+      if (recipe.cooking !== true) errors.push(`${key}：cooking 必须是 true`);
+      else {
+        if (!(recipe.healing > 0)) errors.push(`${key}：烹饪配方必须有回血`);
+        if (cost.length === 0) errors.push(`${key}：烹饪配方没有 cost`);
+      }
+    }
+    if (recipe.buff !== undefined) {
+      const buff = recipe.buff;
+      if (!buff || typeof buff !== "object") errors.push(`${key}：buff 必须是对象`);
+      else {
+        if (!["speed", "attack"].includes(buff.kind)) errors.push(`${key}：buff.kind 只许 speed 或 attack（现在是 ${buff.kind}）`);
+        if (!(typeof buff.pct === "number" && buff.pct > 0)) errors.push(`${key}：buff.pct 必须是正数`);
+        if (!(typeof buff.seconds === "number" && buff.seconds > 0)) errors.push(`${key}：buff.seconds 必须是正数`);
+      }
+    }
     if (recipe.equipment !== undefined) {
       if (!["weapon", "armor", "tool"].includes(recipe.equipment)) {
         errors.push(`${key}：装备槽必须是 weapon、armor 或 tool（现在是 ${recipe.equipment}）`);

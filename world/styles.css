@@ -291,6 +291,47 @@ kbd {
 .boss-hud progress::-moz-progress-bar { background: #df784e; }
 #boss-callout { color: #f2cfaa; font-size: .82rem; text-align: center; }
 .boss-hud.vulnerable #boss-callout { color: #a6eadc; }
+.boss-hud.in-danger { background: rgba(84, 20, 12, .94); }
+.boss-hud.in-danger #boss-callout { color: #ffd9c9; }
+/* The ghost segment trails real damage: white, draining to the new
+   value over 0.6s (driven from game.js), so a hit's size reads on
+   the bar itself. The track carries the old progress margin and
+   background; the progress paints transparent so the ghost shows
+   through the not-yet-lost part. */
+.boss-health-track { position: relative; margin: .42rem 0; background: #49312d; }
+.boss-health-track progress { margin: 0; background: transparent; position: relative; }
+.boss-health-track progress::-webkit-progress-bar { background: transparent; }
+#boss-health-ghost { position: absolute; left: 0; top: 0; height: .48rem; background: rgba(255, 255, 255, .85); width: 100%; }
+/* Colossus skill chips under the health bar, in the tech tree's
+   gold "have / need" style: what the key does and whether it is
+   ready, never mixed into the status line. */
+#boss-skills { display: flex; gap: .4rem; justify-content: center; margin: 0 0 .35rem; }
+#boss-skills[hidden] { display: none; }
+.boss-skill { font-size: .74rem; padding: .14rem .5rem; border-radius: 999px; border: 1px solid rgba(240, 210, 133, .55); color: #f0d285; background: rgba(60, 44, 16, .55); font-variant-numeric: tabular-nums; }
+/* The big central warning above the crosshair: the same sentence
+   as the callout, at a size and place the eye cannot skip, in the
+   attack's own colour family. */
+#boss-warning {
+  position: absolute;
+  left: 50%;
+  top: 32%;
+  transform: translateX(-50%);
+  max-width: min(44rem, 92vw);
+  padding: .3em .75em;
+  border-radius: .5rem;
+  background: rgba(120, 18, 8, .78);
+  color: #ffe9d6;
+  font-size: 30px;
+  font-weight: 800;
+  text-align: center;
+  pointer-events: none;
+}
+/* Standing in the hazard: the whole screen edge pulses red. */
+#hud.in-danger { animation: danger-pulse .5s ease-in-out infinite alternate; }
+@keyframes danger-pulse {
+  from { box-shadow: inset 0 0 70px rgba(255, 30, 10, .30); }
+  to { box-shadow: inset 0 0 110px rgba(255, 30, 10, .62); }
+}
 .boss-mode .boss-hud {
   left: 50%;
   top: 1rem;
@@ -305,6 +346,21 @@ kbd {
 .colossus-mode .boss-hud.vulnerable #boss-callout { color: #a6eadc; }
 .colossus-mode .boss-hud.in-danger { background: rgba(64, 24, 42, .94); }
 .colossus-mode .boss-hud.in-danger #boss-callout { color: #ffd7e3; }
+.colossus-mode .boss-health-track { background: #39324f; }
+.colossus-mode #boss-warning { background: rgba(74, 16, 66, .78); color: #ffe3f4; }
+#boss-phase-banner {
+  position: absolute; left: 50%; top: 20%; z-index: 6; max-width: min(46rem, 94vw);
+  transform: translateX(-50%); text-align: center; pointer-events: none;
+  color: #ffe9d6; font-size: 36px; font-weight: 800; line-height: 1.25;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, .65);
+}
+.colossus-mode #boss-phase-banner { color: #ffe3f4; }
+/* The health bar's frame wears the phase colour (batch 49). */
+.boss-hud.phase-1 .boss-health-track { box-shadow: 0 0 0 2px rgba(223, 120, 78, .85); }
+.boss-hud.phase-2 .boss-health-track { box-shadow: 0 0 0 2px rgba(240, 210, 90, .9); }
+.boss-hud.phase-3 .boss-health-track { box-shadow: 0 0 0 2px rgba(240, 70, 50, .9); }
+.colossus-mode .boss-hud.phase-1 .boss-health-track { box-shadow: 0 0 0 2px rgba(173, 138, 237, .9); }
+.colossus-mode .boss-hud.phase-2 .boss-health-track { box-shadow: 0 0 0 2px rgba(240, 130, 220, .9); }
 .boss-mode .loadout { width: min(17rem, calc(100vw - 2rem)); }
 .boss-mode #hotbar { justify-content: center; }
 @media (max-width: 620px) {

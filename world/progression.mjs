@@ -11,7 +11,7 @@ export { BLOCK, RECIPES, RARE_MATERIALS };
 // duplicated name) fails the import instead of silently mis-crafting
 // later. Exported so tests can check the failure without a bad table.
 export function assertValidRecipes(recipes = RECIPES) {
-  const { valid, errors } = validateRecipes(recipes, RARE_MATERIALS);
+  const { valid, errors } = validateRecipes(recipes, RARE_MATERIALS, FARM_MATERIALS);
   if (!valid) throw new Error(`配方表校验失败：${errors.join("；")}`);
   return true;
 }
@@ -25,6 +25,12 @@ assertValidDurability(DURABILITY_MAX, REPAIR_COSTS, RARE_MATERIALS);
 // The healing recipes, in table order: every per-recipe dressing count
 // is keyed by one of these.
 export const HEALING_KEYS = Object.keys(RECIPES).filter(key => RECIPES[key].healing > 0);
+
+// The cooking recipes (R4), a subset of HEALING_KEYS flagged in the
+// table: dishes share the dressings' counts and useDressing road, but
+// crafting them needs the workbench and the backpack eats them instead
+// of crafting them.
+export const COOKING_KEYS = Object.keys(RECIPES).filter(key => RECIPES[key].cooking);
 
 // Boss drops, by boss id ("boss" is the forge guardian, "colossus" is
 // the star-shattering colossus): which rare material a boss win pays.
@@ -833,6 +839,12 @@ export function createProgression(storage, layout = WORLD) {
       if (node && !techUnlocked.includes(node)) return false;
       const owned = equipment[recipe.equipment];
       if (owned && EQUIPMENT_TIERS.indexOf(owned.tier) >= EQUIPMENT_TIERS.indexOf(recipe.tier)) return false;
+    } else if (recipe.cooking) {
+      // Cooking reuses the workbench gate, the way equipment does —
+      // no workbench, no dishes — with no tech node behind it. The
+      // count cap is the dressings' one: a dish is a healing item.
+      if (!workbenchBuilt) return false;
+      if ((dressingCounts[key] ?? 0) >= stackLimit) return false;
     } else if (key === "axe" ? axeUnlocked : key === "workbench" ? workbenchBuilt
       : Object.hasOwn(FARM_MATERIALS, key) ? (seeds[key] ?? 0) >= stackLimit
       : (dressingCounts[key] ?? 0) >= stackLimit) return false;

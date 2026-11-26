@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { BLOCK, LEGACY_KEY, PREVIOUS_SAVE_KEY, SAVE_KEY, V4_SAVE_KEY, V3_SAVE_KEY, SAVE_SLOT_1_KEY, SAVE_SLOT_2_KEY, V4_SLOT_1_KEY, V4_SLOT_2_KEY, PROGRESS_KEY, V1_PROGRESS_KEY, SAVE_VERSION, PROGRESS_VERSION, SAVE_MIGRATIONS, RECIPES, HEALING_KEYS, createProgression, emptyProgress, loadProgress, saveProgress, isProgressStale, recordBossKill, assertValidRecipes } from "./progression.mjs";
+import { BLOCK, LEGACY_KEY, PREVIOUS_SAVE_KEY, SAVE_KEY, V4_SAVE_KEY, V3_SAVE_KEY, SAVE_SLOT_1_KEY, SAVE_SLOT_2_KEY, V4_SLOT_1_KEY, V4_SLOT_2_KEY, PROGRESS_KEY, V1_PROGRESS_KEY, SAVE_VERSION, PROGRESS_VERSION, SAVE_MIGRATIONS, RECIPES, HEALING_KEYS, COOKING_KEYS, createProgression, emptyProgress, loadProgress, saveProgress, isProgressStale, recordBossKill, assertValidRecipes } from "./progression.mjs";
 import { BLOCK as BLOCK_FROM_REGISTRY, RECIPES as RECIPES_FROM_REGISTRY, validateRecipes } from "./recipes.mjs";
 
 function makeSharedStorage(data = new Map()) {
@@ -554,7 +554,8 @@ test("progression re-exports the recipes registry from recipes.mjs unchanged", (
   assert.equal(RECIPES, RECIPES_FROM_REGISTRY);
   assert.equal(BLOCK, BLOCK_FROM_REGISTRY);
   assert.deepEqual(Object.keys(RECIPES), ["axe", "dressing", "bandage", "bigDressing", "fertilizer", "workbench", "stoneArmor", "stonePickaxe",
-    "emberSword", "emberAxe", "starSword", "starAxe", "emberArmor", "starArmor", "emberPickaxe", "starPickaxe"]);
+    "emberSword", "emberAxe", "starSword", "starAxe", "emberArmor", "starArmor", "emberPickaxe", "starPickaxe",
+    "bakedWheat", "veggieSalad", "stew"]);
   assert.deepEqual(RECIPES, {
     axe: { name: "石斧", cost: [[BLOCK.STONE, 3], [BLOCK.WOOD, 2]] },
     dressing: { name: "树叶敷料", cost: [[BLOCK.LEAF, 2]], healing: 30 },
@@ -571,7 +572,12 @@ test("progression re-exports the recipes registry from recipes.mjs unchanged", (
     emberArmor: { name: "熔火甲", cost: [[BLOCK.STONE, 8], [BLOCK.WOOD, 2], ["emberCore", 2]], equipment: "armor", tier: "ember" },
     starArmor: { name: "断星甲", cost: [[BLOCK.STONE, 10], [BLOCK.WOOD, 2], ["starShard", 2], ["emberCore", 1]], equipment: "armor", tier: "star" },
     emberPickaxe: { name: "熔火镐", cost: [[BLOCK.STONE, 8], [BLOCK.WOOD, 2], ["emberCore", 2]], equipment: "tool", tier: "ember" },
-    starPickaxe: { name: "断星镐", cost: [[BLOCK.STONE, 10], [BLOCK.WOOD, 2], ["starShard", 2], ["emberCore", 1]], equipment: "tool", tier: "star" }
+    starPickaxe: { name: "断星镐", cost: [[BLOCK.STONE, 10], [BLOCK.WOOD, 2], ["starShard", 2], ["emberCore", 1]], equipment: "tool", tier: "star" },
+    bakedWheat: { name: "烤麦饼", cost: [["wheat", 2]], healing: 40, cooking: true },
+    veggieSalad: { name: "果蔬沙拉", cost: [[BLOCK.LEAF, 2], ["wheat", 1]], healing: 25, cooking: true,
+      buff: { kind: "speed", pct: 10, seconds: 30 } },
+    stew: { name: "炖菜", cost: [["wheat", 2], [BLOCK.WOOD, 1]], healing: 60, cooking: true,
+      buff: { kind: "attack", pct: 10, seconds: 30 } }
   });
   assert.ok(Object.isFrozen(RECIPES));
   assert.deepEqual(BLOCK, { AIR: 0, GRASS: 1, DIRT: 2, STONE: 3, WOOD: 4, LEAF: 5 });
@@ -704,14 +710,14 @@ test("a v3 save migrates its dressing number into the per-recipe object", () => 
   const storage = makeStorage([[V3_SAVE_KEY, v3]]);
   const game = createProgression(storage, line(10));
   assert.equal(game.dressings, 3);
-  assert.deepEqual(game.dressingsByRecipe, { dressing: 3, bandage: 0, bigDressing: 0 });
+  assert.deepEqual(game.dressingsByRecipe, { dressing: 3, bandage: 0, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 0 });
   // The next write upgrades the save to v5 with the object shape.
   assert.ok(game.editBlock(1, BLOCK.WOOD, BLOCK.AIR, true).saved);
   const written = JSON.parse(storage.getItem(SAVE_KEY));
   assert.equal(written.version, 5);
-  assert.deepEqual(written.dressings, { dressing: 3, bandage: 0, bigDressing: 0 });
+  assert.deepEqual(written.dressings, { dressing: 3, bandage: 0, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 0 });
   const reloaded = createProgression(storage, line(10));
-  assert.deepEqual(reloaded.dressingsByRecipe, { dressing: 3, bandage: 0, bigDressing: 0 });
+  assert.deepEqual(reloaded.dressingsByRecipe, { dressing: 3, bandage: 0, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 0 });
   assert.equal(storage.getItem(V3_SAVE_KEY), v3);
 });
 
@@ -720,7 +726,7 @@ test("a v2 save migrates its dressing number the same way", () => {
   const storage = makeStorage([[PREVIOUS_SAVE_KEY, oldSave]]);
   const game = createProgression(storage, line(10));
   assert.equal(game.dressings, 2);
-  assert.deepEqual(game.dressingsByRecipe, { dressing: 2, bandage: 0, bigDressing: 0 });
+  assert.deepEqual(game.dressingsByRecipe, { dressing: 2, bandage: 0, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 0 });
 });
 
 test("a v4 save round-trips per-recipe counts and sanitizes bad values", () => {
@@ -729,12 +735,12 @@ test("a v4 save round-trips per-recipe counts and sanitizes bad values", () => {
   const storage = makeStorage([[V4_SAVE_KEY, v4]]);
   const game = createProgression(storage, line(10));
   // Unknown keys are dropped.
-  assert.deepEqual(game.dressingsByRecipe, { dressing: 1, bandage: 2, bigDressing: 0 });
+  assert.deepEqual(game.dressingsByRecipe, { dressing: 1, bandage: 2, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 0 });
   const dirty = JSON.stringify({ version: 4, edits: [], materials: [0, 0, 10, 0, 2, 0], axeUnlocked: false,
     dressings: { dressing: -3, bandage: 2000, bigDressing: 1 } });
   const storage2 = makeStorage([[V4_SAVE_KEY, dirty]]);
   const loaded = createProgression(storage2, line(10));
-  assert.deepEqual(loaded.dressingsByRecipe, { dressing: 0, bandage: 999, bigDressing: 1 });
+  assert.deepEqual(loaded.dressingsByRecipe, { dressing: 0, bandage: 999, bigDressing: 1, bakedWheat: 0, veggieSalad: 0, stew: 0 });
 });
 
 test("crafting counts healing items per recipe and useDressing heals per key", () => {
@@ -745,16 +751,16 @@ test("crafting counts healing items per recipe and useDressing heals per key", (
   assert.ok(game.craft("bandage").saved);
   for (let i = 0; i < 3; i++) game.grantLoot();
   assert.ok(game.craft("bigDressing").saved);
-  assert.deepEqual(game.dressingsByRecipe, { dressing: 1, bandage: 1, bigDressing: 1 });
+  assert.deepEqual(game.dressingsByRecipe, { dressing: 1, bandage: 1, bigDressing: 1, bakedWheat: 0, veggieSalad: 0, stew: 0 });
   // campaign.dressings stays the dressing count only, for the existing HUD.
   assert.equal(game.dressings, 1);
-  assert.deepEqual(JSON.parse(storage.getItem(SAVE_KEY)).dressings, { dressing: 1, bandage: 1, bigDressing: 1 });
+  assert.deepEqual(JSON.parse(storage.getItem(SAVE_KEY)).dressings, { dressing: 1, bandage: 1, bigDressing: 1, bakedWheat: 0, veggieSalad: 0, stew: 0 });
   const reloaded = createProgression(storage, line(10));
-  assert.deepEqual(reloaded.dressingsByRecipe, { dressing: 1, bandage: 1, bigDressing: 1 });
+  assert.deepEqual(reloaded.dressingsByRecipe, { dressing: 1, bandage: 1, bigDressing: 1, bakedWheat: 0, veggieSalad: 0, stew: 0 });
   assert.deepEqual(reloaded.useDressing("bandage"), { saved: true, healed: 20 });
   assert.deepEqual(reloaded.useDressing("bigDressing"), { saved: true, healed: 50 });
   assert.deepEqual(reloaded.useDressing(), { saved: true, healed: 30 });
-  assert.deepEqual(reloaded.dressingsByRecipe, { dressing: 0, bandage: 0, bigDressing: 0 });
+  assert.deepEqual(reloaded.dressingsByRecipe, { dressing: 0, bandage: 0, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 0 });
   assert.equal(reloaded.useDressing("bandage"), null);
   assert.equal(reloaded.useDressing("axe"), null);
   assert.equal(reloaded.useDressing("nope"), null);
@@ -786,7 +792,7 @@ test("the 急救 tech adds 10 healing to every dressing use", () => {
 test("HEALING_KEYS lists the healing recipes in table order", () => {
   // The UI enumerates the backpack from this, so a new healing recipe
   // shows up without touching game.js.
-  assert.deepEqual(HEALING_KEYS, ["dressing", "bandage", "bigDressing"]);
+  assert.deepEqual(HEALING_KEYS, ["dressing", "bandage", "bigDressing", "bakedWheat", "veggieSalad", "stew"]);
 });
 
 test("a quota failure rolls back per-recipe dressing counts", () => {
@@ -798,7 +804,7 @@ test("a quota failure rolls back per-recipe dressing counts", () => {
   quota.name = "QuotaExceededError";
   storage.setItem = () => { throw quota; };
   assert.deepEqual(game.craft("bandage"), { saved: false, reason: "quota" });
-  assert.deepEqual(game.dressingsByRecipe, { dressing: 1, bandage: 1, bigDressing: 0 });
+  assert.deepEqual(game.dressingsByRecipe, { dressing: 1, bandage: 1, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 0 });
   assert.equal(game.count(BLOCK.WOOD), 2);
   assert.equal(game.count(BLOCK.LEAF), 1);
   assert.deepEqual(game.useDressing("bandage"), { saved: false, reason: "quota" });
@@ -810,6 +816,87 @@ test("assertValidRecipes throws on a bad table at startup", () => {
   assert.equal(assertValidRecipes(RECIPES), true);
   assert.throws(() => assertValidRecipes({ bad: { name: "坏配方", cost: [[9, 1]] } }), /配方表校验失败/);
   assert.throws(() => assertValidRecipes({ free: { name: "白嫖药", healing: 10 } }), /配方表校验失败/);
+});
+
+test("COOKING_KEYS lists the three dishes in table order", () => {
+  assert.deepEqual(COOKING_KEYS, ["bakedWheat", "veggieSalad", "stew"]);
+});
+
+test("cooking needs the workbench, spends its costs and heals per dish", () => {
+  // A v5 save with wheat in the farm counts and the blocks the dishes
+  // and the workbench spend — but no workbench yet.
+  const save = JSON.stringify({ version: 5, edits: [], materials: [0, 0, 0, 10, 10, 10], axeUnlocked: false,
+    dressings: { dressing: 0, bandage: 0, bigDressing: 0 },
+    seeds: { wheatSeed: 0, wheat: 6, fertilizer: 0 }, workbenchBuilt: false });
+  const storage = makeStorage([[SAVE_KEY, save]]);
+  const game = createProgression(storage, line(10));
+  // No workbench: every dish is locked, crafting spends nothing.
+  for (const key of COOKING_KEYS) {
+    assert.equal(game.canCraft(key), false, `${key} must need the workbench`);
+    assert.equal(game.craft(key), null);
+  }
+  assert.equal(game.count("wheat"), 6);
+  assert.equal(game.count(BLOCK.LEAF), 10);
+  // Build the workbench (stone 5 + wood 5), then each dish crafts.
+  assert.ok(game.craft("workbench").saved);
+  assert.equal(game.canCraft("bakedWheat"), true);
+  assert.ok(game.craft("bakedWheat").saved);
+  assert.equal(game.count("wheat"), 4, "烤麦饼 spends wheat 2");
+  assert.ok(game.craft("veggieSalad").saved);
+  assert.equal(game.count(BLOCK.LEAF), 8, "果蔬沙拉 spends leaves 2");
+  assert.equal(game.count("wheat"), 3, "果蔬沙拉 spends wheat 1");
+  assert.ok(game.craft("stew").saved);
+  assert.equal(game.count("wheat"), 1, "炖菜 spends wheat 2");
+  assert.equal(game.count(BLOCK.WOOD), 4, "炖菜 spends wood 1 (after the workbench's 5)");
+  assert.deepEqual(game.dressingsByRecipe, { dressing: 0, bandage: 0, bigDressing: 0, bakedWheat: 1, veggieSalad: 1, stew: 1 });
+  // Eating heals the dish's own amount; an eaten dish is gone.
+  assert.deepEqual(game.useDressing("bakedWheat"), { saved: true, healed: 40 });
+  assert.deepEqual(game.useDressing("veggieSalad"), { saved: true, healed: 25 });
+  assert.deepEqual(game.useDressing("stew"), { saved: true, healed: 60 });
+  assert.equal(game.useDressing("stew"), null);
+  // The counts survive a reload.
+  const reloaded = createProgression(storage, line(10));
+  assert.deepEqual(reloaded.dressingsByRecipe, { dressing: 0, bandage: 0, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 0 });
+});
+
+test("the 急救 tech adds 10 healing to food too", () => {
+  const save = JSON.stringify({ version: 5, edits: [], materials: [0, 0, 0, 10, 10, 0], axeUnlocked: false,
+    dressings: { dressing: 0, bandage: 0, bigDressing: 0, stew: 1 },
+    seeds: { wheatSeed: 0, wheat: 0, fertilizer: 0 }, workbenchBuilt: true });
+  const storage = makeStorage([[SAVE_KEY, save]]);
+  const game = createProgression(storage, line(10));
+  const progress = JSON.stringify({ version: 2, wave: 0, kills: 100, bossesDefeated: {}, bossKills: {},
+    bestWave: 0, defense: { wave: 0, cleared: false, bestWave: 0 } });
+  storage.setItem(PROGRESS_KEY, progress);
+  assert.ok(game.unlockTech("firstAid").saved);
+  assert.deepEqual(game.useDressing("stew"), { saved: true, healed: 70 });
+});
+
+test("validateRecipes rejects a bad cooking recipe verbatim", () => {
+  assert.deepEqual(validateRecipes({ bad: { name: "坏菜", cost: [["wheat", 1]], cooking: true } }, { wheat: "小麦" }),
+    { valid: false, errors: ["bad：烹饪配方必须有回血"] });
+  assert.deepEqual(validateRecipes({ bad: { name: "坏菜", cost: [], healing: 10, cooking: true } }),
+    { valid: false, errors: ["bad：回血配方没有 cost", "bad：烹饪配方没有 cost"] });
+  assert.deepEqual(validateRecipes({ bad: { name: "坏菜", cost: [["wheat", 1]], healing: 10, cooking: "yes" } }),
+    { valid: false, errors: ["bad：cooking 必须是 true"] });
+  assert.throws(() => assertValidRecipes({ bad: { name: "坏菜", cost: [["wheat", 1]], cooking: true } }), /配方表校验失败/);
+});
+
+test("validateRecipes rejects a bad buff verbatim", () => {
+  const dish = buff => ({ name: "试菜", cost: [["wheat", 1]], healing: 10, cooking: true, buff });
+  assert.deepEqual(validateRecipes({ bad: dish({ kind: "jump", pct: 10, seconds: 30 }) }, { wheat: "小麦" }),
+    { valid: false, errors: ["bad：buff.kind 只许 speed 或 attack（现在是 jump）"] });
+  assert.deepEqual(validateRecipes({ bad: dish({ kind: "speed", pct: 0, seconds: 30 }) }),
+    { valid: false, errors: ["bad：buff.pct 必须是正数"] });
+  assert.deepEqual(validateRecipes({ bad: dish({ kind: "attack", pct: 10, seconds: -5 }) }),
+    { valid: false, errors: ["bad：buff.seconds 必须是正数"] });
+  assert.deepEqual(validateRecipes({ bad: dish("speed") }),
+    { valid: false, errors: ["bad：buff 必须是对象"] });
+  assert.throws(() => assertValidRecipes({ bad: dish({ kind: "jump", pct: 10, seconds: 30 }) }), /配方表校验失败/);
+  // The shipped dishes pass: salad is speed, stew is attack.
+  assert.deepEqual(RECIPES.veggieSalad.buff, { kind: "speed", pct: 10, seconds: 30 });
+  assert.deepEqual(RECIPES.stew.buff, { kind: "attack", pct: 10, seconds: 30 });
+  assert.equal(RECIPES.bakedWheat.buff, undefined);
 });
 
 test("export matches the current save, and import restores a save", () => {
@@ -834,13 +921,13 @@ test("export matches the current save, and import restores a save", () => {
   assert.equal(game.count(BLOCK.WOOD), 9);
   assert.equal(game.count(BLOCK.LEAF), 3);
   assert.equal(game.axeUnlocked, true);
-  assert.deepEqual(game.dressingsByRecipe, { dressing: 2, bandage: 1, bigDressing: 0 });
+  assert.deepEqual(game.dressingsByRecipe, { dressing: 2, bandage: 1, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 0 });
   assert.deepEqual([...game.blockEdits()], [[voxelIndex(line(20), 3, 0, 0), BLOCK.WOOD]]);
   assert.equal(storage.getItem(SAVE_KEY), game.exportSave());
   assert.equal(JSON.parse(storage.getItem(SAVE_KEY)).version, 5);
   const reloaded = createProgression(storage, line(20));
   assert.equal(reloaded.count(BLOCK.WOOD), 9);
-  assert.deepEqual(reloaded.dressingsByRecipe, { dressing: 2, bandage: 1, bigDressing: 0 });
+  assert.deepEqual(reloaded.dressingsByRecipe, { dressing: 2, bandage: 1, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 0 });
   assert.deepEqual([...reloaded.blockEdits()], [[voxelIndex(line(20), 3, 0, 0), BLOCK.WOOD]]);
   // An older-version save imports too, and is re-saved as the current
   // version: v3's numeric dressings migrate to the dressing count.
@@ -848,7 +935,7 @@ test("export matches the current save, and import restores a save", () => {
     axeUnlocked: false, dressings: 2 });
   assert.deepEqual(game.importSave(v3), { imported: true });
   assert.equal(game.dressings, 2);
-  assert.deepEqual(game.dressingsByRecipe, { dressing: 2, bandage: 0, bigDressing: 0 });
+  assert.deepEqual(game.dressingsByRecipe, { dressing: 2, bandage: 0, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 0 });
   assert.equal(JSON.parse(storage.getItem(SAVE_KEY)).version, 5);
 });
 
@@ -1490,7 +1577,10 @@ test("validateRecipes rejects a bad equipment slot, a missing tier and a free eq
 
 test("validateRecipes accepts rare material costs against a registry and rejects bad ones", () => {
   const RARE = { emberCore: "熔火核心", starShard: "断星碎片" };
-  assert.deepEqual(validateRecipes(RECIPES, RARE), { valid: true, errors: [] });
+  const FARM = { wheatSeed: "小麦种子", wheat: "小麦", fertilizer: "腐叶" };
+  // The shipped table spends both registries (boss materials on the
+  // equipment, wheat on the dishes), so it validates against both.
+  assert.deepEqual(validateRecipes(RECIPES, RARE, FARM), { valid: true, errors: [] });
   assert.deepEqual(validateRecipes({ ok: { name: "好", cost: [["emberCore", 1]] } }, RARE), { valid: true, errors: [] });
   assert.deepEqual(validateRecipes({ bad: { name: "坏", cost: [["nope", 1]] } }, RARE),
     { valid: false, errors: ["bad：cost 引用未注册材料 nope"] });

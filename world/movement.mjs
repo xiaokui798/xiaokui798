@@ -115,8 +115,8 @@ function firstImpact(position, delta, getBlock, obstacle) {
   return { time: closest.time, axes: closest.faces || edgeAxis };
 }
 
-function steer(player, forward, side, sin, cos, sprint, onGround, dt) {
-  const maxSpeed = sprint ? sprintSpeed : runSpeed;
+function steer(player, forward, side, sin, cos, sprint, onGround, dt, speedScale = 1) {
+  const maxSpeed = (sprint ? sprintSpeed : runSpeed) * speedScale;
   const speed = Math.hypot(player.vx, player.vz);
   let carriedSpeed = speed;
   if (onGround && speed > epsilon) {
@@ -154,7 +154,7 @@ function steer(player, forward, side, sin, cos, sprint, onGround, dt) {
   }
 }
 
-export function stepPlayer(player, { forward, side, yaw, sprint, jump }, getBlock, obstacle, dt = PHYSICS_STEP) {
+export function stepPlayer(player, { forward, side, yaw, sprint, jump, speedScale = 1 }, getBlock, obstacle, dt = PHYSICS_STEP) {
   const sin = Math.sin(yaw), cos = Math.cos(yaw);
   const state = playerState(player);
   // Rising edge of the jump input starts the .18s buffer. Refreshing it on
@@ -165,7 +165,7 @@ export function stepPlayer(player, { forward, side, yaw, sprint, jump }, getBloc
   if (player.grounded) state.coyote = COYOTE_TIME;
   const jumped = state.buffer > 0 && (player.grounded || state.coyote > 0);
   if (jumped) state.buffer = 0;
-  steer(player, forward, side, sin, cos, sprint, player.grounded && !jumped, dt);
+  steer(player, forward, side, sin, cos, sprint, player.grounded && !jumped, dt, speedScale);
   if (jumped) player.vy = jumpSpeed;
   player.vy -= gravity * dt;
   player.grounded = false;

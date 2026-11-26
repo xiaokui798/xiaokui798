@@ -397,12 +397,12 @@ test("the boss arena can be won and replayed, paying its reward without touching
       if (Math.hypot(dx, dz) > 1.8 * helmetVertices) game.key("KeyW");
       else game.release("KeyW");
     }
-    const exposed = game.get("boss-callout").textContent.includes("现在反击");
-    const summoned = /第 (\d) \/ 3 波.*随从 [1-9]/.exec(game.get("wave-status").textContent);
+    const exposed = game.get("boss-callout").textContent.includes("现在打");
+    const summoned = /第 (\d) \/ 3 波/.exec(game.get("boss-name").textContent);
     if (summoned) summonWaves.add(Number(summoned[1]));
-    overcharged ||= game.get("wave-status").textContent.includes("过载");
+    overcharged ||= game.get("boss-name").textContent.includes("过载");
     const callout = game.get("boss-callout").textContent;
-    if (/熔锤冲锋|炉火坠落/.test(callout)) {
+    if (/冲过来了|火球要砸下来了|熔锤冲锋|炉火坠落/.test(callout)) {
       game.release("KeyW");
       game.key("KeyD");
       game.key("ShiftLeft");
@@ -410,7 +410,7 @@ test("the boss arena can be won and replayed, paying its reward without touching
       game.release("KeyD");
       game.release("ShiftLeft");
     }
-    if (!exposed && (callout === "震地波" || callout === "双环星震")) {
+    if (!exposed && (/· 跳！$/.test(callout) || callout.includes("震圈到脚下了") || callout.includes("震圈逼近"))) {
       game.key("Space");
       game.release("Space");
     }
@@ -637,8 +637,8 @@ test("the pulse weapon can interrupt the crystal and win the colossus fight thro
   for (let i = 0; i < 2200 && game.get("death-screen").hidden; i++) {
     frame();
     const callout = game.get("boss-callout").textContent;
-    secondPhase ||= game.get("wave-status").textContent.includes("裂星");
-    shifted ||= callout.includes("正在换位");
+    secondPhase ||= game.get("wave-status").textContent.includes("第二阶段");
+    shifted ||= callout.includes("换位置");
     nova ||= callout.includes("双环星震");
     if (dodge && time >= dodgeUntil) {
       game.release(dodge);
@@ -648,17 +648,17 @@ test("the pulse weapon can interrupt the crystal and win the colossus fight thro
       aimAtPart(-3);
       const label = game.get("weapon-label").textContent;
       if (label.includes("可攻击")) game.get("game").emit("mousedown", { button: 2 });
-      if (label.includes("松开右键发射") && game.get("target-status").textContent === "聚星晶体 42 / 42") {
+      if (label.includes("松开右键发射") && game.get("target-status").textContent === "金色晶体 42 / 42 · 打碎它能停掉光束") {
         game.document.emit("mouseup", { button: 2 });
         frame();
         interrupted = game.get("message").textContent.includes("三轨折光中断");
         assert.match(game.get("pulse-info").textContent, /4 \/ 6/);
-        assert.ok(game.get("boss-callout").textContent.includes("攻击青色核心"));
+        assert.ok(game.get("boss-callout").textContent.includes("发青光的核心"));
       }
       continue;
     }
     const distance = aimAtPart(-2);
-    if (callout.includes("攻击青色核心")) {
+    if (callout.includes("发青光的核心")) {
       dodged = false;
       if (game.get("target-status").textContent !== "核心暴露") continue;
       const hp = game.get("boss-health-value").textContent;
@@ -1048,9 +1048,9 @@ test("defeating the guardian records the boss in saved progress", t => {
       if (Math.hypot(dx, dz) > 1.8 * helmetVertices) game.key("KeyW");
       else game.release("KeyW");
     }
-    const exposed = game.get("boss-callout").textContent.includes("现在反击");
+    const exposed = game.get("boss-callout").textContent.includes("现在打");
     const callout = game.get("boss-callout").textContent;
-    if (/熔锤冲锋|炉火坠落/.test(callout)) {
+    if (/冲过来了|火球要砸下来了|熔锤冲锋|炉火坠落/.test(callout)) {
       game.release("KeyW");
       game.key("KeyD");
       game.key("ShiftLeft");
@@ -1058,7 +1058,7 @@ test("defeating the guardian records the boss in saved progress", t => {
       game.release("KeyD");
       game.release("ShiftLeft");
     }
-    if (!exposed && (callout === "震地波" || callout === "双环星震")) {
+    if (!exposed && (/· 跳！$/.test(callout) || callout.includes("震圈到脚下了") || callout.includes("震圈逼近"))) {
       game.key("Space");
       game.release("Space");
     }
@@ -1754,7 +1754,7 @@ test("the backpack lists every healing recipe and the HUD shows all three counts
   game.grantPointerLock();
   for (let i = 0; i < 5; i++) frame();
   // The HUD label already says 敷料, so the dressing count stands bare.
-  assert.equal(game.get("hud-dressings").textContent, "1 · 树皮绷带 1 · 树叶大敷料 1");
+  assert.equal(game.get("hud-dressings").textContent, "1 · 树皮绷带 1 · 树叶大敷料 1 · 烤麦饼 0 · 果蔬沙拉 0 · 炖菜 0");
   game.key("KeyC");
   frame();
   assert.equal(game.get("inventory-screen").hidden, false);
@@ -1769,7 +1769,7 @@ test("the backpack lists every healing recipe and the HUD shows all three counts
   assert.match(game.get("bandage-cost").textContent, /恢复 20 点生命/);
   assert.match(game.get("bigDressing-cost").textContent, /恢复 50 点生命/);
   assert.equal(game.get("inventory-dressings").textContent,
-    "树叶敷料 1 件 · 树皮绷带 1 件 · 树叶大敷料 1 件 · 当前生命 100/100");
+    "树叶敷料 1 件 · 树皮绷带 1 件 · 树叶大敷料 1 件 · 烤麦饼 0 件 · 果蔬沙拉 0 件 · 炖菜 0 件 · 当前生命 100/100");
   // At full health every use button is disabled, whatever the counts are.
   assert.equal(game.get("use-dressing").disabled, true);
   assert.equal(game.get("use-bandage").disabled, true);
@@ -1781,8 +1781,8 @@ test("the backpack lists every healing recipe and the HUD shows all three counts
   game.click("craft-bigDressing");
   game.click("craft-dressing");
   assert.equal(game.get("inventory-dressings").textContent,
-    "树叶敷料 2 件 · 树皮绷带 2 件 · 树叶大敷料 2 件 · 当前生命 100/100");
-  assert.equal(game.get("hud-dressings").textContent, "2 · 树皮绷带 2 · 树叶大敷料 2");
+    "树叶敷料 2 件 · 树皮绷带 2 件 · 树叶大敷料 2 件 · 烤麦饼 0 件 · 果蔬沙拉 0 件 · 炖菜 0 件 · 当前生命 100/100");
+  assert.equal(game.get("hud-dressings").textContent, "2 · 树皮绷带 2 · 树叶大敷料 2 · 烤麦饼 0 · 果蔬沙拉 0 · 炖菜 0");
   // One leaf left: another big dressing (4 leaves) can no longer be made,
   // and clicking its disabled button changes nothing.
   assert.equal(game.get("craft-bigDressing").disabled, true);
@@ -1927,7 +1927,7 @@ test("the pause menu exports the save and imports a file back", async () => {
   frame();
   game.click("craft-dressing");
   assert.equal(game.get("inventory-dressings").textContent,
-    "树叶敷料 2 件 · 树皮绷带 1 件 · 树叶大敷料 1 件 · 当前生命 100/100");
+    "树叶敷料 2 件 · 树皮绷带 1 件 · 树叶大敷料 1 件 · 烤麦饼 0 件 · 果蔬沙拉 0 件 · 炖菜 0 件 · 当前生命 100/100");
   game.key("KeyC");
   game.grantPointerLock();
   frame();
@@ -1956,6 +1956,7 @@ test("the pause menu exports the save and imports a file back", async () => {
   // comes back verbatim.
   assert.deepEqual(JSON.parse(data.get(SAVE_KEY)),
     { ...JSON.parse(imported), version: 5, rareMaterials: { emberCore: 0, starShard: 0 },
+      dressings: { dressing: 2, bandage: 1, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 0 },
       equipment: { weapon: null, armor: null, tool: null }, techUnlocked: [],
       workbenchBuilt: false, stats: { blocksMined: 0, cropsPlanted: 0, cropsHarvested: 0 },
       seeds: { wheatSeed: 2, wheat: 0, fertilizer: 0 }, crops: {} });
@@ -1966,7 +1967,7 @@ test("the pause menu exports the save and imports a file back", async () => {
   game.click("start-button");
   game.grantPointerLock();
   for (let i = 0; i < 5; i++) frame();
-  assert.equal(game.get("hud-dressings").textContent, "2 · 树皮绷带 1 · 树叶大敷料 0");
+  assert.equal(game.get("hud-dressings").textContent, "2 · 树皮绷带 1 · 树叶大敷料 0 · 烤麦饼 0 · 果蔬沙拉 0 · 炖菜 0");
   // A bad file changes nothing and stays paused with an error note.
   game.key("Escape");
   frame();
@@ -3094,4 +3095,452 @@ test("a crop maturing announces itself once, several at once in one line", () =>
   // It fires once: 40 more frames leave the same line in place.
   for (let i = 0; i < 40; i++) frame();
   assert.equal(game.get("message").textContent, "小麦 ×2 已成熟，到田里收割");
+});
+
+// Cooking (R4): dishes are crafted on the workbench tab and eaten from
+// the backpack tab. A v5 save with wheat and dish materials, the
+// workbench state set by the caller.
+function v5SaveForCooking({ workbenchBuilt = true, techUnlocked = [], dressings = {} } = {}) {
+  return JSON.stringify({ version: 5, edits: [], materials: [0, 0, 0, 10, 10, 10], axeUnlocked: false,
+    dressings: { dressing: 0, bandage: 0, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 0, ...dressings },
+    rareMaterials: { emberCore: 0, starShard: 0 },
+    equipment: { weapon: null, armor: null, tool: null }, techUnlocked, workbenchBuilt,
+    stats: { blocksMined: 0, cropsPlanted: 0, cropsHarvested: 0 },
+    seeds: { wheatSeed: 0, wheat: 6, fertilizer: 0 }, crops: {} });
+}
+
+test("cooking rows are locked on the workbench tab without a workbench", () => {
+  const data = new Map([[SAVE_KEY, v5SaveForCooking({ workbenchBuilt: false })]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 0;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  for (let i = 0; i < 5; i++) frame();
+  game.key("KeyC");
+  frame();
+  assert.equal(game.get("inventory-screen").hidden, false);
+  // The backpack food row: effect line only, eating disabled with no
+  // dish, and a jump button to the workbench.
+  assert.equal(game.get("bakedWheat-effect").textContent, "恢复 40 点生命 · 在工作台烹饪");
+  assert.equal(game.get("veggieSalad-effect").textContent, "恢复 25 点生命 · 移速 +10%（30 秒）");
+  assert.equal(game.get("stew-effect").textContent, "恢复 60 点生命 · 攻击 +10%（30 秒）");
+  assert.equal(game.get("use-bakedWheat").disabled, true);
+  game.click("goto-workbench-stew");
+  assert.equal(game.get("tab-workbench").hidden, false);
+  // The detail card names the dish a dish: tier line 烹饪, lock line set.
+  assert.equal(game.get("detail-name").textContent, "炖菜");
+  assert.equal(game.get("detail-tier").textContent, "烹饪");
+  assert.equal(game.get("detail-lock").textContent, "需先建造工作台");
+  assert.equal(game.get("detail-craft").disabled, true);
+  assert.match(game.get("detail-materials").innerHTML, /小麦 6\/2/);
+  assert.doesNotMatch(game.get("detail-materials").innerHTML, /undefined/);
+  // Every dish row carries the lock in its cost line and a dead button.
+  for (const key of ["bakedWheat", "veggieSalad", "stew"]) {
+    assert.equal(game.get(`craft-${key}`).disabled, true, `${key} must be uncraftable without a workbench`);
+    assert.match(game.get(`${key}-cost`).textContent, /^需先建造工作台 · /);
+  }
+  assert.equal(game.get("bakedWheat-cost").textContent, "需先建造工作台 · 小麦 6/2 · 恢复 40 点生命");
+  assert.equal(game.get("stew-cost").textContent, "需先建造工作台 · 小麦 6/2 · 木头 10/1 · 恢复 60 点生命 · 攻击 +10%（30 秒）");
+  game.key("KeyC");
+  game.grantPointerLock();
+  frame();
+  assert.equal(game.get("inventory-screen").hidden, true);
+});
+
+test("dishes craft at the workbench, eat from the backpack, and KeyH never eats food", t => {
+  let seed = 7;
+  t.mock.method(Math, "random", () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296));
+  const data = new Map([[SAVE_KEY, v5SaveForCooking()]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 0;
+  const frame = () => game.frame(time += 20);
+  const hp = () => Number(game.get("health-value").textContent);
+  game.click("start-button");
+  game.grantPointerLock();
+  for (let i = 0; i < 5; i++) frame();
+  game.key("KeyC");
+  frame();
+  game.click("tab-btn-workbench");
+  // Craft one of each dish; the cost lines lose the lock and the
+  // counts and materials move exactly by the recipes.
+  assert.equal(game.get("craft-bakedWheat").disabled, false);
+  game.click("craft-bakedWheat");
+  game.click("craft-veggieSalad");
+  game.click("craft-stew");
+  const saved = JSON.parse(data.get(SAVE_KEY));
+  assert.deepEqual(saved.dressings, { dressing: 0, bandage: 0, bigDressing: 0, bakedWheat: 1, veggieSalad: 1, stew: 1 });
+  assert.equal(saved.seeds.wheat, 1, "the three dishes spend wheat 2 + 1 + 2 of the 6");
+  assert.equal(saved.materials[5], 8, "the salad spends leaves 2");
+  assert.equal(saved.materials[4], 9, "the stew spends wood 1");
+  assert.equal(game.get("bakedWheat-cost").textContent, "小麦 1/2 · 恢复 40 点生命");
+  // At full health every eat button is disabled.
+  game.click("tab-btn-backpack");
+  for (const key of ["bakedWheat", "veggieSalad", "stew"]) assert.equal(game.get(`use-${key}`).disabled, true);
+  game.key("KeyC");
+  game.grantPointerLock();
+  frame();
+  assert.equal(game.get("inventory-screen").hidden, true);
+  // Take hits until a 40 heal fits without clamping.
+  for (let i = 0; i < 3000 && game.get("death-screen").hidden && hp() > 50; i++) frame();
+  assert.equal(game.get("death-screen").hidden, true, "the player must survive the beating");
+  assert.ok(hp() <= 60 && hp() > 0, `health must leave room for a 40 heal (now ${hp()})`);
+  // KeyH eats only the basic dressing: with none owned it heals
+  // nothing and spends no food.
+  const beforeKeyH = hp();
+  game.key("KeyH");
+  frame();
+  assert.equal(hp(), beforeKeyH, "KeyH must not eat food");
+  assert.match(game.get("hud-dressings").textContent, /烤麦饼 1 · 果蔬沙拉 1 · 炖菜 1/);
+  // Eat the baked wheat from the backpack: +40, count spent.
+  game.key("KeyC");
+  frame();
+  assert.equal(game.get("use-bakedWheat").disabled, false);
+  const beforeEat = hp();
+  game.click("use-bakedWheat");
+  assert.equal(hp(), beforeEat + 40);
+  assert.equal(game.get("inventory-notice").textContent, "生命 +40");
+  assert.match(game.get("inventory-dressings").textContent, /烤麦饼 0 件/);
+  assert.equal(game.get("use-bakedWheat").disabled, true, "no dish left: eating disables again");
+  game.key("KeyC");
+  game.grantPointerLock();
+  frame();
+  assert.equal(game.get("inventory-screen").hidden, true);
+});
+
+test("food lines show the first-aid +10, in the backpack and at the workbench", () => {
+  const data = new Map([[SAVE_KEY, v5SaveForCooking({ techUnlocked: ["firstAid"], dressings: { stew: 1 } })]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 0;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  for (let i = 0; i < 5; i++) frame();
+  game.key("KeyC");
+  frame();
+  assert.equal(game.get("stew-effect").textContent, "恢复 70 点生命 · 攻击 +10%（30 秒）");
+  game.click("tab-btn-workbench");
+  assert.equal(game.get("stew-cost").textContent, "小麦 6/2 · 木头 10/1 · 恢复 70 点生命 · 攻击 +10%（30 秒）");
+  game.key("KeyC");
+  game.grantPointerLock();
+  frame();
+  assert.equal(game.get("inventory-screen").hidden, true);
+});
+
+// Food buffs (R5): a salad's speed buff and a stew's attack buff, as
+// measured effects — the game's own speed readout and per-hit damage —
+// with refresh, coexistence, expiry and reload clearing.
+
+// Stand still and take wave-1 hits until at or below the target health.
+function takeHitsUntil(game, frame, target) {
+  const hp = () => Number(game.get("health-value").textContent);
+  for (let i = 0; i < 3000 && game.get("death-screen").hidden && hp() > target; i++) frame();
+  assert.equal(game.get("death-screen").hidden, true, "the player must survive the beating");
+  assert.ok(hp() <= target && hp() > 0, `health must drop to ${target} or below (now ${hp()})`);
+  return hp();
+}
+
+// Eat one dish from the backpack tab and close the bag again.
+function eatFromBackpack(game, frame, key) {
+  game.key("KeyC");
+  frame();
+  assert.equal(game.get("inventory-screen").hidden, false);
+  assert.equal(game.get(`use-${key}`).disabled, false, `${key} must be eatable now`);
+  game.click(`use-${key}`);
+  game.key("KeyC");
+  game.grantPointerLock();
+  frame();
+  assert.equal(game.get("inventory-screen").hidden, true);
+}
+
+// The game's own measured ground speed (the speed readout records the
+// actual velocity after every physics step), sampled at steady state
+// after a settle, walking the spawn view's proven-open eastward path.
+function measureSpeedReadout(game, frame, expected) {
+  // The spawn ground has trees: a single fixed heading can run into a
+  // trunk and read a wall-slide instead of the cap. Try the four
+  // headings in turn and keep the first that settles exactly on the
+  // expected cap; a blocked or sliding heading never reads the cap.
+  let last = 0;
+  for (const key of ["KeyD", "KeyW", "KeyA", "KeyS"]) {
+    game.key(key);
+    for (let i = 0; i < 40; i++) frame();
+    last = Number(game.get("speed-current").textContent);
+    game.release(key);
+    if (Math.abs(last - expected) < 0.005) return last;
+    for (let i = 0; i < 15; i++) frame();
+  }
+  return last;
+}
+
+// (No camera-displacement measure: the ground east of spawn is walled
+// by a hill face the player slides along, so displacement over a fixed
+// window is terrain luck. The speed readout above is the game's own
+// per-step velocity record — the same oracle the pre-existing speed
+// tests assert on — and it is exact.)
+
+// Pass game time standing still, topping up with baked wheat (the
+// buff-free staple) whenever the wave-1 walkers chew the player to
+// 50: circling or running out the clock gets the player cornered or
+// killed, while a paused bag stops both the zombies and the buff
+// clock, so only the frames outside the bag are counted.
+function passGameTime(game, frame, frames, hp) {
+  let passed = 0;
+  while (passed < frames) {
+    if (hp() <= 50) {
+      eatFromBackpack(game, frame, "bakedWheat");
+      continue;
+    }
+    frame();
+    passed++;
+  }
+}
+
+// Turn in small steps until a walker is in the crosshair AND inside
+// sword reach (the status line names zombies beyond reach too, with
+// a 超出攻击距离 hint), then swing at it — repeating like the combat
+// tests do, since a single click can land between the zombie's steps
+// — until a hit message with exactly the expected damage appears.
+// The survival sword is the stone sword (27 base damage).
+function punchWalker(game, frame, damageText) {
+  const wanted = `命中游荡者 · 伤害 ${damageText}`;
+  for (let i = 0; i < 600; i++) {
+    frame();
+    // The status line keeps its last text when the aim empties (it
+    // only hides), so a match counts only while it is visible.
+    const statusElement = game.get("target-status");
+    const status = statusElement.textContent;
+    if (!statusElement.hidden && status.includes("游荡者") && !status.includes("超出攻击距离")) {
+      game.get("game").emit("mousedown", { button: 0 });
+      if (game.get("message").textContent === wanted) return;
+    } else {
+      game.document.emit("mousemove", { movementX: 50, movementY: 0 });
+    }
+  }
+  assert.fail(`no hit with damage ${damageText} landed within 600 frames (last message: ${game.get("message").textContent})`);
+}
+
+// The whole seconds a HUD buff line currently claims.
+function buffSeconds(game, kind) {
+  const match = /还剩 (\d+) 秒/.exec(game.get(`hud-buff-${kind}`).textContent);
+  return match ? Number(match[1]) : null;
+}
+
+test("the salad's speed buff measures +10%, shows on the HUD, and expires back to exactly 4.15", t => {
+  let seed = 11;
+  t.mock.method(Math, "random", () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296));
+  const data = new Map([[SAVE_KEY, v5SaveForCooking({ dressings: { veggieSalad: 1, bakedWheat: 20 } })]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 0;
+  const frame = () => game.frame(time += 20);
+  const hp = () => Number(game.get("health-value").textContent);
+  game.click("start-button");
+  game.grantPointerLock();
+  for (let i = 0; i < 5; i++) frame();
+  assert.equal(game.get("hud-buff-speed").hidden, true);
+  takeHitsUntil(game, frame, 70);
+  eatFromBackpack(game, frame, "veggieSalad");
+  // The HUD line appears with the full 30 seconds; the attack line
+  // stays hidden — the salad carries no attack buff.
+  assert.equal(game.get("hud-buff-speed").hidden, false);
+  assert.equal(game.get("hud-buff-speed").textContent, "移速 +10% · 还剩 30 秒");
+  assert.equal(game.get("hud-buff-attack").hidden, true);
+  // The game's own speed readout — the actual velocity recorded after
+  // every physics step — sits exactly on the buffed cap.
+  assert.equal(measureSpeedReadout(game, frame, Number((4.15 * 1.1).toFixed(2))), Number((4.15 * 1.1).toFixed(2)));
+  // Run the clock out (the measures spent ~2.5s of the 30).
+  passGameTime(game, frame, 1500, hp);
+  assert.equal(game.get("hud-buff-speed").hidden, true, "the HUD line disappears at expiry");
+  assert.equal(measureSpeedReadout(game, frame, 4.15), 4.15, "expired speed falls back to exactly 4.15");
+});
+
+test("re-eating refreshes without stacking, buffs coexist, and the stew's punch hits +10% until expiry", t => {
+  let seed = 23;
+  t.mock.method(Math, "random", () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296));
+  const data = new Map([[SAVE_KEY, v5SaveForCooking({ dressings: { veggieSalad: 2, stew: 1, bakedWheat: 20 } })]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 0;
+  const frame = () => game.frame(time += 20);
+  const hp = () => Number(game.get("health-value").textContent);
+  game.click("start-button");
+  game.grantPointerLock();
+  for (let i = 0; i < 5; i++) frame();
+  takeHitsUntil(game, frame, 40);
+  eatFromBackpack(game, frame, "veggieSalad");
+  assert.equal(game.get("hud-buff-speed").textContent, "移速 +10% · 还剩 30 秒");
+  // Ten seconds of game time burn the timer down to about 20 (a frame
+  // of slack either way for the bag-close frame).
+  passGameTime(game, frame, 500, hp);
+  const midway = buffSeconds(game, "speed");
+  assert.ok(midway >= 19 && midway <= 21, `ten seconds in, the line must read ~20s left (got ${midway})`);
+  // The second salad refreshes to a full 30 — and the speed stays at
+  // +10%, never +21%: refresh, not stacking.
+  eatFromBackpack(game, frame, "veggieSalad");
+  assert.equal(game.get("hud-buff-speed").textContent, "移速 +10% · 还剩 30 秒");
+  assert.equal(measureSpeedReadout(game, frame, Number((4.15 * 1.1).toFixed(2))), Number((4.15 * 1.1).toFixed(2)),
+    "refreshed speed must stay at the +10% cap, not stack");
+  // The stew adds its own buff alongside: both HUD lines show, the
+  // speed is untouched by the attack buff, and a punch lands +10%.
+  // (The top-ups and salads may have refilled the health bar, and a
+  // full bar refuses food — take hits back down first.)
+  takeHitsUntil(game, frame, 60);
+  eatFromBackpack(game, frame, "stew");
+  assert.equal(game.get("hud-buff-speed").hidden, false);
+  assert.equal(game.get("hud-buff-attack").hidden, false);
+  assert.equal(game.get("hud-buff-attack").textContent, "攻击 +10% · 还剩 30 秒");
+  assert.equal(measureSpeedReadout(game, frame, Number((4.15 * 1.1).toFixed(2))), Number((4.15 * 1.1).toFixed(2)),
+    "the attack buff must not change the speed");
+  punchWalker(game, frame, "29.7");
+  // After both buffs expire the sword is back to its exact base 27.
+  passGameTime(game, frame, 1600, hp);
+  assert.equal(game.get("hud-buff-speed").hidden, true);
+  assert.equal(game.get("hud-buff-attack").hidden, true);
+  assert.ok(hp() > 0, "the player must still be alive after the run-out");
+  punchWalker(game, frame, "27");
+});
+
+test("buffs never reach the save: a reload starts with none", t => {
+  let seed = 31;
+  t.mock.method(Math, "random", () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296));
+  const data = new Map([[SAVE_KEY, v5SaveForCooking({ dressings: { veggieSalad: 1 } })]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const first = mountGame({ storage, pointerLock: true });
+  let time = 0;
+  const frame = () => first.frame(time += 20);
+  first.click("start-button");
+  first.grantPointerLock();
+  for (let i = 0; i < 5; i++) frame();
+  takeHitsUntil(first, frame, 70);
+  eatFromBackpack(first, frame, "veggieSalad");
+  assert.equal(first.get("hud-buff-speed").hidden, false);
+  // The save on disk carries no buff state at all.
+  assert.ok(!JSON.stringify(JSON.parse(data.get(SAVE_KEY))).includes("buff"), "the save must not mention buffs");
+  // A fresh session loading that save has no buff: HUD lines hidden,
+  // ground speed exactly the base 4.15.
+  const second = mountGame({ storage, pointerLock: true });
+  let time2 = 0;
+  const frame2 = () => second.frame(time2 += 20);
+  second.click("start-button");
+  second.grantPointerLock();
+  for (let i = 0; i < 5; i++) frame2();
+  assert.equal(second.get("hud-buff-speed").hidden, true);
+  assert.equal(second.get("hud-buff-attack").hidden, true);
+  assert.equal(measureSpeedReadout(second, frame2, 4.15), 4.15, "reloaded speed must be exactly 4.15");
+});
+
+test("boss warnings: the guardian's status line, central warning and in-danger feedback speak plainly", () => {
+  const game = mountGame({ pointerLock: true });
+  let time = 0;
+  const frame = () => game.frame(time += 20);
+  const callout = () => game.get("boss-callout").textContent;
+  game.click("boss-button");
+  game.grantPointerLock();
+  frame();
+  // The right-top line is minions + one tip; the wave lives only in
+  // the boss hud, under its new name; the debug coordinates yield.
+  assert.equal(game.get("wave-status").textContent, "场上随从 0 只 · 守卫蓄力时绕到背后打核心");
+  assert.equal(game.get("boss-name").textContent, "熔炉守卫 · 第 1 / 3 波 · 起火");
+  assert.equal(game.get("coordinates").hidden, true);
+  // The first windup (shock) puts the plain sentence in the callout
+  // and, word for word, in the big central warning.
+  let sawWindup = false;
+  for (let i = 0; i < 200 && !sawWindup; i++) {
+    frame();
+    if (callout() === "守卫要砸地了！红圈扩到你脚下时跳起来") {
+      sawWindup = true;
+      assert.equal(game.get("boss-warning").hidden, false);
+      assert.equal(game.get("boss-warning").textContent, "⚠ 守卫要砸地了！红圈扩到你脚下时跳起来");
+    }
+  }
+  assert.ok(sawWindup, "the shock windup callout must appear");
+  // The second attack is the sweep; the guardian closes to its
+  // standoff and the standing player is inside the sector, so the
+  // danger variant and both in-danger classes must engage.
+  let sawDanger = false;
+  for (let i = 0; i < 900 && !sawDanger; i++) {
+    frame();
+    if (callout() === "扇形横扫 · 你在红扇子里，从侧边跑出去") {
+      sawDanger = true;
+      assert.equal(game.get("hud").classList.contains("in-danger"), true);
+      assert.equal(game.get("boss-hud").classList.contains("in-danger"), true);
+      assert.equal(game.get("boss-warning").textContent, "⚠ 扇形横扫 · 你在红扇子里，从侧边跑出去");
+    }
+  }
+  assert.ok(sawDanger, "standing in the sweep sector must raise the danger callout");
+});
+
+test("boss warnings: the colossus shows phase and skill chips, and its meteor telegraph grows", () => {
+  const game = mountGame({ pointerLock: true });
+  let time = 0;
+  const frame = () => game.frame(time += 20);
+  const callout = () => game.get("boss-callout").textContent;
+  game.click("colossus-button");
+  game.grantPointerLock();
+  frame();
+  assert.equal(game.get("wave-status").textContent, "第一阶段");
+  assert.equal(game.get("boss-skills").hidden, false);
+  assert.equal(game.get("boss-skill-heal").textContent, "[1] 回血 · 就绪");
+  assert.equal(game.get("boss-skill-dragons").textContent, "[4] 五龙冲击 · 就绪");
+  assert.equal(game.get("coordinates").hidden, true);
+  // The meteor locks onto the standing player: the danger variant
+  // fires, and the telegraph's fill disc grows toward a rim that
+  // has promised the full circle (over a black underlay) all along.
+  const mark = { x: 16.5, z: 28.15 };
+  const spread = (want, minR, maxR) => {
+    const vertices = game.actorVertices;
+    let found = false;
+    for (let v = 0; v + 11 < vertices.length; v += 12) {
+      const [r, g, b] = [vertices[v + 3], vertices[v + 4], vertices[v + 5]];
+      if (!want(r, g, b)) continue;
+      const d = Math.hypot(vertices[v] - mark.x, vertices[v + 2] - mark.z);
+      if (d >= minR && d <= maxR) found = true;
+    }
+    return found;
+  };
+  const fillReach = () => {
+    const vertices = game.actorVertices;
+    let max = 0;
+    for (let v = 0; v + 11 < vertices.length; v += 12) {
+      if (Math.abs(vertices[v + 3] - .55) > .02 || Math.abs(vertices[v + 4] - .26) > .02 || Math.abs(vertices[v + 5] - .50) > .02) continue;
+      max = Math.max(max, Math.hypot(vertices[v] - mark.x, vertices[v + 2] - mark.z));
+    }
+    return max;
+  };
+  let early = null, dangerSeen = false;
+  for (let i = 0; i < 400 && (early === null || !dangerSeen); i++) {
+    frame();
+    if (callout() === "追星坠落 · 脚下已锁定，立刻跑开") dangerSeen = true;
+    // Standing on the mark, the danger variant replaces the windup
+    // sentence from the first frame — either text opens the windup.
+    if (early === null && (callout().includes("陨石要砸你站的地方了") || dangerSeen)) {
+      for (let j = 0; j < 8; j++) frame();
+      early = fillReach();
+      // Rim at full reach and black underlay beyond it, frame one.
+      // (The player is standing in this hazard, so the rim burns
+      // solid white instead of pulsing pink — either is the rim.)
+      assert.ok(spread((r, g, b) => (r > .9 && g > .9 && b > .9) || (r > .7 && g > .3 && g < .5 && b > .45 && b < .65), 2.6, 2.9), "the rim must promise the full circle at once");
+      assert.ok(spread((r, g, b) => r < .05 && g < .05 && b < .05, 3.0, 3.3), "the black underlay must extend past the rim");
+    }
+  }
+  assert.ok(dangerSeen, "standing on the meteor mark must raise the danger callout");
+  assert.ok(early !== null && early < 1.2, `the fill must start small (got ${early})`);
+  let late = 0;
+  for (let i = 0; i < 70 && late < 2.3; i++) { frame(); late = Math.max(late, fillReach()); }
+  assert.ok(late > 2.3 && late <= 2.86, `the fill must grow to the rim (got ${late})`);
+});
+
+test("a swung weapon reads 冷却中 while it recovers", () => {
+  const game = mountGame({ pointerLock: true });
+  game.click("start-button");
+  game.grantPointerLock();
+  game.frame(0);
+  game.get("game").emit("mousedown", { button: 0 });
+  game.frame(20);
+  assert.ok(game.get("weapon-label").textContent.includes("冷却中"));
+  assert.ok(!game.get("weapon-label").textContent.includes("收招中"));
 });

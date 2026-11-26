@@ -1,4 +1,4 @@
-import { BLOCK, RECIPES, HEALING_KEYS, BOSS_DROPS, RARE_MATERIALS, SAVE_KEY, PREVIOUS_SAVE_KEY, LEGACY_KEY, createProgression, recordBossKill } from "./progression.mjs";
+import { BLOCK, RECIPES, HEALING_KEYS, COOKING_KEYS, BOSS_DROPS, RARE_MATERIALS, SAVE_KEY, PREVIOUS_SAVE_KEY, LEGACY_KEY, createProgression, recordBossKill } from "./progression.mjs";
 import { WORLD, CHUNK_SIZE, FACES as faces, contains, voxelIndex, voxelPosition,
   seeded, generateTerrain, createChunkGrid, distanceSquared, buildChunkMesh,
   ATLAS_TILES, atlasTileFor, faceUV,
@@ -16,7 +16,7 @@ import { CROPS, FARM_MATERIALS, isMature } from "./crops.mjs";
 import { createMouseLook } from "./controls.mjs";
 import { PHYSICS_STEP, LANDING_SAMPLE_TIME, createSpeedReadout, overlapsPlayerBlock, stepPlayer } from "./movement.mjs";
 import { ARENA_PALETTE, BOSS, GUARDIAN_WAVES, COLOSSUS, BOSS_ATTACKS, buildBossTerrain, createBossFight, advanceBoss, strikeBoss, guardianBackOpen, interruptFurnace, damagePrism,
-  bossParts, posedGuardian, forgeStageParts, posedColossus, insideColossusHazard, modelFaces, modelHit, pulseViewModel, meleeViewModel, dragonImpact } from "./boss.mjs";
+  bossParts, posedGuardian, forgeStageParts, posedColossus, insideHazard, modelFaces, modelHit, pulseViewModel, meleeViewModel, dragonImpact } from "./boss.mjs";
 
 import { renderForgeCue } from "./forge-audio.mjs";
 
@@ -33,6 +33,12 @@ export function initGame(window) {
   const bossHealth = document.querySelector("#boss-health");
   const bossHealthValue = document.querySelector("#boss-health-value");
   const bossCallout = document.querySelector("#boss-callout");
+  const bossWarning = document.querySelector("#boss-warning");
+  const bossSkills = document.querySelector("#boss-skills");
+  const bossSkillHeal = document.querySelector("#boss-skill-heal");
+  const bossSkillDragons = document.querySelector("#boss-skill-dragons");
+  const bossHealthGhost = document.querySelector("#boss-health-ghost");
+  const bossPhaseBanner = document.querySelector("#boss-phase-banner");
   const menuStatus = document.querySelector("#menu-status");
   const buildButton = document.querySelector("#build-button");
   const soundButton = document.querySelector("#sound-button");
@@ -104,13 +110,35 @@ export function initGame(window) {
     inventoryDressings.parentElement?.before?.(list);
     return list;
   })();
-  healingList.innerHTML = HEALING_KEYS.filter(key => key !== "dressing").map(key => `
+  healingList.innerHTML = HEALING_KEYS.filter(key => key !== "dressing").map(key => COOKING_KEYS.includes(key) ? `
+    <div class="recipe">
+      <div><h3>${RECIPES[key].name}</h3><p id="${key}-effect"></p></div>
+      <button id="use-${key}" type="button">食用</button>
+      <button id="goto-workbench-${key}" class="secondary-button" type="button">去工作台</button>
+    </div>` : `
     <div class="recipe">
       <div><h3>${RECIPES[key].name}</h3><p id="${key}-cost"></p></div>
       <button id="craft-${key}" type="button">制作${RECIPES[key].name}</button>
       <button id="use-${key}" class="secondary-button" type="button">使用${RECIPES[key].name}</button>
     </div>`).join("");
   const healingControls = HEALING_KEYS.map(key => {
+    if (COOKING_KEYS.includes(key)) {
+      // A food row has no craft button: dishes are made on the
+      // workbench tab, eaten here. Its left line is the effect line
+      // (filled by updateInventory, first-aid bonus included), its
+      // main button eats, its secondary button jumps to the workbench
+      // tab with the dish selected.
+      const controls = {
+        cost: document.querySelector(`#${key}-effect`),
+        craft: null,
+        use: document.querySelector(`#use-${key}`),
+        goto: document.querySelector(`#goto-workbench-${key}`),
+        cooking: true
+      };
+      controls.use.addEventListener("click", () => healWithDressing(key));
+      controls.goto.addEventListener("click", () => { selectRecipe(key); selectInventoryTab("workbench"); });
+      return { key, ...controls };
+    }
     const controls = key === "dressing"
       ? { cost: dressingCost, craft: craftDressingButton, use: useDressingButton }
       : {
@@ -228,7 +256,15 @@ export function initGame(window) {
         <div><h3>${RECIPES[key].name}</h3><p id="${key}-cost"></p></div>
         <button id="craft-${key}" type="button">打造${RECIPES[key].name}</button>
       </div>`).join("")}
-    </div>`).join("")}`;
+    </div>`).join("")}
+    <div class="workbench-group">
+      <h3>烹饪</h3>
+      ${COOKING_KEYS.map(key => `
+      <div class="recipe" id="wb-row-${key}">
+        <div><h3>${RECIPES[key].name}</h3><p id="${key}-cost"></p></div>
+        <button id="craft-${key}" type="button">制作${RECIPES[key].name}</button>
+      </div>`).join("")}
+    </div>`;
   const workbenchCost = document.querySelector("#workbench-cost");
   const craftWorkbenchButton = document.querySelector("#craft-workbench");
   const axeCost = document.querySelector("#axe-cost");
@@ -245,6 +281,11 @@ export function initGame(window) {
     controls.craft.addEventListener("click", () => craftItem(key));
     return { key, ...controls };
   });
+  const cookingControls = COOKING_KEYS.map(key => {
+    const controls = { cost: document.querySelector(`#${key}-cost`), craft: document.querySelector(`#craft-${key}`) };
+    controls.craft.addEventListener("click", () => craftItem(key));
+    return { key, ...controls };
+  });
   // The selected workbench recipe drives the detail card on the right;
   // clicking a list row selects it, the row's own button crafts it.
   let selectedRecipe = "workbench";
@@ -253,7 +294,7 @@ export function initGame(window) {
     selectedRecipe = key;
     updateInventory();
   }
-  for (const key of ["workbench", "axe", ...EQUIPMENT_KEYS]) {
+  for (const key of ["workbench", "axe", ...EQUIPMENT_KEYS, ...COOKING_KEYS]) {
     document.querySelector(`#wb-row-${key}`).addEventListener("click", () => selectRecipe(key));
   }
   detailCraft.addEventListener("click", () => craftItem(selectedRecipe));
@@ -333,6 +374,27 @@ export function initGame(window) {
   sowHint.setAttribute("style", "margin: 0 0 .42rem; color: #e2e8f7; font-size: .75rem;");
   sowHint.hidden = true;
   document.querySelector("#hud")?.append?.(sowHint);
+  // The food-buff HUD lines (R5): one per buff kind, placed directly
+  // under the weapon state row in a real DOM (the harness stub has no
+  // `after`, so there they just register by id, like the sow hint).
+  // Same small print as the supplies row, inline for the same reason.
+  const buffLines = {};
+  {
+    let anchor = weaponState;
+    for (const kind of ["speed", "attack"]) {
+      const line = document.querySelector(`#hud-buff-${kind}`) ?? (() => {
+        const el = document.createElement("div");
+        el.id = `hud-buff-${kind}`;
+        return el;
+      })();
+      line.setAttribute("style", "margin: 0 0 .42rem; color: #e2e8f7; font-size: .75rem;");
+      line.hidden = true;
+      if (anchor && typeof anchor.after === "function") anchor.after(line);
+      else document.querySelector("#hud")?.append?.(line);
+      anchor = line;
+      buffLines[kind] = line;
+    }
+  }
   // Establish the initial tab state explicitly (the panels' hidden flags
   // in the markup are the browser default; the harness reads the flags
   // this call sets, so both agree the backpack tab is open).
@@ -459,6 +521,20 @@ export function initGame(window) {
   const homeWorld = generateTerrain(WORLD, BLOCK);
   const arenaWorlds = new Map();
   let world = homeWorld, boss = null;
+  // Boss health ghost (batch 48): the white segment on the boss bar
+  // that trails real damage, draining to the new value over 0.6s so
+  // the size of a hit reads on the bar itself.
+  let bossGhostHp = 0, bossGhostRate = 0;
+  // Ground decals (batch 49): short-lived dark marks a boss attack
+  // leaves on the arena floor — slam crack rings, impact scorch,
+  // the rift's torn strip, the phase-shift shock ring. Presentation
+  // only; they age in advanceWorld and draw in drawActors.
+  const groundDecals = [];
+  // The windup-end pose's ghost, kept for 0.12s after a strike.
+  let bossAfterimage = null, prevBossState = null;
+  // Phase-change show state (batch 49): the last phase updateStatus
+  // saw, and the banner it is currently holding up.
+  let bossPhaseSeen = 0, phaseBanner = null;
   let storage;
   try { storage = window.localStorage; } catch { /* A blocked store does not prevent play. */ }
   const sensitivityKey = "block-world:look-sensitivity:v1";
@@ -546,6 +622,23 @@ export function initGame(window) {
   const blockActionTime = .18;
   const player = { x: 16.5, y: 10, z: 16.5, vx: 0, vy: 0, vz: 0, grounded: false, hp: 100, hurt: 0,
     cooldown: 0, recoveryTime: 1, hitConfirm: 0, swing: 0, handAction: 0, invulnerable: 0, attackBuffered: false };
+  // Food buffs (R5): runtime only, never written to the save — a
+  // reload starts with both empty. Eating the same kind again only
+  // refreshes the timer (the percent never stacks); the two kinds run
+  // independently. The clock is game time, ticked in advanceWorld, so
+  // a paused game does not burn a buff down.
+  const buffs = {
+    speed: { pct: 0, remaining: 0 },
+    attack: { pct: 0, remaining: 0 }
+  };
+  const BUFF_LABELS = { speed: "移速", attack: "攻击" };
+  function applyBuff(buff) {
+    if (!buff) return;
+    buffs[buff.kind] = { pct: buff.pct, remaining: buff.seconds };
+  }
+  function activeBuff(kind) {
+    return buffs[kind].remaining > 0 ? buffs[kind] : null;
+  }
   const survival = { enabled: false, wave: 0, kills: 0, countdown: firstWaveDelay, zombies: [], projectiles: [],
     routes: new Int32Array(world.length), recalc: 0, goal: -1, routesDirty: true };
   const defense = { beacon: null, routes: null, seconds: 0, elapsed: 0, victory: false };
@@ -1501,8 +1594,10 @@ export function initGame(window) {
     const { radius, height } = boss ? boss.profile : BEACON;
     const obstacle = solidActor && [solidActor.x - radius, solidActor.y, solidActor.z - radius,
       solidActor.x + radius, solidActor.y + height, solidActor.z + radius];
+    const speedBuff = activeBuff("speed");
     const { jumped, landingSpeed } = stepPlayer(player, {
-      forward, side, yaw, sprint: sprinting, jump: jumpBuffer > 0
+      forward, side, yaw, sprint: sprinting, jump: jumpBuffer > 0,
+      speedScale: speedBuff ? 1 + speedBuff.pct / 100 : 1
     }, get, obstacle, dt);
     speedReadout.record(Math.hypot(player.vx, player.vz), player.grounded, jumped ? takeoffSpeed : null, dt);
     if (jumped) {
@@ -2043,6 +2138,10 @@ export function initGame(window) {
     // Floating damage numbers rise and fade over 0.9s; debris flies out
     // with gravity and is gone in 0.6s.
     for (const number of damageNumbers) number.age += dt;
+    for (const decal of groundDecals) decal.age += dt;
+    if (groundDecals.some(decal => decal.age >= decal.ttl)) {
+      groundDecals.splice(0, groundDecals.length, ...groundDecals.filter(decal => decal.age < decal.ttl));
+    }
     if (damageNumbers.some(number => number.age > .9)) {
       damageNumbers.splice(0, damageNumbers.length, ...damageNumbers.filter(number => number.age <= .9));
     }
@@ -2144,6 +2243,12 @@ export function initGame(window) {
       const covered = bossHasCover();
       const lastFootfall = Math.floor(boss.stride / Math.PI);
       const { cue, damage, push } = advanceBoss(boss, { ...player, covered }, dt);
+      // Ghost bookkeeping: a fresh drop (re)starts the 0.6s drain
+      // from wherever the ghost currently sits; a heal or a new
+      // phase (hp jumps up) snaps it straight to the real value.
+      if (boss.hp >= bossGhostHp) { bossGhostHp = boss.hp; bossGhostRate = 0; }
+      else if (!bossGhostRate) bossGhostRate = (bossGhostHp - boss.hp) / .6;
+      if (bossGhostRate) bossGhostHp = Math.max(boss.hp, bossGhostHp - bossGhostRate * dt);
       if (!cue && boss.profile === BOSS && Math.floor(boss.stride / Math.PI) > lastFootfall) sound.play("forge-step", STONE);
       if (cue) {
         let voice = cue;
@@ -2157,6 +2262,7 @@ export function initGame(window) {
         }
         sound.play(voice, STONE);
         cueGuardianFx(cue);
+        if (cue === "boss-strike") cueBossImpact();
       }
       if (damage) {
         takeDamage(damage);
@@ -2325,9 +2431,14 @@ export function initGame(window) {
       if (!pulseShot) sound.play("swing", LEAF);
       return;
     }
+    // The stew's attack buff (R5) scales every hit this swing lands,
+    // computed as damage * (100 + pct) / 100 so a 14-damage punch reads
+    // exactly 15.4, not a long float.
+    const attackBuff = activeBuff("attack");
+    const hitDamage = attackBuff ? profile.damage * (100 + attackBuff.pct) / 100 : profile.damage;
     if (boss && !aim.zombie) {
       if (aim.crystal) {
-        const remaining = damagePrism(boss, profile.damage);
+        const remaining = damagePrism(boss, hitDamage);
         if (remaining !== null) {
           wearWeaponOnHit(weapon);
           player.hitConfirm = .25;
@@ -2337,7 +2448,7 @@ export function initGame(window) {
         }
       }
       const oldPhase = boss.phase;
-      const damage = strikeBoss(boss, profile.damage, aim.weak, player);
+      const damage = strikeBoss(boss, hitDamage, aim.weak, player);
       const hitSound = boss.profile === BOSS ? "core-hit" : "hit";
       const blockedSound = boss.profile === BOSS ? "forge-armor" : "place";
       sound.play(damage ? hitSound : blockedSound, STONE);
@@ -2352,7 +2463,17 @@ export function initGame(window) {
         guardianFx.hit = Math.min(1, guardianFx.hit + (profile === pulseBurst ? 1 : .72));
         if (boss.state === "recovery") guardianFx.exposed = Math.max(guardianFx.exposed, .72);
       }
-      damageNumbers.push({ x: boss.x, y: boss.y + 3.2, z: boss.z, text: `-${damage}`, age: 0 });
+      // The floater is born at the hit point, one block above it
+      // (batch 48): the old boss-top spawn sat outside a melee
+      // player's view. Core hits render as big gold text in
+      // drawEffects, told apart by the core flag.
+      const view = renderedView;
+      const hitPoint = view && aim.distance != null
+        ? [view.origin[0] + view.direction[0] * aim.distance,
+           view.origin[1] + view.direction[1] * aim.distance,
+           view.origin[2] + view.direction[2] * aim.distance]
+        : [boss.x, boss.y + 1.6, boss.z];
+      damageNumbers.push({ x: hitPoint[0], y: hitPoint[1] + 1.0, z: hitPoint[2], text: `-${damage}`, age: 0, core: true });
       if (boss.phase !== oldPhase) {
         survival.zombies.length = 0;
         const healed = Math.min(30, 100 - player.hp);
@@ -2366,7 +2487,7 @@ export function initGame(window) {
       return;
     }
     const zombie = aim.zombie;
-    const damage = Math.min(zombie.hp, profile.damage);
+    const damage = Math.min(zombie.hp, hitDamage);
     zombie.hp -= damage;
     wearWeaponOnHit(weapon);
     player.hitConfirm = .25;
@@ -2527,6 +2648,47 @@ export function initGame(window) {
     gl.disable(gl.CULL_FACE);
     gl.depthMask(false);
     uploadActorMesh(flameMesh, used);
+    gl.depthMask(true);
+    gl.enable(gl.CULL_FACE);
+    gl.disable(gl.BLEND);
+  }
+
+  // The colossus rides on four thruster glows under its feet
+  // (batch 49); they breathe with the same 3s hover cycle that
+  // moves the body, so the lift reads as thrust, not floating.
+  let colossusGlowMesh;
+  function drawColossusThrusters() {
+    if (!boss || boss.profile !== COLOSSUS || boss.hp <= 0) return;
+    colossusGlowMesh ??= createActorMesh(64);
+    let used = 0;
+    const rightX = Math.cos(yaw), rightZ = Math.sin(yaw);
+    const upX = -rightZ * Math.sin(pitch), upZ = rightX * Math.sin(pitch), upY = Math.cos(pitch);
+    const s = Math.sin(boss.angle), c = Math.cos(boss.angle);
+    const quad = (x, y, z, size, r, g, b) => {
+      if (used + 48 > colossusGlowMesh.vertices.length) return;
+      const h = size / 2;
+      const corners = [[-h, -h], [h, -h], [h, h], [-h, h]];
+      for (const [ox, oy] of corners) {
+        colossusGlowMesh.vertices[used++] = x + rightX * ox + upX * oy;
+        colossusGlowMesh.vertices[used++] = y + upY * oy;
+        colossusGlowMesh.vertices[used++] = z + rightZ * ox + upZ * oy;
+        colossusGlowMesh.vertices[used++] = r; colossusGlowMesh.vertices[used++] = g; colossusGlowMesh.vertices[used++] = b;
+        colossusGlowMesh.vertices[used++] = 0; colossusGlowMesh.vertices[used++] = 0; colossusGlowMesh.vertices[used++] = 1;
+        colossusGlowMesh.vertices[used++] = -10;
+        colossusGlowMesh.vertices[used++] = 0; colossusGlowMesh.vertices[used++] = 0;
+      }
+    };
+    for (let i = 0; i < 4; i++) {
+      const ox = (i % 2 ? .85 : -.85), oz = (i < 2 ? .55 : -.55);
+      const stretch = .5 + .5 * Math.sin(boss.elapsed * (2 * Math.PI / 3) + i * 1.7);
+      quad(boss.x + ox * c + oz * s, boss.y + .14, boss.z - ox * s + oz * c,
+        .26 + .14 * stretch, .42 * .8, .50 * .8, 1 * .8);
+    }
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);
+    gl.disable(gl.CULL_FACE);
+    gl.depthMask(false);
+    uploadActorMesh(colossusGlowMesh, used);
     gl.depthMask(true);
     gl.enable(gl.CULL_FACE);
     gl.disable(gl.BLEND);
@@ -2728,7 +2890,7 @@ export function initGame(window) {
       // before it starts using that wave's attacks.
       for (let i = 0; i < 24; i++) {
         const angle = i / 24 * Math.PI * 2 + boss.elapsed * 4;
-        const radius = .7 + (1 - boss.phaseShift / .85) * 1.45;
+        const radius = .7 + (1 - boss.phaseShift / 1.2) * 1.45;
         glow(boss.x + Math.sin(angle) * radius, boss.y + 1.55 + (i % 3) * .16,
           boss.z + Math.cos(angle) * radius, .065 + (i % 4) * .018, .86, .08);
       }
@@ -2804,6 +2966,22 @@ export function initGame(window) {
         glow(action.x + s * distance + c * side, boss.y + .35 + (i % 4) * .12,
           action.z + c * distance - s * side, .10 + (18 - i) * .004, .58, i * .025);
       }
+      // Dust puffs kicked up along the path (batch 49): a fat, dim
+      // puff roughly every step of the charge.
+      for (let i = 0; i < 10; i++) {
+        const distance = Math.max(0, action.travelled - i * .8);
+        glow(action.x + s * distance, boss.y + .20, action.z + c * distance, .34, .16);
+      }
+    }
+    // Sweep sparks (batch 49): once the white arc band has passed,
+    // the sector rim sheds a row of sparks for 0.3s into recovery.
+    if (action?.kind === "sweep" && (boss.state === "attack"
+      || (boss.state === "recovery" && boss.time > GUARDIAN_WAVES[boss.phase - 1].recovery - .3))) {
+      const plan = BOSS_ATTACKS.sweep;
+      for (let i = 0; i < 14; i++) {
+        const a = action.angle - plan.arc + (i / 13) * plan.arc * 2;
+        glow(boss.x + Math.sin(a) * plan.reach * .92, boss.y + .32, boss.z + Math.cos(a) * plan.reach * .92, .06, .8);
+      }
     }
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE);
@@ -2817,7 +2995,7 @@ export function initGame(window) {
 
   function drawActors(bossModel) {
     if (!survival.zombies.length && !defense.beacon && !boss) return;
-    actorMesh ??= createActorMesh(1700);
+    actorMesh ??= createActorMesh(2048);
     const { vertices } = actorMesh;
     let used = 0;
     function box(actor, s, c, x, y, z, width, height, depth, red, green, blue) {
@@ -2850,6 +3028,7 @@ export function initGame(window) {
     function groundArc(action, inner, outer, span, y, color) {
       const start = action.angle - span / 2;
       const pieces = Math.ceil(64 * span / (2 * Math.PI));
+      if (used + pieces * 48 > vertices.length) return;
       function vertex(angle, radius) {
         vertices.set([action.x + Math.sin(angle) * radius, y, action.z + Math.cos(angle) * radius,
           ...color, 0, 1, 0, 0, 0, 0], used);
@@ -2864,6 +3043,7 @@ export function initGame(window) {
       }
     }
     function groundStrip(action, left, right, length, y, color) {
+      if (used + 48 > vertices.length) return;
       const s = Math.sin(action.angle), c = Math.cos(action.angle);
       for (const [side, forward] of [[left, 0], [right, 0], [right, length], [left, length]]) {
         vertices.set([action.x + c * side + s * forward, y, action.z - s * side + c * forward,
@@ -2871,80 +3051,230 @@ export function initGame(window) {
         used += 12;
       }
     }
+    // A vertical light pillar (batch 48): an 8-sided open prism over
+    // a landing mark, readable at eye level — no looking down for
+    // the ring. Half-brightness rim colour stands in for translucency
+    // in this opaque mesh.
+    function groundPillar(x, z, radius, height, y, color) {
+      if (used + 8 * 48 > vertices.length) return;
+      function vertex(angle, top) {
+        vertices.set([x + Math.sin(angle) * radius, y + (top ? height : 0), z + Math.cos(angle) * radius,
+          ...color, 0, 1, 0, 0, 0, 0], used);
+        used += 12;
+      }
+      for (let i = 0; i < 8; i++) {
+        const a = i / 8 * 2 * Math.PI, b = (i + 1) / 8 * 2 * Math.PI;
+        vertex(a, 0);
+        vertex(b, 0);
+        vertex(b, 1);
+        vertex(a, 1);
+      }
+    }
     if (boss) {
       const s = Math.sin(boss.angle), c = Math.cos(boss.angle);
+      // Release afterimage (batch 49): when a windup lets go, the
+      // pose it left keeps a dim ghost for 0.12s behind the strike.
+      if (bossModel && prevBossState === "windup" && boss.state === "attack" && !bossAfterimage) {
+        bossAfterimage = { parts: bossModel.map(part => ({ ...part, color: part.color.map(v => v * .38) })), until: boss.elapsed + .12 };
+      }
+      if (bossAfterimage) {
+        if (boss.elapsed < bossAfterimage.until) used = appendModel(vertices, used, bossAfterimage.parts, 0);
+        else bossAfterimage = null;
+      }
+      prevBossState = boss.state;
       if (bossModel) used = appendModel(vertices, used, bossModel, boss.hurt);
       else bossParts(boss, (...part) => box(boss, s, c, ...part));
       if (boss.attack && (boss.state === "windup" || boss.state === "attack")) {
         const action = boss.attack, plan = BOSS_ATTACKS[action.kind];
         const striking = boss.state === "attack";
         const cold = boss.profile === COLOSSUS;
-        const edge = cold ? (striking ? [1, .75, .87] : [1, .45, .64])
-          : striking ? [1, .61, .20] : [.99, .29, .12];
-        const heat = cold ? (striking ? [.75, .28, .57] : [.42, .19, .39])
-          : striking ? [.93, .33, .10] : [.49, .17, .12];
+        // Batch 48 telegraph paint, three layers on every shape: a
+        // black underlay wider than the rim (so the shape separates
+        // from the arena's own decoration), a brightened fill that
+        // grows with the windup, and a rim that pulses faster as the
+        // release nears — flashing white in the last quarter second,
+        // solid white while the player stands inside the hazard.
+        // The rim always draws the final shape from the first frame;
+        // the fill growing to meet it is the clock.
+        const progress = striking ? 1 : 1 - boss.time / action.windup;
+        const baseEdge = cold ? [1, .45, .64] : [.99, .29, .12];
+        const fill = cold ? [.55, .26, .50] : [.62, .22, .13];
+        const heat = striking ? (cold ? [.75, .28, .57] : [.93, .33, .10]) : fill;
+        const under = [.015, .015, .02];
+        const underlay = .3;
+        let edge = striking ? (cold ? [1, .75, .87] : [1, .61, .20]) : baseEdge;
+        if (!striking) {
+          if (boss.time <= .25) edge = Math.sin(boss.elapsed * 40) > 0 ? [1, 1, 1] : baseEdge;
+          else {
+            const pulse = .75 + .25 * Math.sin(boss.elapsed * (2 + 6 * progress) * 2 * Math.PI);
+            edge = baseEdge.map(v => v * pulse);
+          }
+        }
+        if (!finished && insideHazard(boss, { ...player, covered: bossHasCover() })) edge = [1, 1, 1];
         const full = 2 * Math.PI;
         const y = boss.y + .025;
-        if (action.kind === "prism") {
-          const rim = striking ? [1, .88, .57] : [1, .65, .32];
-          const fill = striking ? [1, .53, .23] : [.30, .17, .19];
-          for (const track of plan.tracks) {
-            const left = track - plan.width, right = track + plan.width;
-            groundStrip(action, left, right, plan.reach, y, fill);
-            groundStrip(action, left, left + .11, plan.reach, y + .017, rim);
-            groundStrip(action, right - .11, right, plan.reach, y + .017, rim);
-            if (striking) {
-              groundStrip(action, track - .25, track + .25, plan.reach, y + .17, rim);
-            } else {
-              const offset = plan.reach * (1 - boss.time / action.windup);
-              groundStrip({ ...action, x: action.x + s * offset, z: action.z + c * offset },
-                track - .82, track + .82, Math.min(1.5, plan.reach - offset), y + .03, rim);
+        function telegraphStrip(stripAction, left, right, length, fillColor, rimColor) {
+          groundStrip(stripAction, left - underlay, right + underlay, length + underlay, y - .012, under);
+          const grown = Math.max(.05, length * progress);
+          const segments = Math.max(1, Math.round(grown));
+          for (let i = 0; i < segments; i++) {
+            const from = grown * i / segments, to = grown * (i + 1) / segments;
+            const seg = { ...stripAction, x: stripAction.x + Math.sin(stripAction.angle) * from, z: stripAction.z + Math.cos(stripAction.angle) * from };
+            groundStrip(seg, left, right, to - from, y, i % 2 ? fillColor.map(v => v * .7) : fillColor);
+          }
+          groundStrip(stripAction, left, left + .13, length, y + .017, rimColor);
+          groundStrip(stripAction, right - .13, right, length, y + .017, rimColor);
+          // Chevrons scroll outward along both edges: the way out
+          // of a strip is sideways, drawn on the strip itself.
+          const phase = (boss.elapsed * 2.4) % 1.2;
+          for (let d = phase; d < length; d += 1.2) {
+            for (const sideSign of [-1, 1]) {
+              const edgeCoord = sideSign < 0 ? left : right;
+              const base = { ...stripAction,
+                x: stripAction.x + Math.sin(stripAction.angle) * d + Math.cos(stripAction.angle) * edgeCoord,
+                z: stripAction.z + Math.cos(stripAction.angle) * d - Math.sin(stripAction.angle) * edgeCoord,
+                angle: stripAction.angle + sideSign * Math.PI / 2 };
+              groundStrip(base, -.13, .13, .45, y + .02, rimColor);
             }
+          }
+        }
+        function telegraphCircle(circle, radius, fillColor, rimColor) {
+          groundArc(circle, 0, radius + underlay, full, y - .012, under);
+          groundArc(circle, 0, Math.max(.05, radius * progress), full, y, fillColor);
+          groundArc(circle, radius - .16, radius, full, y + .017, rimColor);
+        }
+        // Four tabs circling inside a landing mark, pointing the
+        // way out of the circle.
+        function escapeTabs(cx, cz, radius, rimColor) {
+          for (let i = 0; i < 4; i++) {
+            const a = boss.elapsed * 1.5 + i * Math.PI / 2;
+            const tab = { x: cx + Math.sin(a) * radius * .6, z: cz + Math.cos(a) * radius * .6, angle: a };
+            groundStrip(tab, -.16, .16, .5, y + .02, rimColor);
+          }
+        }
+        // A shrinking ring at the player's own feet: its radius is
+        // the gap between an incoming wavefront and the player
+        // (clamped to 6), and it turns white in the last 0.35s
+        // before the wave arrives — jump when it does.
+        function countdownRing(center, radii, speed) {
+          const distance = Math.hypot(player.x - center.x, player.z - center.z);
+          for (const radius of radii) {
+            const gap = distance - radius;
+            if (gap < -.6 || gap > 6.6) continue;
+            const ring = Math.max(.12, Math.min(6, gap));
+            const at = { x: player.x, z: player.z, angle: 0 };
+            groundArc(at, ring - .10, ring + .10, full, y + .03, gap / speed < .35 ? [1, 1, 1] : edge);
+          }
+        }
+        if (action.kind === "prism") {
+          const rim = striking ? [1, .88, .57] : edge;
+          const prismFill = striking ? [1, .53, .23] : fill;
+          for (const track of plan.tracks) {
+            telegraphStrip(action, track - plan.width, track + plan.width, plan.reach, prismFill, rim);
+            if (striking) groundStrip(action, track - .25, track + .25, plan.reach, y + .17, rim);
           }
         } else if (action.kind === "nova") {
           if (!striking) {
-            groundArc(action, 1.48, 1.93, full, y, heat);
-            groundArc(action, 2.34, 2.52, full, y, edge);
+            groundArc(action, 0, 2.52 + underlay, full, y - .012, under);
+            groundArc(action, 0, 2.52 * progress, full, y, heat);
+            groundArc(action, 1.48, 1.93, full, y + .01, heat);
+            groundArc(action, 2.34, 2.52, full, y + .017, edge);
           } else {
             for (const wave of action.waves) {
               if (wave.radius === null) continue;
               groundArc(action, wave.radius - .52, wave.radius + .52, full, y, heat);
               groundArc(action, wave.radius + .34, wave.radius + .52, full, y + .017, edge);
             }
+            countdownRing(action, action.waves.filter(wave => wave.radius !== null).map(wave => wave.radius),
+              (plan.reach - 1.72) / (plan.duration - .82));
           }
         } else if (action.kind === "ram") {
-          groundStrip(action, -plan.width, plan.width, action.length, y, heat);
-          groundStrip(action, -plan.width, -.92, action.length, y + .02, edge);
-          groundStrip(action, .92, plan.width, action.length, y + .02, edge);
+          telegraphStrip(action, -plan.width, plan.width, action.length, heat, edge);
         } else if (action.marks) {
           for (const mark of action.marks) {
             const circle = { ...mark, angle: 0 };
-            groundArc(circle, 0, plan.reach, full, y, heat);
-            groundArc(circle, plan.reach - .16, plan.reach, full, y + .02, edge);
+            telegraphCircle(circle, plan.reach, heat, edge);
+            groundPillar(mark.x, mark.z, plan.reach * .92, 9, y, edge.map(v => v * .5));
+            escapeTabs(mark.x, mark.z, plan.reach, edge);
           }
         } else if (action.kind === "rift") {
-          groundStrip(action, -action.width, action.width, plan.reach, y, heat);
-          groundStrip(action, -action.width, -action.width + .13, plan.reach, y + .017, edge);
-          groundStrip(action, action.width - .13, action.width, plan.reach, y + .017, edge);
+          telegraphStrip(action, -action.width, action.width, plan.reach, heat, edge);
           if (striking) groundStrip(action, -.26, .26, plan.reach, y + .017, edge);
         } else if (action.kind === "shock") {
-          const radius = action.radius;
-          groundArc(action, Math.max(0, radius - .45), radius + .45, full, y, heat);
-          groundArc(action, radius + .26, radius + .44, full, y + .017, edge);
-          if (!striking) groundArc(action, 2.05, 2.20, full, y, edge);
-        } else {
-          const span = action.kind === "sweep" ? plan.arc * 2 : full;
-          groundArc(action, 0, plan.reach, span, y, heat);
-          groundArc(action, plan.reach - .17, plan.reach, span, y + .017, edge);
-          if (action.kind === "flare" || action.kind === "meteor") groundArc(action, plan.reach * .52, plan.reach * .58, span, y + .017, edge);
-          if (action.kind === "meteor") {
-            const altitude = striking ? .08 : .16 + 8.5 * (boss.time / action.windup) ** 1.6;
-            const crystal = { x: action.x, y: y + altitude, z: action.z, hurt: 0 };
-            const angle = boss.elapsed * 3;
-            const sin = Math.sin(angle), cos = Math.cos(angle);
-            box(crystal, sin, cos, -.60, .20, -.60, 1.20, .84, 1.20, ...edge);
-            box(crystal, sin, cos, -.32, 0, -.32, .64, 1.38, .64, ...heat);
+          if (!striking) {
+            groundArc(action, 0, 2.20 + underlay, full, y - .012, under);
+            groundArc(action, 0, 2.20 * progress, full, y, heat);
+            groundArc(action, 2.05, 2.20, full, y + .017, edge);
+          } else {
+            const radius = action.radius;
+            groundArc(action, Math.max(0, radius - .45), radius + .45, full, y, heat);
+            groundArc(action, radius + .26, radius + .44, full, y + .017, edge);
+            countdownRing(action, [radius], (plan.reach - 1.35) / plan.duration);
           }
+        } else {
+          const isSweep = action.kind === "sweep";
+          if (isSweep) {
+            const span = plan.arc * 2 * (striking ? 1 : Math.max(.12, progress));
+            groundArc(action, 0, plan.reach + underlay, plan.arc * 2, y - .012, under);
+            groundArc(action, 0, plan.reach * (.28 + .72 * progress), span, y, heat);
+            groundArc(action, plan.reach - .17, plan.reach, plan.arc * 2, y + .017, edge);
+            // Three radial arrows point out of the sector: the
+            // short way out is sideways, drawn on the ground.
+            if (progress > .3) for (const off of [-plan.arc / 2, 0, plan.arc / 2]) {
+              const a = action.angle + off;
+              const arrow = { x: action.x + Math.sin(a) * plan.reach * .34, z: action.z + Math.cos(a) * plan.reach * .34, angle: a };
+              groundStrip(arrow, -.15, .15, plan.reach * .58, y + .02, edge.map(v => v * (.4 + .6 * progress)));
+            }
+            // The strike itself sweeps a white arc band across the
+            // sector, leading edge to trailing edge (batch 49).
+            if (striking) {
+              const sweepCenter = action.angle - plan.arc + 2 * plan.arc * (1 - boss.time / plan.duration);
+              groundArc({ ...action, angle: sweepCenter }, plan.reach * .55, plan.reach * .55 + .5, .5, y + .05, [1, 1, 1]);
+            }
+          } else {
+            const circle = { ...action, angle: 0 };
+            telegraphCircle(circle, plan.reach, heat, edge);
+            if (action.kind === "meteor") {
+              groundPillar(action.x, action.z, plan.reach * .92, 9, y, edge.map(v => v * .5));
+              escapeTabs(action.x, action.z, plan.reach, edge);
+              const altitude = striking ? .08 : .16 + 8.5 * (boss.time / action.windup) ** 1.6;
+              const crystal = { x: action.x, y: y + altitude, z: action.z, hurt: 0 };
+              const angle = boss.elapsed * 3;
+              const sin = Math.sin(angle), cos = Math.cos(angle);
+              box(crystal, sin, cos, -.60, .20, -.60, 1.20, .84, 1.20, ...edge);
+              box(crystal, sin, cos, -.32, 0, -.32, .64, 1.38, .64, ...heat);
+            }
+            if (action.kind === "repel" && !striking) {
+              // The shortest windup in the game gets its first
+              // ripple early: a ring that reaches full size a beat
+              // before the blast, buying reading time. Numbers stay.
+              const early = Math.min(1, progress * 1.3);
+              groundArc(circle, Math.max(0, plan.reach * early - .14), plan.reach * early, full, y + .02, edge);
+            }
+          }
+        }
+      }
+      // Ground decals (batch 49): the marks strikes leave behind —
+      // crack rings, scorch, the rift's tear, the phase ring. They
+      // fade by sinking toward black, which the dark floors read
+      // as disappearing.
+      for (const decal of groundDecals) {
+        const fade = Math.max(0, 1 - decal.age / decal.ttl);
+        const dy = boss.y + .028;
+        const at = { x: decal.x, z: decal.z, angle: 0 };
+        if (decal.kind === "cracks") {
+          const dark = [.06 * fade, .05 * fade, .05 * fade];
+          groundArc(at, decal.radius * .50, decal.radius * .58, Math.PI * 2, dy, dark);
+          groundArc(at, decal.radius * .92, decal.radius, Math.PI * 2, dy, dark);
+        } else if (decal.kind === "scorch") {
+          groundArc(at, 0, decal.radius, Math.PI * 2, dy, [.02 * fade, .015 * fade, .02 * fade]);
+        } else if (decal.kind === "rift") {
+          const grown = decal.length * Math.min(1, decal.age / .15);
+          groundStrip({ ...at, angle: decal.angle }, -decal.width, decal.width, grown, dy,
+            [.03 * fade, .02 * fade, .045 * fade]);
+        } else if (decal.kind === "phasering") {
+          const r = decal.radius * Math.min(1, decal.age / .8);
+          groundArc(at, Math.max(0, r - .3), r, Math.PI * 2, dy, decal.color.map(v => v * fade));
         }
       }
     }
@@ -3072,6 +3402,31 @@ export function initGame(window) {
     const screenX = (vp[0] * x + vp[4] * y + vp[8] * z + vp[12]) / w;
     const screenY = (vp[1] * x + vp[5] * y + vp[9] * z + vp[13]) / w;
     return [(1 + screenX) * width * .5, (1 - screenY) * height * .5, w];
+  }
+
+  // Impact dressing on the strike frame (batch 49): slam cracks and
+  // stone bursts for the shockwaves, impact bursts and scorch for
+  // the falling attacks, the torn strip for the rift. All of it is
+  // presentation — decals and particles, never fight state.
+  function cueBossImpact() {
+    if (!boss?.attack) return;
+    const action = boss.attack, plan = BOSS_ATTACKS[action.kind];
+    const floor = boss.y;
+    if (action.kind === "shock" || action.kind === "nova") {
+      groundDecals.push({ kind: "cracks", x: action.x, z: action.z, radius: plan.reach * .35, age: 0, ttl: 1 });
+      spawnBurst3D(boss.x, floor + .15, boss.z, 12,
+        { colors: [[.29, .075, .022], [.075, .086, .105], [.62, .34, .16]], speed: 2.6, up: 2.4, size: .11, life: .7, floor });
+    } else if (action.kind === "flare" || action.kind === "meteor") {
+      const marks = action.marks ?? [action];
+      const colors = boss.profile === COLOSSUS ? [[.55, .30, .90], [.75, .45, 1]] : [[1, .45, .10], [1, .65, .20]];
+      for (const mark of marks) {
+        spawnBurst3D(mark.x, floor + .2, mark.z, 14, { colors, speed: 2.8, up: 2.8, size: .11, life: .7, floor });
+        groundDecals.push({ kind: "scorch", x: mark.x, z: mark.z, radius: plan.reach * .8, age: 0, ttl: 2 });
+      }
+    } else if (action.kind === "rift") {
+      groundDecals.push({ kind: "rift", x: action.x, z: action.z, angle: action.angle,
+        width: action.width, length: plan.reach, age: 0, ttl: 1.5 });
+    }
   }
 
   function cueGuardianFx(cue) {
@@ -3475,9 +3830,13 @@ export function initGame(window) {
       const screen = projectEffect(vp, [number.x, number.y + number.age * 1.4, number.z], width, height);
       if (!screen) continue;
       fx.globalAlpha = Math.max(0, 1 - number.age / .9);
-      fx.font = `700 ${Math.max(14, Math.floor(height / 40))}px sans-serif`;
+      // A floor on the size (batch 48): a floater never renders
+      // under an 18px equivalent however far the hit was, and a
+      // core hit is big gold so it cannot be mistaken for a
+      // zombie number.
+      fx.font = `700 ${number.core ? Math.max(24, Math.floor(height / 28)) : Math.max(18, Math.floor(height / 40))}px sans-serif`;
       fx.textAlign = "center";
-      fx.fillStyle = "#ffd166";
+      fx.fillStyle = number.core ? "#ffcf3f" : "#ffd166";
       fx.fillText(number.text, screen[0], screen[1]);
     }
     for (const piece of debris) {
@@ -3580,35 +3939,80 @@ export function initGame(window) {
       if (bossHealth.max !== maxHp) bossHealth.max = maxHp;
       if (bossHealth.value !== boss.hp) bossHealth.value = boss.hp;
       setText(bossHealthValue, `${boss.hp} / ${maxHp}`);
-      let phaseLabel = wave ? `第 ${boss.phase} / ${GUARDIAN_WAVES.length} 波 · ${wave.name} · 随从 ${enemiesLeft}`
-        : boss.phase === 1 ? "第一阶段" : `第二阶段 · ${boss.profile.phaseName}`;
+      const ghostWidth = `${Math.round(bossGhostHp / maxHp * 1000) / 10}%`;
+      if (bossHealthGhost.style.width !== ghostWidth) bossHealthGhost.style.width = ghostWidth;
+      // The right-top line carries one job per boss (batch 48): the
+      // guardian shows its minion count and one plain-language tip —
+      // the wave itself is reported only in the boss hud — and the
+      // colossus shows just its phase, its skills living on the two
+      // chips under the health bar instead of crowding this line.
       if (wave) {
-        phaseLabel += [" · 蓄力时可绕背破甲", " · 击倒随从可中断供火", " · 诱使冲锋扑空可延长反击"][boss.phase - 1];
-        setText(bossName, `熔炉守卫 · 第 ${boss.phase} / ${GUARDIAN_WAVES.length} 波`);
+        const tip = ["守卫蓄力时绕到背后打核心", "先打倒随从，能打断守卫放火", "躲开冲锋，它撞空后反击时间更长"][boss.phase - 1];
+        setText(waveStatus, `场上随从 ${enemiesLeft} 只 · ${tip}`);
+        setText(bossName, `熔炉守卫 · 第 ${boss.phase} / ${GUARDIAN_WAVES.length} 波 · ${wave.name}`);
+      } else {
+        setText(waveStatus, boss.phase === 1 ? "第一阶段" : "第二阶段");
       }
+      bossSkills.hidden = boss.profile !== COLOSSUS;
       if (boss.profile === COLOSSUS) {
-        const timer = ready => ready > boss.elapsed ? ` ${Math.ceil(ready - boss.elapsed)}秒` : "";
-        phaseLabel += `　1 回血${timer(boss.healReady)}　4 五龙冲击${timer(boss.dragonsReady)}`;
+        const chip = ready => ready > boss.elapsed ? `还剩 ${Math.ceil(ready - boss.elapsed)} 秒` : "就绪";
+        setText(bossSkillHeal, `[1] 回血 · ${chip(boss.healReady)}`);
+        setText(bossSkillDragons, `[4] 五龙冲击 · ${chip(boss.dragonsReady)}`);
       }
-      setText(waveStatus, phaseLabel);
       const attack = boss.attack && BOSS_ATTACKS[boss.attack.kind];
       const covered = bossHasCover();
-      const danger = !finished && insideColossusHazard(boss, { ...player, covered });
+      const danger = !finished && insideHazard(boss, { ...player, covered });
       const phaseShiftHint = boss.profile === BOSS && boss.phaseShift > 0
-        ? { 2: "炉芯升压 · 烈火：击倒随从可中断供火", 3: "撞锤展开 · 过载：诱使冲锋扑空" }[boss.phase]
+        ? { 2: "守卫进入第二阶段：火焰变强了！先清随从能打断它放火", 3: "守卫进入第三阶段：小心它的冲锋，躲开后反击更久" }[boss.phase]
         : null;
+      // Phase-change show (batch 49): the first frame of a new
+      // phase fires a shock ring out to the arena edge and raises
+      // the big banner with the phase sentence; the health bar
+      // wears the phase colour for the whole phase.
+      if (bossPhaseSeen && boss.phase !== bossPhaseSeen) {
+        groundDecals.push({ kind: "phasering", x: boss.x, z: boss.z, radius: boss.profile.arena.radius, age: 0, ttl: .9,
+          color: boss.profile === COLOSSUS ? [1, .55, .9] : [1, .6, .25] });
+        phaseBanner = { text: boss.profile === COLOSSUS ? "断星巨像进入第二阶段" : phaseShiftHint ?? "", until: boss.elapsed + 1.5 };
+      }
+      bossPhaseSeen = boss.phase;
+      bossHud.classList.toggle("phase-1", boss.phase === 1);
+      bossHud.classList.toggle("phase-2", boss.phase === 2);
+      bossHud.classList.toggle("phase-3", boss.phase === 3);
+      bossPhaseBanner.hidden = !(phaseBanner && phaseBanner.text && boss.elapsed < phaseBanner.until);
+      if (!bossPhaseBanner.hidden) setText(bossPhaseBanner, phaseBanner.text);
+      // Danger sentences per kind: the plan's kept variants first,
+      // the rest in the same "where you are, then what to do" shape.
+      const dangerHint = boss.attack && {
+        repel: "退到圆圈外",
+        nova: "震圈逼近，准备起跳",
+        meteor: "脚下已锁定，立刻跑开",
+        rift: "你在光带中，向侧面闪避",
+        sweep: "你在红扇子里，从侧边跑出去",
+        flare: "你在火圈里，快跑出去",
+        shock: "震圈到脚下了，跳！",
+        ram: "你在冲锋线上，往侧边躲",
+        prism: "你在光束里，站到空地上"
+      }[boss.attack.kind];
       const callout = finished ? "挑战结束"
         : phaseShiftHint ? phaseShiftHint
-        : boss.state === "ready" ? (boss.profile === COLOSSUS ? "巨像正在逼近，准备闪避" : "守卫正在逼近，留意起手")
-          : boss.state === "reposition" ? (boss.travel.pursuit ? "巨像正在追击，拉开侧向距离" : "巨像正在换位，留意下一次预警")
-          : boss.state === "recovery" ? (boss.profile === COLOSSUS ? "巨像降下 · 攻击青色核心" : "核心暴露 · 现在反击")
-            : boss.attack.kind === "prism" && covered ? `${attack.name} · ${attack.hint} · 掩体遮住折光，换侧瞄准晶体`
-            : boss.attack.kind === "prism" && boss.state === "windup" ? `${attack.name} · ${attack.hint}`
-              : danger ? `${attack.name} · ${boss.attack.kind === "repel" ? "退到圆圈外" : boss.attack.kind === "nova" ? "震圈逼近，准备起跳" : boss.attack.kind === "meteor" ? "脚下已锁定，立刻跑开" : "你在光带中，向侧面闪避"}`
-              : boss.state === "windup" ? `${attack.name} · ${attack.hint}` : attack.name;
+        : boss.state === "ready" ? (boss.profile === COLOSSUS ? "巨像正在逼近，准备闪避" : "守卫靠近中，看它抬手就准备躲")
+          : boss.state === "reposition" ? (boss.travel.pursuit ? "巨像追过来了，往侧面跑，别直着后退" : "巨像在换位置，下一招马上来")
+          : boss.state === "recovery" ? (boss.profile === COLOSSUS ? "巨像下来了！打中间发青光的核心" : "核心张开了！现在打，伤害最高")
+            : boss.attack.kind === "prism" && covered ? `${attack.hint} · 掩体遮住折光，换侧瞄准晶体`
+            : boss.attack.kind === "prism" && boss.state === "windup" ? attack.hint
+            : danger ? `${attack.name} · ${dangerHint}`
+            : boss.state === "attack" && (boss.attack.kind === "shock" || boss.attack.kind === "nova") ? `${attack.name} · 跳！`
+            : attack.hint;
       setText(bossCallout, callout);
+      // The big central warning mirrors the callout for as long as
+      // the attack is telegraphed or landing — the moment the
+      // player most needs it — and clears with the recovery.
+      const warningOn = !finished && (boss.state === "windup" || boss.state === "attack");
+      bossWarning.hidden = !warningOn;
+      if (warningOn) setText(bossWarning, `⚠ ${callout}`);
       bossHud.classList.toggle("vulnerable", boss.state === "recovery");
       bossHud.classList.toggle("in-danger", danger);
+      hud.classList.toggle("in-danger", danger);
     } else if (beacon) {
       const wave = Math.min(DEFENSE_TOTAL_WAVES, enemiesLeft || finished ? survival.wave : survival.wave + 1);
       const plan = DEFENSE_WAVES[Math.min(Math.max(0, wave - 1), DEFENSE_WAVES.length - 1)];
@@ -3628,6 +4032,14 @@ export function initGame(window) {
       setText(waveStatus, !survival.enabled ? "自由建造" : enemiesLeft
         ? `第 ${survival.wave} 波 · 剩余 ${enemiesLeft} 只`
         : `第 ${survival.wave + 1} 波 · ${Math.max(1, Math.ceil(survival.countdown))} 秒后${recordSuffix(savedProgress?.wave)}`);
+    }
+    // The debug coordinates yield to the fight (batch 48): hidden
+    // while a boss is up, the arena name beside them stays.
+    coordinates.hidden = Boolean(boss);
+    if (!boss) {
+      hud.classList.toggle("in-danger", false);
+      bossWarning.hidden = true;
+      bossPhaseBanner.hidden = true;
     }
     setText(coordinates, `X ${player.x.toFixed(1)} · Y ${player.y.toFixed(1)} · Z ${player.z.toFixed(1)}`);
     const charging = weapon === pulseWeapon && pulse.charge !== null;
@@ -3649,7 +4061,7 @@ export function initGame(window) {
     if (hasPulseEquipped) setText(pulseInfo, recharging ? "正在充能" : `能量 ${pulse.rounds} / ${pulseWeapon.capacity} · R 充能`);
     if (showRecovery) {
       const availability = recharging ? "充能中" : charging ? (pulse.charge === pulseBurst.windup ? "松开右键发射" : "爆发蓄力中")
-        : hasPulseEquipped && !pulse.rounds ? "能量耗尽" : player.cooldown > 0 ? "收招中" : "可攻击";
+        : hasPulseEquipped && !pulse.rounds ? "能量耗尽" : player.cooldown > 0 ? "冷却中" : "可攻击";
       const equipped = campaign.equipment.weapon;
       if (equipped && equipped.durability <= 0 && weapon === punch) {
         setText(weaponLabel, `${WEAPONS[equipped.key].name}已损坏（按 C 修理）`);
@@ -3665,9 +4077,18 @@ export function initGame(window) {
       const recovery = Math.round(100 * (1 - remaining));
       if (weaponRecovery.value !== recovery) weaponRecovery.value = recovery;
     }
+    // Food-buff lines (R5) sit under the weapon state row: one per
+    // active kind, whole seconds remaining (ceiling, so a live buff
+    // never reads 0), gone the frame the buff expires.
+    for (const kind of ["speed", "attack"]) {
+      const buff = activeBuff(kind);
+      const line = buffLines[kind];
+      line.hidden = !buff;
+      if (buff) setText(line, `${BUFF_LABELS[kind]} +${buff.pct}% · 还剩 ${Math.ceil(buff.remaining)} 秒`);
+    }
     if (boss && aim && !aim.zombie) {
-      setText(targetStatus, !inReach ? "超出攻击距离" : aim.crystal ? `聚星晶体 ${boss.attack.crystalHp} / ${BOSS_ATTACKS.prism.crystalHp}`
-        : backOpen ? "背部炉门暴露" : exposed ? "核心暴露" : boss.state === "recovery" ? "瞄准青色核心" : "护甲关闭");
+      setText(targetStatus, !inReach ? "超出攻击距离" : aim.crystal ? `金色晶体 ${boss.attack.crystalHp} / ${BOSS_ATTACKS.prism.crystalHp} · 打碎它能停掉光束`
+        : backOpen ? "背部炉门暴露" : exposed ? "核心暴露" : boss.state === "recovery" ? "瞄准青色核心" : "护甲生效中 · 现在打不动，等核心张开");
     } else if (target) {
       const style = ENEMIES[target.kind] ?? ENEMIES.walker;
       const hint = !inReach ? " · 超出攻击距离" : target.windup > 0 ? " · 蓄力" : "";
@@ -3767,10 +4188,16 @@ export function initGame(window) {
     return HEALING_KEYS.map(key => key === "dressing" ? String(counts[key]) : `${RECIPES[key].name} ${counts[key]}`).join(" · ");
   }
 
+  // A cost id's display name: block ids read the block names, string
+  // ids read the farm table first, then the rare table (the loot line's
+  // own order) — wheat is a farm material, not a boss drop.
+  function materialName(id) {
+    return typeof id === "string" ? (FARM_MATERIALS[id] ?? RARE_MATERIALS[id]) : blockNames[id];
+  }
+
   function recipeCost(key) {
     return RECIPES[key].cost.map(([id, count]) => {
-      const name = typeof id === "string" ? RARE_MATERIALS[id] : blockNames[id];
-      return `${name} ${campaign.count(id)}/${count}`;
+      return `${materialName(id)} ${campaign.count(id)}/${count}`;
     }).join(" · ");
   }
 
@@ -3842,20 +4269,21 @@ export function initGame(window) {
     if (!recipe) return;
     const owned = recipe.equipment ? campaign.equipment[recipe.equipment] : null;
     setText(detailName, recipe.name);
-    setText(detailTier, recipe.tier ? TIER_TITLES[recipe.tier] : key === "workbench" ? "一次性，永久解锁" : "");
+    setText(detailTier, recipe.tier ? TIER_TITLES[recipe.tier] : recipe.cooking ? "烹饪" : key === "workbench" ? "一次性，永久解锁" : "");
     // Built as innerHTML like the healing rows, so the list is readable
     // in tests too (replaceChildren is a no-op in the harness).
     detailMaterials.innerHTML = recipe.cost.map(([id, amount]) => {
-      const name = typeof id === "string" ? RARE_MATERIALS[id] : blockNames[id];
-      const source = typeof id === "string" ? `（${RARE_SOURCE[id]}掉落）` : "";
+      const name = materialName(id);
+      const source = typeof id === "string" && RARE_SOURCE[id] ? `（${RARE_SOURCE[id]}掉落）` : "";
       const have = campaign.count(id);
       const short = have < amount ? " style=\"color: #f0d285;\"" : "";
       return `<p${short}>${name}${source} ${have}/${amount}</p>`;
     }).join("");
-    const reason = recipe.equipment ? recipeLockReason(key, state) : null;
+    const reason = recipe.equipment ? recipeLockReason(key, state)
+      : recipe.cooking && !campaign.workbenchBuilt ? "需先建造工作台" : null;
     setText(detailLock, reason ?? "");
     detailCraft.disabled = !campaign.canCraft(key);
-    setText(detailCraft, owned ? "已拥有" : key === "workbench" ? "建造工作台" : key === "axe" ? "制作石斧" : `打造${recipe.name}`);
+    setText(detailCraft, owned ? "已拥有" : key === "workbench" ? "建造工作台" : key === "axe" ? "制作石斧" : recipe.cooking ? `制作${recipe.name}` : `打造${recipe.name}`);
   }
 
   // The equipment tab's three slot cards. The weapon card always shows
@@ -4044,10 +4472,34 @@ export function initGame(window) {
     // amount plus the 急救 bonus when unlocked, so the line never lies
     // about the +10.
     const firstAid = campaign.techUnlocked.includes("firstAid") ? TECH_EFFECTS.firstAidHealing : 0;
-    for (const { key, cost, craft, use } of healingControls) {
+    for (const { key, cost, craft, use, cooking } of healingControls) {
+      if (cooking) {
+        // The food line shows the heal a bite actually gives (recipe
+        // amount plus the 急救 bonus, like the dressing line); a
+        // buffed dish names its buff instead of where it is made —
+        // its cost lives on the workbench tab, not here. Eating is
+        // the only action on this row. The first-aid bonus touches
+        // only the heal number, never the buff percent or seconds.
+        const buff = RECIPES[key].buff;
+        setText(cost, buff
+          ? `恢复 ${RECIPES[key].healing + firstAid} 点生命 · ${BUFF_LABELS[buff.kind]} +${buff.pct}%（${buff.seconds} 秒）`
+          : `恢复 ${RECIPES[key].healing + firstAid} 点生命 · 在工作台烹饪`);
+        use.disabled = !counts[key] || player.hp >= 100;
+        continue;
+      }
       setText(cost, `${recipeCost(key)} · 恢复 ${RECIPES[key].healing + firstAid} 点生命`);
       craft.disabled = !campaign.canCraft(key);
       use.disabled = !counts[key] || player.hp >= 100;
+    }
+    for (const { key, cost, craft } of cookingControls) {
+      const reason = campaign.workbenchBuilt ? null : "需先建造工作台";
+      // A buffed dish names its buff on the workbench line too, in
+      // the backpack row's format (batch 48, closing the R5 note).
+      const buff = RECIPES[key].buff;
+      const line = `${recipeCost(key)} · 恢复 ${RECIPES[key].healing + firstAid} 点生命`
+        + (buff ? ` · ${BUFF_LABELS[buff.kind]} +${buff.pct}%（${buff.seconds} 秒）` : "");
+      setText(cost, reason ? `${reason} · ${line}` : line);
+      craft.disabled = !campaign.canCraft(key);
     }
     setText(inventoryDressings, `${HEALING_KEYS.map(key => `${RECIPES[key].name} ${counts[key]} 件`).join(" · ")} · 当前生命 ${player.hp}/100`);
     craftAxeButton.disabled = !campaign.canCraft("axe");
@@ -4097,6 +4549,9 @@ export function initGame(window) {
         player.hp += healed;
         updateHealth();
         updateHotbar();
+        // A dish with a buff applies it now (R5): the heal went through
+        // the campaign's dressing path, the buff is game-side runtime.
+        applyBuff(RECIPES[key]?.buff);
         notice = `生命 +${healed}`;
       }
     }
@@ -4344,6 +4799,15 @@ export function initGame(window) {
       if (mouseMode !== "paused" && !boss) updateWeather(interval);
       elapsed -= interval;
     }
+    // Food buffs tick on game time, once per frame like the crops:
+    // paused and hidden-tab frames never reach advanceWorld, so a
+    // buff cannot burn down behind a menu.
+    for (const buff of Object.values(buffs)) {
+      if (buff.remaining > 0) {
+        buff.remaining = Math.max(0, buff.remaining - dt);
+        if (!buff.remaining) buff.pct = 0;
+      }
+    }
     // Crops grow on game time, once per frame (not per substep): paused,
     // boss-fight and hidden-tab frames never reach advanceWorld, so a
     // crop does not grow while the day clock is frozen.
@@ -4453,8 +4917,13 @@ export function initGame(window) {
     drawForgeFloor();
     drawForgeStage();
     drawForgeAtmosphere();
-    drawActors(bossModel);
+    // Thrusters draw before the actor pass so the actors stay the
+    // frame's last opaque upload (the glow is additive either way).
+    drawColossusThrusters();
+    // Particles draw before the actor pass too: they are opaque
+    // cubes, and the actors stay the frame's last opaque upload.
     drawParticles3D();
+    drawActors(bossModel);
     drawPops();
     drawCrops();
     drawGuardianFire();
@@ -4861,6 +5330,12 @@ export function initGame(window) {
     if (graphicsLost) return;
     const bossProfile = mode === COLOSSUS.id ? COLOSSUS : mode === BOSS.id ? BOSS : null;
     boss = bossProfile ? createBossFight(bossProfile) : null;
+    bossGhostHp = boss?.hp ?? 0;
+    bossGhostRate = 0;
+    bossPhaseSeen = boss?.phase ?? 0;
+    phaseBanner = null;
+    groundDecals.length = 0;
+    bossAfterimage = null;
     selectTerrain();
     if (!boss) loadLatestSave();
     const withZombies = mode === "survival" || mode === "defense";

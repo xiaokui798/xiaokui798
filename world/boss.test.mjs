@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ARENA, BOSS, GUARDIAN_WAVES, COLOSSUS, SKY_COURT, SKY_COURT_COVERS, BOSS_ATTACKS, buildArena, buildBossTerrain,
-  createBossFight, advanceBoss, strikeBoss, interruptFurnace, damagePrism, posedColossus, insideColossusHazard, modelHit, pulseViewModel, meleeViewModel } from "./boss.mjs";
+  createBossFight, advanceBoss, strikeBoss, interruptFurnace, damagePrism, posedColossus, insideColossusHazard, insideHazard, posedGuardian, modelHit, pulseViewModel, meleeViewModel } from "./boss.mjs";
 import { WORLD, voxelIndex } from "./terrain.mjs";
 
 const player = { x: ARENA.x, y: ARENA.floor, z: ARENA.spawnZ };
@@ -85,10 +85,10 @@ test("guardian phase changes broadcast a brief ignition before the next pattern"
   boss.state = "recovery";
   assert.equal(strikeBoss(boss, BOSS.maxHp), BOSS.maxHp);
   assert.equal(boss.phase, 2);
-  assert.equal(boss.phaseShift, .85);
+  assert.equal(boss.phaseShift, 1.2);
   advanceBoss(boss, player, .35);
-  assert.ok(boss.phaseShift > .49 && boss.phaseShift < .51);
-  advanceBoss(boss, player, .5);
+  assert.ok(boss.phaseShift > .84 && boss.phaseShift < .86);
+  advanceBoss(boss, player, .85);
   assert.equal(boss.phaseShift, 0);
 });
 
@@ -188,7 +188,10 @@ test("the colossus has a distinct arena and lowers a separate weak point into me
   const weakY = () => {
     return posedColossus(fight).find(part => part.target === 1).center[1] - fight.y;
   };
-  assert.ok(weakY() > 4);
+  // The hover rides 0.8 lower since batch 49 (lift base 2.26), so
+  // the weak point cruises at ~3.65 instead of ~4.45 — still far
+  // above melee until the recovery dip brings it under 1.9.
+  assert.ok(weakY() > 3.4);
   const target = { x: fight.x, y: fight.y, z: fight.z + 3 };
   advanceBoss(fight, target, 3.3);
   assert.equal(fight.state, "recovery");
@@ -359,4 +362,106 @@ test("the colossus uses distance, cover, and a point-blank repulsion without hid
   assert.equal(prism.attack.kind, "prism");
   advanceBoss(prism, target, prism.time);
   assert.equal(advanceBoss(prism, { ...target, covered: true }, .08).damage, 0, "cover blocks refracted beam");
+});
+
+test("insideHazard covers the guardian's sector, marks and wavefronts", () => {
+  // Sweep: the second phase-1 attack. In front of the guardian,
+  // inside the sector, is danger during the windup; behind it and
+  // beyond its reach are not.
+  const sweep = createBossFight(BOSS);
+  sweep.attacks = 1;
+  const front = { x: sweep.x, y: sweep.y, z: sweep.z + 3 };
+  advanceBoss(sweep, front, 1.2);
+  assert.equal(sweep.attack.kind, "sweep");
+  assert.equal(sweep.state, "windup");
+  assert.equal(insideHazard(sweep, front), true);
+  assert.equal(insideHazard(sweep, { ...front, z: sweep.z - 3 }), false);
+  assert.equal(insideHazard(sweep, { ...front, z: sweep.z + 8 }), false);
+
+  // Flare: phase 2 marks the player's spot; standing on a mark is
+  // danger, standing clear of every mark is not.
+  const flare = createBossFight(BOSS);
+  flare.phase = 2;
+  flare.hp = GUARDIAN_WAVES[1].hp;
+  const marked = { x: flare.x + 6, y: flare.y, z: flare.z + 6 };
+  advanceBoss(flare, marked, 1.2);
+  assert.equal(flare.attack.kind, "flare");
+  assert.equal(insideHazard(flare, marked), true);
+  assert.equal(insideHazard(flare, { ...marked, x: marked.x + 4 }), false);
+
+  // Shock: no wavefront exists during the windup; once the wave is
+  // travelling, danger is the 1.2 band around its front, which
+  // passes a standing player exactly once.
+  const shock = createBossFight(BOSS);
+  const victim = { x: shock.x, y: shock.y, z: shock.z + 5 };
+  advanceBoss(shock, victim, 1.2);
+  assert.equal(shock.attack.kind, "shock");
+  assert.equal(insideHazard(shock, victim), false);
+  advanceBoss(shock, victim, BOSS_ATTACKS.shock.windup);
+  assert.equal(shock.state, "attack");
+  let sawDanger = false, sawCalm = false;
+  for (let i = 0; i < 24; i++) {
+    advanceBoss(shock, victim, .05);
+    if (insideHazard(shock, victim)) sawDanger = true; else sawCalm = true;
+  }
+  assert.ok(sawDanger && sawCalm, "the wavefront band must pass the player exactly once");
+});
+
+test("the guardian squashes and its core brightens across a windup", () => {
+  const fight = createBossFight(BOSS);
+  fight.elapsed = 2; // freeze the idle bob so only the pose moves
+  const torsoY = parts => parts[2].center[1];
+  const coreRed = parts => parts.find(p => p.glow && p.dimensions[0] === .46).color[0];
+  const restY = torsoY(posedGuardian(fight));
+  fight.state = "windup";
+  fight.attack = { kind: "shock", windup: BOSS_ATTACKS.shock.windup, angle: 0, x: fight.x, z: fight.z };
+  fight.time = BOSS_ATTACKS.shock.windup;
+  const startY = torsoY(posedGuardian(fight)), startCore = coreRed(posedGuardian(fight));
+  assert.ok(Math.abs(startY - restY) < .01, "no squash at windup start");
+  fight.time = BOSS_ATTACKS.shock.windup * .1;
+  const endY = torsoY(posedGuardian(fight)), endCore = coreRed(posedGuardian(fight));
+  assert.ok(restY - endY > .09 && restY - endY < .13, `the squash bottoms out at 0.12 (got ${restY - endY})`);
+  assert.ok(endCore / startCore > 1.6, `the core brightens toward 1.8x (got ${endCore / startCore})`);
+  // Release: the pose rebounds above rest for the first 0.12s.
+  fight.state = "attack";
+  fight.time = BOSS_ATTACKS.shock.duration - .06;
+  assert.ok(torsoY(posedGuardian(fight)) > restY + .01, "the strike rebounds +0.04");
+});
+
+test("the colossus hovers 0.8 lower on a 3 second cycle", () => {
+  const fight = createBossFight(COLOSSUS);
+  fight.state = "ready";
+  fight.time = 1.2; // entrance approach spent: no drive, no dip
+  const hullY = () => posedColossus(fight)[0].center[1] - fight.y;
+  fight.elapsed = 0;
+  const base = hullY();
+  assert.ok(Math.abs(base - 3.56) < .02, `lift base 2.26 + hull 1.30 (got ${base})`);
+  fight.elapsed = .75;
+  assert.ok(Math.abs(hullY() - (base + .15)) < .02, "hover peaks at +0.15 a quarter cycle in");
+  fight.elapsed = 2.25;
+  assert.ok(Math.abs(hullY() - (base - .15)) < .02, "hover troughs at -0.15 three quarters in");
+  fight.elapsed = 3;
+  assert.ok(Math.abs(hullY() - base) < .02, "the cycle closes at 3 seconds");
+});
+
+test("the prism crystals light one by one across the windup", () => {
+  const fight = createBossFight(COLOSSUS);
+  fight.state = "windup";
+  fight.attack = { kind: "prism", windup: 1.8, angle: 0, x: fight.x, z: fight.z, tracks: [] };
+  const litCount = () => posedColossus(fight)
+    .filter(p => p.dimensions[0] === .15 && p.dimensions[1] === .58 && p.color[0] === 1 && p.color[1] === .68).length;
+  fight.time = 1.8 - .2;
+  assert.equal(litCount(), 1);
+  fight.time = 1.8 - .7;
+  assert.equal(litCount(), 2);
+  fight.time = 1.8 - 1.2;
+  assert.equal(litCount(), 3);
+});
+
+test("the colossus phase change also raises the 1.2 second shift", () => {
+  const fight = createBossFight(COLOSSUS);
+  fight.hp = COLOSSUS.maxHp / 2 - 10;
+  advanceBoss(fight, { x: fight.x, y: fight.y, z: fight.z + 20 }, 1.25);
+  assert.equal(fight.phase, 2);
+  assert.equal(fight.phaseShift, 1.2);
 });

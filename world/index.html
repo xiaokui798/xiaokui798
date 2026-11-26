@@ -57,9 +57,12 @@
       </div>
       <section id="boss-hud" class="boss-hud" aria-label="熔炉守卫" hidden>
         <label for="boss-health"><span id="boss-name">熔炉守卫</span><strong id="boss-health-value">80 / 80</strong></label>
-        <progress id="boss-health" max="80" value="80"></progress>
+        <div class="boss-health-track"><div id="boss-health-ghost"></div><progress id="boss-health" max="80" value="80"></progress></div>
+        <div id="boss-skills" hidden><span id="boss-skill-heal" class="boss-skill"></span><span id="boss-skill-dragons" class="boss-skill"></span></div>
         <div id="boss-callout" role="status"></div>
       </section>
+      <div id="boss-warning" role="alert" hidden></div>
+      <div id="boss-phase-banner" hidden></div>
       <div id="defense-hud" class="defense-hud" hidden>
         <label for="beacon-health">信标 <strong id="beacon-health-value">120 / 120</strong></label>
         <progress id="beacon-health" max="120" value="120"></progress>
