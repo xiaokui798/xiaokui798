@@ -311,6 +311,12 @@ export function initGame(window) {
   let actorMesh, viewModelMesh, skyMesh, rainMesh;
   let started = false, lastTime = null;
   let finished = false;
+  // Guardian death presentation (batch 76): seconds left before the
+  // settlement screen may appear after the killing blow, so the
+  // death burst and the collapse pose play out first (the colossus
+  // settles behind its screen over the same 0.86s). Null outside
+  // that window; the win is recorded once, when the timer lands.
+  let bossSettleTimer = null;
   let mouseMode = "paused";
   let lockAttempt = null;
   let saveConflict = false;
@@ -1735,7 +1741,22 @@ export function initGame(window) {
     showDeathScreen(title, `${summary}${result?.saved === false ? "（进度未保存）" : ""}`, action);
   }
 
+  // The death burst both bosses share: a bigger burst from the core
+  // as it goes down — furnace-hot for the guardian, cold crystal for
+  // the colossus. The guardian's plays at the killing blow (batch
+  // 76); the colossus's plays here, as it always has.
+  function spawnBossDeathBurst() {
+    const hot = boss.profile === BOSS;
+    spawnBurst3D(boss.x, boss.y + 1.8, boss.z, 18,
+      { colors: hot ? [[1, .32, .06], [.55, .58, .62], [.2, .16, .14]] : [[.75, .85, 1], [.45, .62, .95], [.3, .34, .44]],
+        speed: 3.6, up: 4, size: 0.13, life: 0.6, gravity: 14, floor: boss.profile.arena.floor });
+  }
+
   function finishBoss(won) {
+    // A defeated boss has already decided the fight: damage that
+    // lands during the guardian's death presentation (a fire zone
+    // still burning out) cannot turn the win into a loss.
+    if (!won && boss?.state === "defeated") return;
     if (won) runBossDefeated = boss.profile.id;
     // The drop line on the end screen, e.g. " · 熔火核心 +2": only when
     // the win actually paid, so a failed save never advertises a reward
@@ -1751,20 +1772,21 @@ export function initGame(window) {
       const first = !(savedProgress ?? campaign.loadProgress()).bossesDefeated?.[bossId];
       const count = first ? 2 : 1;
       const dropResult = campaign.grantBossLoot(bossId, count);
-      if (dropResult?.saved) bossDropText = ` · 获得：${RARE_MATERIALS[BOSS_DROPS[bossId]]} ×${count}`;
+      // Trial wins pay into the throwaway save (batch 72): the drop
+      // line says so, so nobody mistakes it for main-line loot.
+      if (dropResult?.saved) bossDropText = trialBossId !== null
+        ? ` · 获得：${RARE_MATERIALS[BOSS_DROPS[bossId]]} ×${count}（试炼掉落不计入主线）`
+        : ` · 获得：${RARE_MATERIALS[BOSS_DROPS[bossId]]} ×${count}`;
     }
-    if (won) {
-      sound.play(boss.profile === BOSS ? "forge-collapse" : "defeat", STONE);
-      // Boss death debris: a bigger burst from the core as it goes down —
-      // furnace-hot for the guardian, cold crystal for the colossus.  The
-      // colossus collapse keeps rendering for 0.86s, so its burst plays out
-      // in full; the guardian's is caught in the end-screen frame.
-      const hot = boss.profile === BOSS;
-      spawnBurst3D(boss.x, boss.y + 1.8, boss.z, 18,
-        { colors: hot ? [[1, .32, .06], [.55, .58, .62], [.2, .16, .14]] : [[.75, .85, 1], [.45, .62, .95], [.3, .34, .44]],
-          speed: 3.6, up: 4, size: 0.13, life: 0.6, gravity: 14, floor: boss.profile.arena.floor });
+    if (won && boss.profile !== BOSS) {
+      // The colossus's death sound and burst, unchanged. The
+      // guardian's played at the killing blow, when its death
+      // presentation began (batch 76) — replaying them here, 0.86s
+      // later, would double the burst and lag the sound.
+      sound.play("defeat", STONE);
+      spawnBossDeathBurst();
     }
-    finishRun(won ? `${boss.profile.name}已击败` : "挑战失败",
+    finishRun(trialBossId !== null ? `试炼 · ${won ? `${boss.profile.name}已击败` : "挑战失败"}` : won ? `${boss.profile.name}已击败` : "挑战失败",
       `${Math.floor(boss.elapsed)} 秒 · 命中 ${boss.hits} 次 · ${won ? `剩余生命 ${player.hp}` : `${boss.profile.name}剩余 ${boss.hp} 点生命`}${bossDropText}`,
       "再挑战");
   }
@@ -1992,6 +2014,14 @@ export function initGame(window) {
         if (!boss.dragons.length) showMessage(boss.dragonHits
           ? `五龙冲击 · 命中 ${boss.dragonHits}/5 · ${16 * boss.dragonHits} 伤害`
           : "火龙被掩体挡住了");
+      }
+      if (bossSettleTimer !== null) {
+        bossSettleTimer -= dt;
+        if (bossSettleTimer <= 0) {
+          bossSettleTimer = null;
+          finishBoss(true);
+          return;
+        }
       }
       const covered = bossHasCover();
       const lastFootfall = Math.floor(boss.stride / Math.PI);
@@ -2287,6 +2317,17 @@ export function initGame(window) {
           }
         }
         showMessage(note ?? `${profile === pulseBurst ? "爆发命中核心" : "命中核心"} · 伤害 ${damage}`);
+      }
+      else if (boss.profile === BOSS) {
+        // Guardian death presentation (batch 76): the burst and the
+        // collapse sound play NOW, at the killing blow, and the
+        // settlement waits out the 0.86s window (ticked in the boss
+        // frame step) — the end screen used to cut in on this very
+        // frame and swallow all of it. The colossus still finishes
+        // on the spot; its collapse renders behind the screen.
+        spawnBossDeathBurst();
+        sound.play("forge-collapse", STONE);
+        bossSettleTimer = .86;
       }
       else finishBoss(true);
       return;
@@ -3813,7 +3854,7 @@ export function initGame(window) {
     const resized = resize();
     if (mouseMode !== "paused" && dt > 0) advanceWorld(dt);
     const active = mouseMode !== "paused";
-    const settling = boss?.profile === COLOSSUS && boss.state === "defeated" && boss.collapse < 1;
+    const settling = boss?.state === "defeated" && boss.collapse < 1;
     if (settling) boss.collapse = Math.min(1, boss.collapse + dt / .86);
     if (!active && !sceneDirty && !resized && !settling) return;
     const rain = boss ? 0 : weather.rain;
@@ -4180,6 +4221,7 @@ export function initGame(window) {
     started = false;
     finished = false;
     boss = null;
+    bossSettleTimer = null;
     selectTerrain();
     Object.assign(defense, { beacon: null, routes: null, seconds: 0, elapsed: 0, victory: false });
     inventoryScreen.hidden = true;
@@ -4239,6 +4281,7 @@ export function initGame(window) {
 
   function startWorld(mode) {
     if (graphicsLost) return;
+    bossSettleTimer = null;
     const trialProfile = mode === "trial-boss" ? BOSS : mode === "trial-colossus" ? COLOSSUS : null;
     if (trialProfile) { enterTrial(trialProfile); mode = trialProfile.id; }
     const bossProfile = mode === COLOSSUS.id ? COLOSSUS : mode === BOSS.id ? BOSS : null;

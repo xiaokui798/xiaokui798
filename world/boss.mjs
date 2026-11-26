@@ -1123,9 +1123,13 @@ export function posedGuardian(fight) {
   const follow = striking ? 1 - ease(release) : downswing;
   const stride = Math.sin(fight.stride) * fight.gait;
   const phaseShift = Math.min(1, (fight.phaseShift ?? 0) / 1.2);
-  const kneel = shiftSink(fight), drop = kneel * .5;
   const vulnerable = fight.state === "recovery";
   const dead = fight.state === "defeated";
+  // Death sink (batch 76): like the colossus, the guardian crumples
+  // as its collapse progress runs — the upper body drops by over
+  // half a block while the legs stay planted.
+  const fall = dead ? fight.collapse : 0;
+  const kneel = shiftSink(fight), drop = kneel * .5 + fall * .55;
   const dark = [.12, .15, .18], steel = [.28, .32, .38], iron = [.43, .47, .53];
   const copper = [.61, .27, .11], hot = BAR_COLORS.boss[fight.phase - 1];
   // Charge and phase theatre (batch 49): the core brightens toward
@@ -1140,7 +1144,7 @@ export function posedGuardian(fight) {
     piece(hull, [.48 + kneel * .12, .52 + Math.max(0, -stride) * .13, -.02], [.48, 1.06, .47], steel, axes(0, stride * .22)),
     piece(plate, [-.48, .15 + Math.max(0, stride) * .22, .12 + stride * .34], [.61, .30, .76], dark, axes(0, stride * .2)),
     piece(plate, [.48, .15 + Math.max(0, -stride) * .22, .12 - stride * .34], [.61, .30, .76], dark, axes(0, -stride * .2)),
-    piece(hull, [0, 1.04 - kneel * .25, -.02], [1.12, .72, .72], dark, axes(0, lean * -.16)),
+    piece(hull, [0, 1.04 - kneel * .25 - fall * .3, -.02], [1.12, .72, .72], dark, axes(0, lean * -.16)),
     piece(hull, torso, [1.55, 1.72, 1.03], steel, axes(0, lean * -.27)),
     piece(plate, [0, 2.05 - (vulnerable ? .18 : 0) - drop, .55 + lean * .25], [1.22, .88, .20], copper, axes(0, -.20 - lean * .11)),
     piece(crystal, [0, 1.95 - (vulnerable ? .20 : 0) - drop, .73 + lean * .27], [.46, .71, .22], core, axes(fight.elapsed * (1.3 + drive * 2)), 0, true),

@@ -365,6 +365,11 @@ test("the boss arena can be won and replayed, paying its reward without touching
   sandbox.editBlock(voxelIndex(WORLD, 17, 4, 16), BLOCK.AIR, BLOCK.DIRT, true);
   const before = storage.getItem(SAVE_KEY);
   const game = mountGame({ storage, pointerLock: true });
+  // The win's record merge must write the progress key exactly
+  // once (batch 76): the delayed settlement may not double-pay it.
+  let progressWrites = 0;
+  const rawSetItem = storage.setItem;
+  storage.setItem = (key, value) => { if (key === PROGRESS_KEY) progressWrites++; rawSetItem(key, value); };
   const attack = () => game.get("game").emit("mousedown", { button: 0 });
   let time = 0;
   const frame = () => game.frame(time += 20);
@@ -387,7 +392,7 @@ test("the boss arena can be won and replayed, paying its reward without touching
   const jumpQueue = [];
   let prevHpBot = 100, fireStep = 0;
   let ramParity = 0, wasRamWindup = false;
-  for (let i = 0; i < 12000 && game.get("death-screen").hidden; i++) {
+  for (let i = 0; i < 12000 && game.get("death-screen").hidden && game.get("boss-health-value").textContent !== "0 / 500"; i++) {
     frame();
     if (!guardianBreakSeen && game.get("boss-name").textContent.includes("烈火")) {
       guardianBreakSeen = true;
@@ -531,6 +536,17 @@ test("the boss arena can be won and replayed, paying its reward without touching
     }
     if (exposed || /游荡者|突袭者|破城者/.test(game.get("target-status").textContent)) attack();
   }
+  // Death presentation window (batch 76): the killing blow has
+  // landed (the last bar reads 0) but the settlement screen waits
+  // out the 0.86s presentation — at +0.4s it is still not up, by
+  // +1.0s it is, and the win's record was written exactly once.
+  assert.equal(game.get("boss-health-value").textContent, "0 / 500");
+  assert.equal(game.get("death-screen").hidden, true, "the settlement waits for the death presentation");
+  for (let i = 0; i < 20; i++) frame();
+  assert.equal(game.get("death-screen").hidden, true, "still presenting 0.4s after the kill");
+  for (let i = 0; i < 30; i++) frame();
+  assert.equal(game.get("death-screen").hidden, false, "the settlement lands once the presentation has played");
+  assert.equal(progressWrites, 1, "the win merges its record exactly once");
   assert.ok(overcharged);
   assert.equal(halfHealSeen, 1, "the bar-3 half heal fires exactly once");
   assert.deepEqual([...summonWaves], [1, 2, 3]);
@@ -740,7 +756,9 @@ test("boss trial: beating the guardian leaves the main save byte-identical", () 
   }
   assert.ok(overcharged);
   assert.deepEqual([...summonWaves], [1, 2, 3]);
-  assert.equal(game.get("death-title").textContent, "熔炉守卫已击败");
+  assert.equal(game.get("death-title").textContent, "试炼 · 熔炉守卫已击败");
+  assert.match(game.get("death-summary").textContent, /试炼掉落不计入主线/,
+    "the trial drop line says the loot stays out of the main save");
   game.click("death-menu-button");
   frame();
   assert.equal(data.get(SAVE_KEY), beforeSave, "the trial win must not touch the main save");
@@ -763,7 +781,7 @@ test("boss trial: falling to the colossus leaves the main save byte-identical", 
   assert.equal(game.get("boss-health-value").textContent, "700 / 700");
   // Stand in the sky court's fire until the trial ends in defeat.
   for (let i = 0; i < 15000 && game.get("death-screen").hidden; i++) frame();
-  assert.equal(game.get("death-title").textContent, "挑战失败");
+  assert.equal(game.get("death-title").textContent, "试炼 · 挑战失败");
   game.click("death-menu-button");
   frame();
   assert.equal(data.get(SAVE_KEY), beforeSave, "the trial loss must not touch the main save");
