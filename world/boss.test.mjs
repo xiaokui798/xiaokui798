@@ -28,7 +28,7 @@ test("guardian counterplay changes from flanking to interrupting a cast to baiti
     advanceBoss(ram, player, ram.time);
     const result = advanceBoss(ram, { ...player, x: player.x + (dodge ? 3 : 0) }, ram.time);
     assert.ok(ram.z > start);
-    assert.equal(result.damage, dodge ? 0 : BOSS_ATTACKS.ram.damage);
+    assert.equal(result.damage, dodge ? 0 : Math.round(BOSS_ATTACKS.ram.damage * GUARDIAN_WAVES[2].damageScale));
     assert.equal(ram.time, dodge ? 3 : .85);
   }
 });
@@ -85,10 +85,10 @@ test("guardian phase changes broadcast a brief ignition before the next pattern"
   boss.state = "recovery";
   assert.equal(strikeBoss(boss, BOSS.maxHp), BOSS.maxHp);
   assert.equal(boss.phase, 2);
-  assert.equal(boss.phaseShift, 1.2);
+  assert.equal(boss.phaseShift, 2);
   advanceBoss(boss, player, .35);
-  assert.ok(boss.phaseShift > .84 && boss.phaseShift < .86);
-  advanceBoss(boss, player, .85);
+  assert.ok(boss.phaseShift > 1.64 && boss.phaseShift < 1.66);
+  advanceBoss(boss, player, 1.65);
   assert.equal(boss.phaseShift, 0);
 });
 
@@ -105,7 +105,7 @@ test("the colossus advances on a stationary player at the far end of the entranc
   assert.equal(advanceBoss(fight, entrance, fight.time + .08).damage, BOSS_ATTACKS.meteor.damage);
 
   const retreat = { ...entrance, z: SKY_COURT.z - 14 };
-  advanceBoss(fight, retreat, fight.time + COLOSSUS.recovery[0]);
+  advanceBoss(fight, retreat, fight.time + COLOSSUS.bars[0].recovery);
   assert.equal(fight.state, "reposition");
   assert.equal(fight.travel.pursuit, true);
   const before = Math.hypot(fight.x - retreat.x, fight.z - retreat.z);
@@ -162,7 +162,7 @@ test("damage only applies during recovery and defeating the boss ends its attack
   assert.equal(strikeBoss(boss, 60), 60);
   assert.equal(strikeBoss(boss, BOSS.maxHp), BOSS.maxHp - 60);
   assert.equal(boss.hits, 2);
-  for (const [phase, maxHp, expected] of [[2, 100, 18], [3, 120, 16]]) {
+  for (const [phase, maxHp, expected] of [[2, 320, 18], [3, 400, 16]]) {
     assert.equal(boss.phase, phase);
     assert.equal(boss.hp, maxHp);
     assert.equal(strikeBoss(boss, 50), 0);
@@ -241,7 +241,7 @@ test("the melee view model is a 3D sword or axe that moves through a swing", () 
   assert.notDeepEqual(axe.parts[2].dimensions, rest.parts[2].dimensions);
 });
 
-test("the colossus marks a delayed meteor and expands its rift after half health", () => {
+test("the colossus marks a delayed meteor and expands its rift from the second bar", () => {
   const fight = createBossFight(COLOSSUS);
   const target = { x: fight.x, y: fight.y, z: fight.z + 5 };
   advanceBoss(fight, target, 1.2);
@@ -255,7 +255,7 @@ test("the colossus marks a delayed meteor and expands its rift after half health
   assert.equal(advanceBoss(fight, target, .06).damage, 0);
 
   const enraged = createBossFight(COLOSSUS);
-  enraged.hp = COLOSSUS.maxHp / 2;
+  enraged.hp = COLOSSUS.bars[1].hp;
   enraged.phase = 2;
   enraged.attacks = 3;
   advanceBoss(enraged, target, 1.2);
@@ -263,13 +263,14 @@ test("the colossus marks a delayed meteor and expands its rift after half health
   assert.equal(enraged.attack.kind, "rift");
   assert.ok(enraged.attack.width > BOSS_ATTACKS.rift.width);
   assert.equal(advanceBoss(enraged, { ...target, x: target.x + 2.5 }, 1.10).damage, 0);
-  assert.equal(advanceBoss(enraged, { ...target, x: target.x + 1.9 }, .06).damage, BOSS_ATTACKS.rift.damage);
+  assert.equal(advanceBoss(enraged, { ...target, x: target.x + 1.9 }, .06).damage,
+    Math.round(BOSS_ATTACKS.rift.damage * COLOSSUS.bars[1].damageScale));
 });
 
 test("the colossus relocates between attacks and stops short of the player", () => {
   const fight = createBossFight(COLOSSUS);
   const player = { x: fight.x, y: fight.y, z: fight.z + 6 };
-  advanceBoss(fight, player, 1.2 + BOSS_ATTACKS.meteor.windup + BOSS_ATTACKS.meteor.duration + COLOSSUS.recovery[0]);
+  advanceBoss(fight, player, 1.2 + BOSS_ATTACKS.meteor.windup + BOSS_ATTACKS.meteor.duration + COLOSSUS.bars[0].recovery);
   assert.equal(fight.state, "reposition");
   const blocker = { x: fight.x + 3.4, y: fight.y, z: fight.z };
   const original = fight.x;
@@ -282,10 +283,11 @@ test("the colossus relocates between attacks and stops short of the player", () 
   assert.equal(fight.attack.x, fight.x, "the next strike originates from the new position");
 });
 
-test("half health unlocks two separate expanding waves that can be jumped independently", () => {
+test("the second bar unlocks two separate expanding waves that can be jumped independently", () => {
   const attempt = (jumpFirst) => {
     const fight = createBossFight(COLOSSUS);
-    fight.hp = COLOSSUS.maxHp / 2;
+    fight.hp = COLOSSUS.bars[1].hp;
+    fight.phase = 2;
     const player = { x: fight.x, y: fight.y, z: fight.z + 6 };
     advanceBoss(fight, player, 1.2);
     assert.equal(fight.attack.kind, "nova");
@@ -309,7 +311,7 @@ test("three prism tracks leave safe gaps and the crystal can interrupt the attac
   const gap = { ...center, x: center.x + 2.05 };
   function readyPrism() {
     const boss = createBossFight(COLOSSUS);
-    boss.hp /= 2;
+    boss.hp = COLOSSUS.bars[1].hp;
     boss.phase = 2;
     boss.attacks = 1;
     advanceBoss(boss, center, 1.2);
@@ -322,7 +324,8 @@ test("three prism tracks leave safe gaps and the crystal can interrupt the attac
   assert.equal(advanceBoss(unbroken, center, unbroken.time).damage, 0);
   assert.equal(damagePrism(unbroken, 62), null);
   assert.equal(advanceBoss(unbroken, gap, .12).damage, 0);
-  assert.equal(advanceBoss(unbroken, { ...center, y: center.y + 1 }, .10).damage, BOSS_ATTACKS.prism.damage);
+  assert.equal(advanceBoss(unbroken, { ...center, y: center.y + 1 }, .10).damage,
+    Math.round(BOSS_ATTACKS.prism.damage * COLOSSUS.bars[1].damageScale));
   assert.equal(advanceBoss(unbroken, center, .10).damage, 0);
 
   const broken = readyPrism();
@@ -330,7 +333,7 @@ test("three prism tracks leave safe gaps and the crystal can interrupt the attac
   assert.equal(broken.state, "windup");
   assert.equal(damagePrism(broken, 24), 0);
   assert.equal(broken.state, "recovery");
-  assert.ok(broken.time > COLOSSUS.recovery[1]);
+  assert.ok(broken.time > COLOSSUS.bars[1].recovery);
   assert.equal(advanceBoss(broken, center, 1).damage, 0);
   assert.equal(strikeBoss(broken, 62, true), 62);
 });
@@ -346,7 +349,7 @@ test("the colossus uses distance, cover, and a point-blank repulsion without hid
   assert.ok(repelled.push.z > 0);
 
   const covered = createBossFight(COLOSSUS);
-  covered.hp /= 2;
+  covered.hp = COLOSSUS.bars[1].hp;
   covered.phase = 2;
   covered.attacks = 1;
   const sheltered = { x: covered.x, y: covered.y, z: covered.z + 6, covered: true };
@@ -354,7 +357,7 @@ test("the colossus uses distance, cover, and a point-blank repulsion without hid
   assert.equal(covered.attack.kind, "rift", "cover prompts a ground-pressure route");
 
   const prism = createBossFight(COLOSSUS);
-  prism.hp /= 2;
+  prism.hp = COLOSSUS.bars[1].hp;
   prism.phase = 2;
   prism.attacks = 1;
   const target = { x: prism.x, y: prism.y, z: prism.z + 6 };
@@ -458,10 +461,34 @@ test("the prism crystals light one by one across the windup", () => {
   assert.equal(litCount(), 3);
 });
 
-test("the colossus phase change also raises the 1.2 second shift", () => {
+test("breaking a colossus bar raises the 2 second shift and refills the next bar", () => {
   const fight = createBossFight(COLOSSUS);
-  fight.hp = COLOSSUS.maxHp / 2 - 10;
-  advanceBoss(fight, { x: fight.x, y: fight.y, z: fight.z + 20 }, 1.25);
+  fight.state = "recovery";
+  assert.equal(strikeBoss(fight, COLOSSUS.bars[0].hp, true), COLOSSUS.bars[0].hp);
   assert.equal(fight.phase, 2);
-  assert.equal(fight.phaseShift, 1.2);
+  assert.equal(fight.hp, COLOSSUS.bars[1].hp);
+  assert.equal(fight.phaseShift, 2);
+  assert.equal(fight.state, "ready");
+  assert.equal(strikeBoss(fight, 50, true), 0, "no damage lands during the shift");
+  // The last bar breaking is the kill.
+  fight.phase = 4;
+  fight.hp = 30;
+  fight.state = "recovery";
+  assert.equal(strikeBoss(fight, 30, true), 30);
+  assert.equal(fight.state, "defeated");
+});
+
+test("the bar tables carry the design values and windups respect the 0.65 floor", () => {
+  assert.deepEqual(COLOSSUS.bars.map(bar => bar.hp), [700, 750, 800, 850]);
+  assert.deepEqual(COLOSSUS.bars.map(bar => bar.recovery), [2.55, 2.3, 2, 1.7]);
+  assert.deepEqual(GUARDIAN_WAVES.map(wave => wave.hp), [260, 320, 400]);
+  // Bar 4 repel: .78 windup x .78 scale would be .61 — clamped.
+  const fight = createBossFight(COLOSSUS);
+  fight.phase = 4;
+  fight.hp = COLOSSUS.bars[3].hp;
+  fight.attacks = 2; // not the nova slot: the fixed nova preempts repel
+  const close = { x: fight.x, y: fight.y, z: fight.z + 3 };
+  advanceBoss(fight, close, 1.2);
+  assert.equal(fight.attack.kind, "repel");
+  assert.equal(fight.attack.windup, .65);
 });

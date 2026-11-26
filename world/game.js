@@ -21,7 +21,7 @@ import { CROPS, FARM_MATERIALS, isMature } from "./crops.mjs";
 import { createMouseLook } from "./controls.mjs";
 import { PHYSICS_STEP, LANDING_SAMPLE_TIME, createSpeedReadout, overlapsPlayerBlock, stepPlayer } from "./movement.mjs";
 import { ARENA_PALETTE, BOSS, GUARDIAN_WAVES, COLOSSUS, BOSS_ATTACKS, buildBossTerrain, createBossFight, advanceBoss, strikeBoss, guardianBackOpen, interruptFurnace, damagePrism,
-  bossParts, posedGuardian, forgeStageParts, posedColossus, insideHazard, modelFaces, modelHit, pulseViewModel, meleeViewModel, dragonImpact } from "./boss.mjs";
+  bossParts, posedGuardian, forgeStageParts, posedColossus, insideHazard, modelFaces, modelHit, pulseViewModel, meleeViewModel, dragonImpact, bossBar } from "./boss.mjs";
 
 import { renderForgeCue } from "./forge-audio.mjs";
 
@@ -3055,7 +3055,8 @@ export function initGame(window) {
     hudUi.setBossVisible(Boolean(boss));
     if (boss) {
       const wave = boss.profile === BOSS ? GUARDIAN_WAVES[boss.phase - 1] : null;
-      const maxHp = wave?.hp ?? boss.profile.maxHp;
+      const bar = bossBar(boss);
+      const maxHp = bar.maxHp;
       // The right-top line carries one job per boss (batch 48): the
       // guardian shows its minion count and one plain-language tip —
       // the wave itself is reported only in the boss hud — and the
@@ -3063,13 +3064,13 @@ export function initGame(window) {
       // chips under the health bar instead of crowding this line.
       const statusText = wave
         ? `场上随从 ${enemiesLeft} 只 · ${["守卫蓄力时绕到背后打核心", "先打倒随从，能打断守卫放火", "躲开冲锋，它撞空后反击时间更长"][boss.phase - 1]}`
-        : boss.phase === 1 ? "第一阶段" : "第二阶段";
-      const bossNameText = wave ? `熔炉守卫 · 第 ${boss.phase} / ${GUARDIAN_WAVES.length} 波 · ${wave.name}` : null;
+        : `第 ${bar.index} / ${bar.count} 管 · ${bar.name}`;
+      const bossNameText = wave ? `熔炉守卫 · 第 ${boss.phase} / ${GUARDIAN_WAVES.length} 管 · ${wave.name}` : null;
       const attack = boss.attack && BOSS_ATTACKS[boss.attack.kind];
       const covered = bossHasCover();
       const danger = !finished && insideHazard(boss, { ...player, covered });
       const phaseShiftHint = boss.profile === BOSS && boss.phaseShift > 0
-        ? { 2: "守卫进入第二阶段：火焰变强了！先清随从能打断它放火", 3: "守卫进入第三阶段：小心它的冲锋，躲开后反击更久" }[boss.phase]
+        ? { 2: "守卫进入第二管：火焰变强了！先清随从能打断它放火", 3: "守卫进入第三管：小心它的冲锋，躲开后反击更久" }[boss.phase]
         : null;
       // Phase-change show (batch 49): the first frame of a new
       // phase fires a shock ring out to the arena edge and raises
@@ -3077,9 +3078,10 @@ export function initGame(window) {
       // wears the phase colour for the whole phase. The ring and
       // the banner state live here; hud.mjs only writes them out.
       if (bossPhaseSeen && boss.phase !== bossPhaseSeen) {
+        survival.zombies.length = 0;
         groundDecals.push({ kind: "phasering", x: boss.x, z: boss.z, radius: boss.profile.arena.radius, age: 0, ttl: .9,
           color: boss.profile === COLOSSUS ? [1, .55, .9] : [1, .6, .25] });
-        phaseBanner = { text: boss.profile === COLOSSUS ? "断星巨像进入第二阶段" : phaseShiftHint ?? "", until: boss.elapsed + 1.5 };
+        phaseBanner = { text: boss.profile === COLOSSUS ? `断星巨像进入第 ${boss.phase} 管 · ${bar.name}` : phaseShiftHint ?? "", until: boss.elapsed + 1.5 };
       }
       bossPhaseSeen = boss.phase;
       // Danger sentences per kind: the plan's kept variants first,

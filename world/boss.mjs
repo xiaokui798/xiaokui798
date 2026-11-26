@@ -16,14 +16,33 @@ export const SKY_COURT_COVERS = Object.freeze([
 export const ARENA_PALETTE = [[.075, .086, .105], [.13, .15, .18], [.29, .075, .022], [1, .20, .018], [.19, .075, .032],
   [.15, .20, .33], [.30, .39, .55], [.44, .50, .70], [.52, .37, .86], [.19, .69, .79]];
 const [BASALT, TILE, BRONZE, EMBER, ASH, INK, SLATE, SILVER, VIOLET, AURORA] = ARENA_PALETTE.map((_, i) => i + 6);
+// The guardian's waves ARE its health bars (batch 59, multibar
+// design §1): one row per bar with that bar's full parameter set —
+// cadence, windup scale, speed, recovery, damage scale — so no
+// second table exists anywhere.
 export const GUARDIAN_WAVES = [
-  { name: "起火", hp: 80, armor: 0, windup: 1, pursuit: 1.2, speed: 3.8, recovery: 1.9, attacks: ["shock", "sweep"], minions: ["walker"] },
-  { name: "烈火", hp: 100, armor: .10, windup: .86, pursuit: 1, speed: 4.4, recovery: 1.8, attacks: ["flare", "sweep"], minions: ["runner", "walker"] },
-  { name: "过载", hp: 120, armor: .20, windup: .72, pursuit: .8, speed: 5, recovery: 1.7, attacks: ["ram", "nova"], minions: ["runner", "breaker"] }
+  { name: "起火", hp: 260, armor: 0, windup: 1, pursuit: 1.2, speed: 3.8, recovery: 1.9, damageScale: 1, attacks: ["shock", "sweep"], minions: ["walker"] },
+  { name: "烈火", hp: 320, armor: .10, windup: .86, pursuit: 1, speed: 4.4, recovery: 1.8, damageScale: 1, attacks: ["flare", "sweep"], minions: ["runner", "walker"] },
+  { name: "过载", hp: 400, armor: .20, windup: .72, pursuit: .75, speed: 5.2, recovery: 1.45, damageScale: 1.15, attacks: ["ram", "nova"], minions: ["runner", "breaker"] }
 ];
 export const BOSS = Object.freeze({ id: "boss", name: "熔炉守卫", arena: ARENA, maxHp: GUARDIAN_WAVES[0].hp, radius: .86, height: 3.45 });
-export const COLOSSUS = Object.freeze({ id: "colossus", name: "断星巨像", arena: SKY_COURT, maxHp: 440, radius: 1.95, height: 8.3,
-  phaseName: "裂星", recovery: [2.55, 2.18], patterns: [["meteor", "rift"], ["nova", "prism", "meteor", "rift"]] });
+export const COLOSSUS = Object.freeze({ id: "colossus", name: "断星巨像", arena: SKY_COURT, maxHp: 700, radius: 1.95, height: 8.3,
+  bars: [
+    { name: "裂星", hp: 700, recovery: 2.55, windupScale: 1, speedScale: 1, damageScale: 1, patterns: ["meteor", "rift"] },
+    { name: "震星", hp: 750, recovery: 2.3, windupScale: .92, speedScale: 1, damageScale: 1.05, patterns: ["nova", "prism", "meteor", "rift"] },
+    { name: "逐星", hp: 800, recovery: 2, windupScale: .84, speedScale: 1.15, damageScale: 1.1, patterns: ["nova", "prism", "meteor", "rift"] },
+    { name: "碎星", hp: 850, recovery: 1.7, windupScale: .78, speedScale: 1.25, damageScale: 1.2, patterns: ["nova", "prism", "meteor", "rift"] }
+  ] });
+
+// The current bar of a fight, for HUD and tuning readers: fight.phase
+// IS the bar index (1-based) for both bosses; hp is always the
+// current bar's remaining health.
+export function bossBar(fight) {
+  const index = fight.phase;
+  const bar = fight.profile === BOSS ? GUARDIAN_WAVES[index - 1] : fight.profile.bars[index - 1];
+  const count = fight.profile === BOSS ? GUARDIAN_WAVES.length : fight.profile.bars.length;
+  return { index, count, name: bar.name, hp: fight.hp, maxHp: bar.hp, damageScale: bar.damageScale };
+}
 
 // The hint is the full windup sentence the player reads (batch 48,
 // boss-feedback plan problem two): no internal terms, the dodge and
@@ -162,10 +181,10 @@ export function strikeBoss(fight, damage, exposedCore = false, attacker = null) 
   fight.hp -= landed;
   fight.hurt = .20;
   fight.hits++;
-  if (!fight.hp && guardian && fight.phase < GUARDIAN_WAVES.length) {
+  if (!fight.hp && fight.phase < bossBar(fight).count) {
     fight.phase++;
-    const next = GUARDIAN_WAVES[fight.phase - 1];
-    Object.assign(fight, { hp: next.hp, state: "ready", attack: null, attacks: 0, time: next.pursuit, phaseShift: 1.2 });
+    const next = bossBar(fight);
+    Object.assign(fight, { hp: next.maxHp, state: "ready", attack: null, attacks: 0, time: 2, phaseShift: 2, travel: null });
   } else if (!fight.hp) fight.state = "defeated";
   return landed;
 }
@@ -191,26 +210,26 @@ function chooseColossusAttack(fight, player, phase, fallback) {
   if (fallback === "nova") return fallback;
   if (distance < repelRange) return "repel";
   if (distance > longRange) return "meteor";
-  if (player.covered && phase === 2 && fallback === "prism") return "rift";
+  if (player.covered && phase >= 2 && fallback === "prism") return "rift";
   return fallback;
 }
 
 function windUp(fight, player) {
   const guardian = fight.profile === BOSS ? GUARDIAN_WAVES[fight.phase - 1] : null;
-  const phase = guardian ? fight.phase : fight.hp <= fight.profile.maxHp / 2 ? 2 : 1;
-  const patterns = guardian?.attacks ?? fight.profile.patterns[phase - 1];
-  const fallback = patterns[phase !== fight.phase ? 0 : fight.attacks % patterns.length];
+  const phase = fight.phase;
+  const patterns = guardian?.attacks ?? fight.profile.bars[phase - 1].patterns;
+  const fallback = patterns[fight.attacks % patterns.length];
   const beyondSweep = Math.hypot(player.x - fight.x, player.z - fight.z) > BOSS_ATTACKS.sweep.reach;
   const kind = fight.profile === COLOSSUS ? chooseColossusAttack(fight, player, phase, fallback)
     : phase === 2 && beyondSweep ? "flare" : fallback;
-  if (phase !== fight.phase) fight.phaseShift = 1.2;
-  fight.attacks = phase !== fight.phase ? 1 : fight.attacks + 1;
-  fight.phase = phase;
+  fight.attacks++;
   const attack = BOSS_ATTACKS[kind];
   fight.angle = Math.atan2(player.x - fight.x, player.z - fight.z);
   const targeted = kind === "flare" || kind === "meteor";
-  const width = attack.width && attack.width * (phase === 2 ? 1.3 : 1);
-  fight.time = attack.windup * (guardian?.windup ?? (phase === 2 ? .84 : 1));
+  const width = attack.width && attack.width * (phase >= 2 ? 1.3 : 1);
+  // The 0.65s floor is the readability line from the design (§3):
+  // frenzy scales may shorten a windup, never below this.
+  fight.time = Math.max(.65, attack.windup * (guardian?.windup ?? fight.profile.bars[phase - 1].windupScale));
   fight.attack = { kind, x: targeted ? player.x : fight.x, z: targeted ? player.z : fight.z,
     angle: fight.angle, radius: 1.35, width, windup: fight.time, hit: false };
   if (guardian && kind === "flare") {
@@ -301,8 +320,9 @@ function reposition(fight, player) {
       .sort(([ax, az], [bx, bz]) => Math.hypot(ax - player.x, az - player.z) - Math.hypot(bx - player.x, bz - player.z));
     [toX, toZ] = aisles[0] ?? [fight.x, fight.z];
   }
-  const duration = pursuit ? Math.max(1.04, Math.hypot(fight.x - toX, fight.z - toZ) / 7)
-    : fight.hp <= fight.profile.maxHp / 2 ? .86 : 1.04;
+  const speedScale = fight.profile.bars[fight.phase - 1].speedScale;
+  const duration = pursuit ? Math.max(1.04, Math.hypot(fight.x - toX, fight.z - toZ) / (7 * speedScale))
+    : (fight.phase >= 2 ? .86 : 1.04) / speedScale;
   fight.orbit = i;
   fight.travel = { fromX: fight.x, fromZ: fight.z, toX, toZ, duration, pursuit };
   fight.state = "reposition";
@@ -515,7 +535,7 @@ export function advanceBoss(fight, player, dt) {
       const secondWave = fight.attack.waves?.[1];
       const echoPending = secondWave?.radius === null && fight.attack.elapsed < secondWave.delay;
       const damage = strikePlayer(fight, player, interval);
-      result.damage += damage;
+      result.damage += damage ? Math.round(damage * bossBar(fight).damageScale) : 0;
       if (damage && fight.attack.kind === "repel") {
         const dx = player.x - fight.x, dz = player.z - fight.z;
         const length = Math.hypot(dx, dz) || 1;
@@ -534,7 +554,7 @@ export function advanceBoss(fight, player, dt) {
       result.cue = "boss-strike";
     } else if (fight.state === "attack") {
       fight.state = "recovery";
-      fight.time = fight.profile === BOSS ? GUARDIAN_WAVES[fight.phase - 1].recovery : fight.profile.recovery[fight.phase - 1];
+      fight.time = fight.profile === BOSS ? GUARDIAN_WAVES[fight.phase - 1].recovery : fight.profile.bars[fight.phase - 1].recovery;
       if (fight.attack.kind === "ram") fight.time = fight.attack.hit ? .85 : 3;
       result.cue = "boss-exposed";
     } else if (fight.state === "recovery" && fight.profile === COLOSSUS) {

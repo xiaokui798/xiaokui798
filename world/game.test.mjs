@@ -368,7 +368,7 @@ test("the boss arena can be won and replayed, paying its reward without touching
   game.click("boss-button");
   game.grantPointerLock();
   frame();
-  assert.equal(game.get("boss-health-value").textContent, "80 / 80");
+  assert.equal(game.get("boss-health-value").textContent, "260 / 260");
   assert.equal(game.get("vitals").hidden, false);
   assert.equal(game.get("defense-hud").hidden, true);
   game.key("KeyW");
@@ -377,10 +377,12 @@ test("the boss arena can be won and replayed, paying its reward without touching
   game.release("KeyW");
   assert.match(game.get("weapon-label").textContent, /石斧/);
   attack();
-  assert.equal(game.get("boss-health-value").textContent, "80 / 80");
+  assert.equal(game.get("boss-health-value").textContent, "260 / 260");
   let overcharged = false;
   const summonWaves = new Set();
-  for (let i = 0; i < 2200 && game.get("death-screen").hidden; i++) {
+  let jumpPrimed = false;
+  const jumpQueue = [];
+  for (let i = 0; i < 12000 && game.get("death-screen").hidden; i++) {
     frame();
     // Track the guardian's helmet as it circles between attacks.
     let dx = 0, dz = 0, helmetVertices = 0;
@@ -398,19 +400,42 @@ test("the boss arena can be won and replayed, paying its reward without touching
       else game.release("KeyW");
     }
     const exposed = game.get("boss-callout").textContent.includes("现在打");
-    const summoned = /第 (\d) \/ 3 波/.exec(game.get("boss-name").textContent);
+    const summoned = /第 (\d) \/ 3 管/.exec(game.get("boss-name").textContent);
     if (summoned) summonWaves.add(Number(summoned[1]));
     overcharged ||= game.get("boss-name").textContent.includes("过载");
     const callout = game.get("boss-callout").textContent;
-    if (/冲过来了|火球要砸下来了|熔锤冲锋|炉火坠落/.test(callout)) {
+    if (/冲过来了|火球要砸下来了|熔锤冲锋|炉火坠落|横扫来了|扇形横扫/.test(callout)) {
       game.release("KeyW");
       game.key("KeyD");
       game.key("ShiftLeft");
-    } else {
+    } else if (exposed) {
       game.release("KeyD");
       game.release("ShiftLeft");
+    } else {
+      game.key("KeyD");
+      game.release("ShiftLeft");
     }
-    if (!exposed && (/· 跳！$/.test(callout) || callout.includes("震圈到脚下了") || callout.includes("震圈逼近"))) {
+    // Timed jumps, scheduled on the windup hint: the ring leaves
+    // the guardian at ~10 units/s, so from the robot's distance
+    // estimate it arrives (dist - start) / 10 seconds after the
+    // attack starts; jump 0.25s before that so the player is
+    // rising through the safe height as the band crosses. The
+    // nova's second ring follows 0.82s later (+42 frames).
+    const bossDist = helmetVertices ? Math.hypot(dx, dz) / helmetVertices : 5;
+    if ((callout.includes("守卫要砸地了") || callout.includes("两圈冲击波")) && !jumpPrimed) {
+      jumpPrimed = true;
+      const nova = callout.includes("两圈冲击波");
+      const bar = game.get("boss-name").textContent.includes("过载") ? 3
+        : game.get("boss-name").textContent.includes("烈火") ? 2 : 1;
+      const wind = (nova ? 1.35 : 1.04) * [1, .86, .72][bar - 1];
+      const arrive = (bossDist - (nova ? 1.72 : 1.35)) / 10;
+      const first = i + Math.round((wind + arrive - 0.25) / 0.02);
+      jumpQueue.push(first);
+      if (nova) jumpQueue.push(first + 42);
+    }
+    if (!callout.includes("砸地") && !callout.includes("冲击波") && !callout.includes("· 跳！")) jumpPrimed = false;
+    if (jumpQueue.length && i >= jumpQueue[0]) {
+      jumpQueue.shift();
       game.key("Space");
       game.release("Space");
     }
@@ -433,7 +458,7 @@ test("the boss arena can be won and replayed, paying its reward without touching
   game.click("respawn-button");
   game.grantPointerLock();
   frame();
-  assert.equal(game.get("boss-health-value").textContent, "80 / 80");
+  assert.equal(game.get("boss-health-value").textContent, "260 / 260");
   assert.equal(game.get("health-value").textContent, "100");
   game.key("Escape");
   game.click("pause-menu-button");
@@ -525,7 +550,7 @@ test("charging follows hold time and releasing early, swapping or pausing spends
   release();
   advance(1);
   assert.match(energy(), /4 \/ 6/);
-  assert.equal(game.get("boss-health-value").textContent, "440 / 440");
+  assert.equal(game.get("boss-health-value").textContent, "700 / 700");
 });
 
 test("held gunfire stops on release and switching and uses the cannon's two-cell shot", () => {
@@ -569,13 +594,13 @@ test("court skills heal after damage and five delayed dragon impacts bypass the 
   assert.equal(game.get("health-value").textContent, "100");
   game.key("Digit4");
   frames(12);
-  assert.equal(game.get("boss-health-value").textContent, "440 / 440");
+  assert.equal(game.get("boss-health-value").textContent, "700 / 700");
   game.release("Digit4");
   game.key("Digit4");
   frames(85);
-  assert.equal(game.get("boss-health-value").textContent, "424 / 440");
+  assert.equal(game.get("boss-health-value").textContent, "684 / 700");
   frames(115);
-  assert.equal(game.get("boss-health-value").textContent, "360 / 440");
+  assert.equal(game.get("boss-health-value").textContent, "620 / 700");
 });
 
 test("the pulse weapon can interrupt the crystal and win the colossus fight through both phases", () => {
@@ -590,7 +615,17 @@ test("the pulse weapon can interrupt the crystal and win the colossus fight thro
   const frame = () => game.frame(time += 20);
   const advance = frames => { for (let i = 0; i < frames; i++) frame(); };
   function aimAtPart(mark) {
-    const vertices = game.actorVertices;
+    // The harness keeps the last mesh upload of the frame; a
+    // one-frame particle upload can land after the actor mesh and
+    // hide it. Rescan on later frames before concluding the part
+    // is not rendered (up to 30 frames), then assert as before.
+    let vertices = game.actorVertices;
+    const scan = () => {
+      let found = 0;
+      for (let offset = 0; offset < vertices.length; offset += 12) if (vertices[offset + 9] === mark) found++;
+      return found;
+    };
+    for (let attempt = 0; attempt < 30 && !scan(); attempt++) { frame(); vertices = game.actorVertices; }
     const sum = [0, 0, 0];
     let points = 0;
     for (let offset = 0; offset < vertices.length; offset += 12) {
@@ -614,7 +649,7 @@ test("the pulse weapon can interrupt the crystal and win the colossus fight thro
   game.grantPointerLock();
   frame();
   assert.equal(game.get("boss-name").textContent, "断星巨像");
-  assert.equal(game.get("boss-health-value").textContent, "440 / 440");
+  assert.equal(game.get("boss-health-value").textContent, "700 / 700");
   assert.equal(game.get("weather-status").textContent, "断星天井");
   game.key("Digit8");
   frame();
@@ -622,7 +657,7 @@ test("the pulse weapon can interrupt the crystal and win the colossus fight thro
   attack();
   frame();
   assert.match(game.get("pulse-info").textContent, /5 \/ 6/);
-  assert.equal(game.get("boss-health-value").textContent, "440 / 440");
+  assert.equal(game.get("boss-health-value").textContent, "700 / 700");
   game.key("KeyR");
   frame();
   assert.equal(game.get("pulse-info").textContent, "正在充能");
@@ -634,10 +669,10 @@ test("the pulse weapon can interrupt the crystal and win the colossus fight thro
   game.release("KeyW");
   let secondPhase = false, shifted = false, nova = false, rangedHit = false, interrupted = false;
   let dodge = null, dodged = false, dodgeUntil = 0;
-  for (let i = 0; i < 2200 && game.get("death-screen").hidden; i++) {
+  for (let i = 0; i < 16000 && game.get("death-screen").hidden; i++) {
     frame();
     const callout = game.get("boss-callout").textContent;
-    secondPhase ||= game.get("wave-status").textContent.includes("第二阶段");
+    secondPhase ||= game.get("wave-status").textContent.includes("第 2 / 4 管");
     shifted ||= callout.includes("换位置");
     nova ||= callout.includes("双环星震");
     if (dodge && time >= dodgeUntil) {
@@ -657,6 +692,8 @@ test("the pulse weapon can interrupt the crystal and win the colossus fight thro
       }
       continue;
     }
+    if (callout.includes("跳！")) { game.key("Space"); game.release("Space"); }
+    if (Number(game.get("health-value").textContent) <= 55) { game.key("Digit1"); game.release("Digit1"); }
     const distance = aimAtPart(-2);
     if (callout.includes("发青光的核心")) {
       dodged = false;
@@ -687,7 +724,7 @@ test("the pulse weapon can interrupt the crystal and win the colossus fight thro
   game.click("respawn-button");
   game.grantPointerLock();
   frame();
-  assert.equal(game.get("boss-health-value").textContent, "440 / 440");
+  assert.equal(game.get("boss-health-value").textContent, "700 / 700");
   assert.equal(game.get("health-value").textContent, "100");
   game.key("Escape");
   game.click("pause-menu-button");
@@ -697,7 +734,7 @@ test("the pulse weapon can interrupt the crystal and win the colossus fight thro
   game.key("Digit8");
   frame();
   assert.equal(game.get("pulse-info").hidden, true);
-  assert.equal(game.get("boss-health-value").textContent, "80 / 80");
+  assert.equal(game.get("boss-health-value").textContent, "260 / 260");
   assert.equal(game.get("weather-status").textContent, "熔炉遗迹");
 });
 
@@ -1032,7 +1069,9 @@ test("defeating the guardian records the boss in saved progress", t => {
   game.key("Digit7");
   for (let i = 0; i < 58; i++) frame();
   game.release("KeyW");
-  for (let i = 0; i < 2200 && game.get("death-screen").hidden; i++) {
+  let jumpPrimed = false;
+  const jumpQueue = [];
+  for (let i = 0; i < 12000 && game.get("death-screen").hidden; i++) {
     frame();
     let dx = 0, dz = 0, helmetVertices = 0;
     const vertices = game.actorVertices;
@@ -1050,15 +1089,38 @@ test("defeating the guardian records the boss in saved progress", t => {
     }
     const exposed = game.get("boss-callout").textContent.includes("现在打");
     const callout = game.get("boss-callout").textContent;
-    if (/冲过来了|火球要砸下来了|熔锤冲锋|炉火坠落/.test(callout)) {
+    if (/冲过来了|火球要砸下来了|熔锤冲锋|炉火坠落|横扫来了|扇形横扫/.test(callout)) {
       game.release("KeyW");
       game.key("KeyD");
       game.key("ShiftLeft");
-    } else {
+    } else if (exposed) {
       game.release("KeyD");
       game.release("ShiftLeft");
+    } else {
+      game.key("KeyD");
+      game.release("ShiftLeft");
     }
-    if (!exposed && (/· 跳！$/.test(callout) || callout.includes("震圈到脚下了") || callout.includes("震圈逼近"))) {
+    // Timed jumps, scheduled on the windup hint: the ring leaves
+    // the guardian at ~10 units/s, so from the robot's distance
+    // estimate it arrives (dist - start) / 10 seconds after the
+    // attack starts; jump 0.25s before that so the player is
+    // rising through the safe height as the band crosses. The
+    // nova's second ring follows 0.82s later (+42 frames).
+    const bossDist = helmetVertices ? Math.hypot(dx, dz) / helmetVertices : 5;
+    if ((callout.includes("守卫要砸地了") || callout.includes("两圈冲击波")) && !jumpPrimed) {
+      jumpPrimed = true;
+      const nova = callout.includes("两圈冲击波");
+      const bar = game.get("boss-name").textContent.includes("过载") ? 3
+        : game.get("boss-name").textContent.includes("烈火") ? 2 : 1;
+      const wind = (nova ? 1.35 : 1.04) * [1, .86, .72][bar - 1];
+      const arrive = (bossDist - (nova ? 1.72 : 1.35)) / 10;
+      const first = i + Math.round((wind + arrive - 0.25) / 0.02);
+      jumpQueue.push(first);
+      if (nova) jumpQueue.push(first + 42);
+    }
+    if (!callout.includes("砸地") && !callout.includes("冲击波") && !callout.includes("· 跳！")) jumpPrimed = false;
+    if (jumpQueue.length && i >= jumpQueue[0]) {
+      jumpQueue.shift();
       game.key("Space");
       game.release("Space");
     }
@@ -1124,7 +1186,7 @@ test("a stale progress save at death offers keeping this run's progress instead"
   game.grantPointerLock();
   game.frame(0);
   assert.equal(game.get("death-screen").hidden, true);
-  assert.equal(game.get("boss-health-value").textContent, "80 / 80");
+  assert.equal(game.get("boss-health-value").textContent, "260 / 260");
 });
 
 test("the block atlas paints all nine tiles", () => {
@@ -3444,7 +3506,7 @@ test("boss warnings: the guardian's status line, central warning and in-danger f
   // The right-top line is minions + one tip; the wave lives only in
   // the boss hud, under its new name; the debug coordinates yield.
   assert.equal(game.get("wave-status").textContent, "场上随从 0 只 · 守卫蓄力时绕到背后打核心");
-  assert.equal(game.get("boss-name").textContent, "熔炉守卫 · 第 1 / 3 波 · 起火");
+  assert.equal(game.get("boss-name").textContent, "熔炉守卫 · 第 1 / 3 管 · 起火");
   assert.equal(game.get("coordinates").hidden, true);
   // The first windup (shock) puts the plain sentence in the callout
   // and, word for word, in the big central warning.
@@ -3482,7 +3544,7 @@ test("boss warnings: the colossus shows phase and skill chips, and its meteor te
   game.click("colossus-button");
   game.grantPointerLock();
   frame();
-  assert.equal(game.get("wave-status").textContent, "第一阶段");
+  assert.equal(game.get("wave-status").textContent, "第 1 / 4 管 · 裂星");
   assert.equal(game.get("boss-skills").hidden, false);
   assert.equal(game.get("boss-skill-heal").textContent, "[1] 回血 · 就绪");
   assert.equal(game.get("boss-skill-dragons").textContent, "[4] 五龙冲击 · 就绪");
