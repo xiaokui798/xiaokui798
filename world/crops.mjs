@@ -28,6 +28,13 @@ export const RAIN_GROWTH_MULTIPLIER = 2;
 // cycle (the fertilized flag is per crop, set once, never re-applied).
 export const FERTILIZER_GROWTH_MULTIPLIER = 2;
 
+// Watering (R6) doubles growth too, through the same machine: the
+// watering can sets a crop's `watered` flag once for its whole cycle
+// (like fertilizer, never re-applied), and advanceCrops multiplies it
+// in alongside rain and fertilizer — a watered, fertilized crop in
+// the rain grows at x8. There is no separate moisture state.
+export const WATERING_GROWTH_MULTIPLIER = 2;
+
 // The seeds a new game starts with: 2 wheat seeds, so the player can
 // try planting before the first spitter drops one. An old save (no seeds
 // field) loads the same 2 on upgrade — the starter is the fallback, the

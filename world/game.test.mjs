@@ -2510,7 +2510,7 @@ test("the pause menu exports the save and imports a file back", async () => {
   // defaults, and is re-saved as the current version; everything else
   // comes back verbatim.
   assert.deepEqual(JSON.parse(data.get(SAVE_KEY)),
-    { ...JSON.parse(imported), version: 5, rareMaterials: { emberCore: 0, starShard: 0 },
+    { ...JSON.parse(imported), version: 5, wateringCanOwned: false, rareMaterials: { emberCore: 0, starShard: 0 },
       dressings: { dressing: 2, bandage: 1, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 0 },
       equipment: { weapon: null, armor: null, tool: null }, techUnlocked: [],
       workbenchBuilt: false, stats: { blocksMined: 0, cropsPlanted: 0, cropsHarvested: 0 },
@@ -3478,6 +3478,131 @@ test("a kill's loot message names every drop, never \"undefined\"", () => {
   }
   assert.ok(looted, "a zombie was killed and its loot messaged");
   assert.ok(!looted.includes("undefined"), `loot names every drop: ${looted}`);
+});
+
+// Farming (R6): the watering can (KeyJ), batch harvest (KeyE away
+// from the beacon), and the harvest tech branch paying through both.
+test("the watering can is crafted in the farm tab, and watering without it says what is missing", () => {
+  const soil = probeSoilCell();
+  const cropCell = voxelIndex(WORLD, soil[0], soil[1] + 1, soil[2]);
+  const data = new Map([[SAVE_KEY, v5SaveWithSeeds({ wheatSeed: 2, wheat: 0, fertilizer: 0 },
+    { [cropCell]: { crop: "wheat", stage: 0, plantedAt: 30, growth: 0 } }, [0, 0, 0, 0, 3, 2])]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 16;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  settledAimCell(game, frame);
+  assert.equal(game.target.join(","), soil.join(","), "the aim is the soil under the crop");
+  // No can yet: the watering key names what is missing and where
+  // it is made, and the crop stays unwatered.
+  game.key("KeyJ");
+  frame();
+  assert.equal(game.get("message").textContent, "没有洒水壶（木头 3 + 树叶 2，在种田页签制作）");
+  // The tab, not the disk, is the honest read here: the save text
+  // still holds the seeded record until a write re-serializes it.
+  game.key("KeyC");
+  frame();
+  game.click("tab-btn-farm");
+  assert.doesNotMatch(game.get("farm-crops").innerHTML, /已浇水/);
+  // Craft it in the farm tab (already open from the check above):
+  // the toast names the can, the row flips to owned, the button
+  // disables, the save records it.
+  assert.match(game.get("farm-watering-can-cost").textContent, /木头 3\/3 · 树叶 2\/2/);
+  assert.equal(game.get("craft-watering-can").disabled, false);
+  game.click("craft-watering-can");
+  frame();
+  assert.equal(game.get("craft-toast-name").textContent, "洒水壶");
+  assert.equal(game.get("farm-watering-can-cost").textContent, "已拥有 · 对准作物按 J 浇水");
+  assert.equal(game.get("craft-watering-can").disabled, true);
+  assert.equal(JSON.parse(data.get(SAVE_KEY)).wateringCanOwned, true);
+});
+
+test("KeyJ waters the aimed crop once, and refuses a second watering", () => {
+  const soil = probeSoilCell();
+  const cropCell = voxelIndex(WORLD, soil[0], soil[1] + 1, soil[2]);
+  const save = JSON.parse(v5SaveWithSeeds({ wheatSeed: 2, wheat: 0, fertilizer: 0 },
+    { [cropCell]: { crop: "wheat", stage: 0, plantedAt: 30, growth: 0 } }));
+  save.wateringCanOwned = true;
+  const data = new Map([[SAVE_KEY, JSON.stringify(save)]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 16;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  settledAimCell(game, frame);
+  assert.equal(game.target.join(","), soil.join(","), "the aim is the soil under the crop");
+  game.key("KeyJ");
+  frame();
+  assert.equal(game.get("message").textContent, "给小麦浇了水，长得更快了");
+  assert.equal(JSON.parse(data.get(SAVE_KEY)).crops[cropCell].watered, true);
+  // A second watering is refused — one lasts the whole cycle.
+  game.key("KeyJ");
+  frame();
+  assert.equal(game.get("message").textContent, "这株作物已经浇过水了");
+});
+
+test("KeyE batch-harvests every mature crop in reach and leaves the rest standing", () => {
+  const soil = probeSoilCell();
+  const near1 = voxelIndex(WORLD, soil[0], soil[1] + 1, soil[2]);
+  const near2 = voxelIndex(WORLD, soil[0] + 1, soil[1] + 1, soil[2]);
+  const immature = voxelIndex(WORLD, soil[0], soil[1] + 1, soil[2] + 1);
+  const far = voxelIndex(WORLD, soil[0] + 12, soil[1] + 1, soil[2]);
+  const data = new Map([[SAVE_KEY, v5SaveWithSeeds({ wheatSeed: 1, wheat: 0, fertilizer: 0 }, {
+    [near1]: { crop: "wheat", stage: 2, plantedAt: 30, growth: 240 },
+    [near2]: { crop: "wheat", stage: 2, plantedAt: 30, growth: 240 },
+    [immature]: { crop: "wheat", stage: 0, plantedAt: 30, growth: 0 },
+    [far]: { crop: "wheat", stage: 2, plantedAt: 30, growth: 240 } })]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 16;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  settledAimCell(game, frame);
+  game.key("KeyE");
+  frame();
+  assert.equal(game.get("message").textContent, "批量收获 2 株：小麦 +4 · 小麦种子 +2");
+  const saved = JSON.parse(data.get(SAVE_KEY));
+  assert.equal(saved.seeds.wheat, 4);
+  assert.equal(saved.seeds.wheatSeed, 3);
+  assert.equal(saved.stats.cropsHarvested, 2);
+  assert.deepEqual(Object.keys(saved.crops).map(Number).sort((a, b) => a - b), [immature, far].sort((a, b) => a - b),
+    "the immature crop and the out-of-reach crop are left standing");
+  // Nothing mature in reach any more: the key says so instead of
+  // silently doing nothing.
+  game.key("KeyE");
+  frame();
+  assert.equal(game.get("message").textContent, "附近没有成熟的作物");
+});
+
+test("KeyE batch harvest pays the harvest tech's +1 on every crop", () => {
+  const soil = probeSoilCell();
+  const near1 = voxelIndex(WORLD, soil[0], soil[1] + 1, soil[2]);
+  const near2 = voxelIndex(WORLD, soil[0] + 1, soil[1] + 1, soil[2]);
+  const save = JSON.parse(v5SaveWithSeeds({ wheatSeed: 1, wheat: 0, fertilizer: 0 }, {
+    [near1]: { crop: "wheat", stage: 2, plantedAt: 30, growth: 240 },
+    [near2]: { crop: "wheat", stage: 2, plantedAt: 30, growth: 240 } }));
+  save.techUnlocked = ["bountifulHarvest"];
+  const data = new Map([[SAVE_KEY, JSON.stringify(save)]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 16;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  settledAimCell(game, frame);
+  game.key("KeyE");
+  frame();
+  // Two crops, each paying the bonused 3 wheat + 2 seeds — the
+  // batch settles exactly like two single-crop harvests would.
+  assert.equal(game.get("message").textContent, "批量收获 2 株：小麦 +6 · 小麦种子 +4");
+  const saved = JSON.parse(data.get(SAVE_KEY));
+  assert.equal(saved.seeds.wheat, 6);
+  assert.equal(saved.seeds.wheatSeed, 5);
+  assert.equal(saved.stats.cropsHarvested, 2);
 });
 
 // Farming (R3): the farm tab, sow mode, fertilizer (KeyG), mature notices.

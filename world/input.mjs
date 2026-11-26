@@ -53,6 +53,7 @@ export function createInput({ document, canvas, storage, mouseLook, sensitivityS
     if (event.code === "KeyE" && !event.repeat) { actions.repairBeacon(); return; }
     if (event.code === "KeyF" && !event.repeat) { actions.plantKey(); return; }
     if (event.code === "KeyG" && !event.repeat) { actions.fertilize(); return; }
+    if (event.code === "KeyJ" && !event.repeat) { actions.water(); return; }
     if (event.code === "KeyB" && !event.repeat && state.beaconWaiting) { actions.skipCountdown(); return; }
     if (event.code === "KeyT" && !event.repeat && !state.bossPresent) { actions.cycleWeather(); return; }
     keys.add(event.code);

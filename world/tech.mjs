@@ -1,4 +1,4 @@
-// Tech tree registry: a linear trunk the player must walk, plus three
+// Tech tree registry: a linear trunk the player must walk, plus four
 // optional branches with independent thresholds. Each tech is
 // { id, name, desc, requires, unlocks, mount? }: `requires` may name a
 // prerequisite tech, boss kills, a survival best wave, a defense best
@@ -9,7 +9,8 @@
 // a branch hangs under in the UI — visual grouping only, never a
 // prerequisite. The state canUnlockTech reads is
 // { techUnlocked: string[], progress: { bossKills?, bestWave?,
-//   defense?: { bestWave? }, kills? }, blocksMined?: number }.
+//   defense?: { bestWave? }, kills? }, blocksMined?: number,
+//   cropsHarvested?: number }.
 export const TECH = Object.freeze({
   workbench: { id: "workbench", name: "工作台", desc: "主干起点：解锁石阶装备",
     requires: {}, unlocks: [] },
@@ -29,13 +30,16 @@ export const TECH = Object.freeze({
     requires: { blocksMined: 500 }, unlocks: [], mount: "stoneGear" },
   firstAid: { id: "firstAid", name: "急救", desc: "敷料回血 +10",
     requires: { kills: 100 }, unlocks: [], mount: "emberGear" },
+  bountifulHarvest: { id: "bountifulHarvest", name: "丰收", desc: "收获产量 +1",
+    requires: { cropsHarvested: 20 }, unlocks: [], mount: "stoneGear" },
 });
 
 export const TRUNK = Object.freeze(["workbench", "stoneGear", "emberTech", "emberGear", "starTech", "starGear"]);
 
-// The three branch effects, in the units their call sites use: a
-// reduction-rate bonus, seconds per block, and healing points.
-export const TECH_EFFECTS = Object.freeze({ toughnessReduction: 0.05, swiftHandsSeconds: 0.02, firstAidHealing: 10 });
+// The four branch effects, in the units their call sites use: a
+// reduction-rate bonus, seconds per block, healing points, and extra
+// items per harvest yield entry.
+export const TECH_EFFECTS = Object.freeze({ toughnessReduction: 0.05, swiftHandsSeconds: 0.02, firstAidHealing: 10, bountifulHarvestBonus: 1 });
 
 // Boss display names for the threshold lines ("击败熔炉守卫 1/1 次").
 // The two ids are the same keys BOSS_DROPS uses in progression.mjs.
@@ -78,6 +82,10 @@ export function techConditions(state, id) {
   if (requires.kills !== undefined) {
     const have = progress.kills ?? 0;
     conditions.push({ text: `累计击杀 ${have}/${requires.kills} 只`, met: have >= requires.kills });
+  }
+  if (requires.cropsHarvested !== undefined) {
+    const have = state?.cropsHarvested ?? 0;
+    conditions.push({ text: `累计收获 ${have}/${requires.cropsHarvested} 株`, met: have >= requires.cropsHarvested });
   }
   return conditions;
 }
@@ -154,7 +162,7 @@ export function validateTech(tech = TECH, recipes = null) {
         }
       }
     }
-    for (const field of ["bestWave", "defenseWave", "blocksMined", "kills"]) {
+    for (const field of ["bestWave", "defenseWave", "blocksMined", "kills", "cropsHarvested"]) {
       const value = requires[field];
       if (value !== undefined && (!Number.isInteger(value) || value <= 0)) {
         errors.push(`${label}：${field}必须是正整数（现在是 ${value}）`);

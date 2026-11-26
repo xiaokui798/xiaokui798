@@ -162,6 +162,10 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
         <div><h3>${RECIPES.fertilizer.name}</h3><p id="farm-fertilizer-cost"></p></div>
         <button id="craft-fertilizer" type="button">制作${RECIPES.fertilizer.name}</button>
       </div>
+      <div class="recipe" id="farm-watering-can-row">
+        <div><h3>${RECIPES.wateringCan.name}</h3><p id="farm-watering-can-cost"></p></div>
+        <button id="craft-watering-can" type="button">制作${RECIPES.wateringCan.name}</button>
+      </div>
       <div id="farm-crops"></div>
       <p id="farm-empty" class="inventory-notice" style="margin: .45rem 0 0;"></p>
       <p class="inventory-notice" style="margin: .75rem 0 0;">对准耕地播种，成熟后到田里左键收割；下雨时作物长得更快</p>
@@ -295,6 +299,9 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
   const farmFertilizerCost = document.querySelector("#farm-fertilizer-cost");
   const craftFertilizerButton = document.querySelector("#craft-fertilizer");
   craftFertilizerButton.addEventListener("click", () => actions.craftItem("fertilizer"));
+  const farmWateringCanCost = document.querySelector("#farm-watering-can-cost");
+  const craftWateringCanButton = document.querySelector("#craft-watering-can");
+  craftWateringCanButton.addEventListener("click", () => actions.craftItem("wateringCan"));
   // The sow-mode hint: a HUD line that only shows while the mode is
   // armed, styled like #pulse-hint (styles.css is not touched by this
   // change, so the look is inline). Query-first like the tab panels, so
@@ -526,6 +533,8 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
     }
     setText(farmFertilizerCost, recipeCost(campaign, env, "fertilizer"));
     craftFertilizerButton.disabled = !campaign.canCraft("fertilizer");
+    setText(farmWateringCanCost, campaign.wateringCanOwned ? "已拥有 · 对准作物按 J 浇水" : recipeCost(campaign, env, "wateringCan"));
+    craftWateringCanButton.disabled = !campaign.canCraft("wateringCan");
     const crops = campaign.crops;
     const cells = Object.keys(crops);
     const raining = env.raining;
@@ -540,8 +549,9 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
       const pct = Math.min(100, Math.round(crop.growth / def.growthSeconds * 100));
       const rainNote = mature || !raining ? "" : roofed ? " · 有遮挡，雨淋不到" : " · 雨中加速";
       const fedNote = crop.fertilized ? " · 已施肥" : "";
-      const status = mature ? `${def.name} · 已成熟 · 位于 (${x}, ${z})${fedNote}`
-        : `${def.name} · 生长中 · ${days} / ${totalDays} 天${rainNote}${fedNote}`;
+      const waterNote = crop.watered ? " · 已浇水" : "";
+      const status = mature ? `${def.name} · 已成熟 · 位于 (${x}, ${z})${fedNote}${waterNote}`
+        : `${def.name} · 生长中 · ${days} / ${totalDays} 天${rainNote}${fedNote}${waterNote}`;
       const chip = mature ? `<button type="button" disabled>已成熟</button>` : "";
       return `<div class="recipe" id="farm-crop-${cell}">
         <div><h3>${def.name}</h3><p>${status}</p></div>

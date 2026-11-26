@@ -3418,7 +3418,11 @@ export function initGame(window) {
   // recipe key is its own icon key except the stone axe: the
   // recipe predates the tier naming, so its key is just "axe"
   // while the icon set names it stoneAxe.
-  const CRAFT_ICON_KEYS = { axe: "stoneAxe" };
+  const CRAFT_ICON_KEYS = { axe: "stoneAxe",
+    // Placeholder: the watering can's own icon is not drawn yet
+    // (visual group's list) — the toast reuses the fertilizer icon
+    // rather than a missing file. Swap when wateringCan.svg lands.
+    wateringCan: "fertilizer" };
 
   function craftItem(key) {
     if (inventoryScreen.hidden || !survival.enabled) return;
@@ -3576,6 +3580,60 @@ export function initGame(window) {
     if (!result) { showMessage("施不上肥"); return; }
     if (checkSaveConflict(result)) return;
     showMessage(result.saved ? `给${CROPS[crop.crop].name}施了腐叶，长得更快了` : `给${CROPS[crop.crop].name}施了腐叶 · 本次改动无法保存`);
+  }
+  // Water the crop under the crosshair (KeyJ, R6): the same aim as
+  // fertilizing — the ray passes through the crop's AIR cell and hits
+  // the soil below. The can is a durable tool: owning it is the only
+  // requirement, watering spends nothing, and one watering lasts the
+  // crop's whole cycle (a second is refused, like a second compost).
+  function waterCropAtAim() {
+    if (boss || !player.hp) return;
+    const { origin, direction } = renderedView ?? { origin: eye(), direction: viewDirection() };
+    const target = raycast(origin, direction, interactionReach);
+    if (!target) { showMessage("对准一株作物再浇水"); return; }
+    const [x, y, z] = target.hit;
+    const above = index(x, y + 1, z);
+    const crop = campaign.cropAt(above);
+    if (!crop) { showMessage("对准一株作物再浇水"); return; }
+    if (crop.watered) { showMessage("这株作物已经浇过水了"); return; }
+    if (!campaign.wateringCanOwned) { showMessage("没有洒水壶（木头 3 + 树叶 2，在种田页签制作）"); return; }
+    const result = campaign.waterCrop(above);
+    if (!result) { showMessage("浇不上水"); return; }
+    if (checkSaveConflict(result)) return;
+    showMessage(result.saved ? `给${CROPS[crop.crop].name}浇了水，长得更快了` : `给${CROPS[crop.crop].name}浇了水 · 本次改动无法保存`);
+  }
+  // Batch harvest (KeyE away from the beacon, R6): every mature crop
+  // within reach of the player is harvested through the same
+  // harvestCrop the click uses — same yield, same 丰收 bonus, same
+  // counting — and the totals land in one message. Immature crops
+  // and crops past the reach are left standing.
+  function harvestAllNearby() {
+    if (boss || finished || !player.hp) return;
+    let plants = 0;
+    const totals = new Map();
+    for (const cellKey of Object.keys(campaign.crops)) {
+      const cell = Number(cellKey);
+      if (!campaign.isCropMature(cell)) continue;
+      const [x, y, z] = voxelPosition(WORLD, cell);
+      if (Math.hypot(x + .5 - player.x, y - player.y, z + .5 - player.z) > 4) continue;
+      const result = campaign.harvestCrop(cell);
+      if (!result?.saved) continue;
+      plants++;
+      for (const [id, amount] of result.yield ?? []) totals.set(id, (totals.get(id) ?? 0) + amount);
+    }
+    if (!plants) { showMessage("附近没有成熟的作物"); return; }
+    const got = [...totals].map(([id, amount]) =>
+      `${typeof id === "string" ? (FARM_MATERIALS[id] ?? RARE_MATERIALS[id]) : blockNames[id]} +${amount}`).join(" · ");
+    showMessage(`批量收获 ${plants} 株：${got}`);
+    updateHotbar();
+  }
+  // KeyE is shared by context (R6): at a defense beacon it repairs
+  // (the defense is time-critical and the beacon owns the key
+  // there); everywhere else it batch-harvests the mature crops
+  // around the player.
+  function repairOrHarvestAll() {
+    if (defense.beacon) { repairBeacon(); return; }
+    harvestAllNearby();
   }
 
   function interact(place) {
@@ -3923,8 +3981,8 @@ export function initGame(window) {
     actions: {
       toggleSound, closeInventory, exitSowMode, suspendGame, wakeAudio,
       colossusSkill: (code, repeat) => { if (!repeat && !finished && player.hp) colossusSkillKey(code); },
-      rechargePulse, openInventory, healWithDressing, repairBeacon,
-      plantKey, fertilize: fertilizeCropAtAim, plantSeed,
+      rechargePulse, openInventory, healWithDressing, repairBeacon: repairOrHarvestAll,
+      plantKey, fertilize: fertilizeCropAtAim, water: waterCropAtAim, plantSeed,
       skipCountdown: () => { survival.countdown = 0; },
       cycleWeather, selectSlot,
       bufferJump: () => { jumpBuffer = .18; },

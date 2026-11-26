@@ -17,6 +17,12 @@ export const RECIPES = Object.freeze({
   // material id, so crafting one credits the campaign's seed counts
   // (see progression.mjs craft()); it is spent on crops, one per plant.
   fertilizer: { name: "腐叶", cost: [[BLOCK.LEAF, 2], [BLOCK.DIRT, 1]] },
+  // The watering can (R6, farming): a one-time tool grant like the
+  // axe — crafting it sets a save flag (progression.mjs craft()), it
+  // occupies no slot and is never consumed; using it is the KeyJ
+  // watering action on an aimed crop. Wood and leaf, mixed by hand
+  // like the compost — no workbench, no tech gate (farming has none).
+  wateringCan: { name: "洒水壶", cost: [[BLOCK.WOOD, 3], [BLOCK.LEAF, 2]] },
   // The workbench is the gate to all equipment: it is built without one
   // (it is the first build), and every equipment recipe below needs it.
   workbench: { name: "工作台", cost: [[BLOCK.STONE, 5], [BLOCK.WOOD, 5]] },

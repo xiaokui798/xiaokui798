@@ -12,7 +12,7 @@ const withProgress = (progress, blocksMined = 0) => ({ techUnlocked: [], progres
 
 test("the tech table is pinned verbatim: trunk, branches and effects", () => {
   assert.deepEqual(TRUNK, ["workbench", "stoneGear", "emberTech", "emberGear", "starTech", "starGear"]);
-  assert.deepEqual(TECH_EFFECTS, { toughnessReduction: 0.05, swiftHandsSeconds: 0.02, firstAidHealing: 10 });
+  assert.deepEqual(TECH_EFFECTS, { toughnessReduction: 0.05, swiftHandsSeconds: 0.02, firstAidHealing: 10, bountifulHarvestBonus: 1 });
   assert.deepEqual(TECH, {
     workbench: { id: "workbench", name: "工作台", desc: "主干起点：解锁石阶装备",
       requires: {}, unlocks: [] },
@@ -32,11 +32,23 @@ test("the tech table is pinned verbatim: trunk, branches and effects", () => {
       requires: { blocksMined: 500 }, unlocks: [], mount: "stoneGear" },
     firstAid: { id: "firstAid", name: "急救", desc: "敷料回血 +10",
       requires: { kills: 100 }, unlocks: [], mount: "emberGear" },
+    bountifulHarvest: { id: "bountifulHarvest", name: "丰收", desc: "收获产量 +1",
+      requires: { cropsHarvested: 20 }, unlocks: [], mount: "stoneGear" },
   });
   // Branches hang under their trunk node in display order; the mount is
   // visual grouping only, never a prerequisite.
   assert.deepEqual(techDisplayOrder(),
-    ["workbench", "stoneGear", "swiftHands", "emberTech", "toughness", "emberGear", "firstAid", "starTech", "starGear"]);
+    ["workbench", "stoneGear", "swiftHands", "bountifulHarvest", "emberTech", "toughness", "emberGear", "firstAid", "starTech", "starGear"]);
+});
+
+test("the harvest branch reads the lifetime harvest count", () => {
+  assert.deepEqual(techConditions({ techUnlocked: [], progress: {}, cropsHarvested: 7 }, "bountifulHarvest"),
+    [{ text: "累计收获 7/20 株", met: false }]);
+  assert.equal(canUnlockTech({ techUnlocked: [], progress: {}, cropsHarvested: 19 }, "bountifulHarvest"), false);
+  assert.equal(canUnlockTech({ techUnlocked: [], progress: {}, cropsHarvested: 20 }, "bountifulHarvest"), true);
+  assert.equal(techLockReason({ techUnlocked: [], progress: {}, cropsHarvested: 0 }, "bountifulHarvest"), "累计收获 0/20 株");
+  // A state without the field (an older caller) reads as zero.
+  assert.equal(canUnlockTech({ techUnlocked: [], progress: {} }, "bountifulHarvest"), false);
 });
 
 test("canUnlockTech walks the trunk in order and checks each threshold", () => {
