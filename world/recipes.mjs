@@ -12,6 +12,11 @@ export const RECIPES = Object.freeze({
   dressing: { name: "树叶敷料", cost: [[BLOCK.LEAF, 2]], healing: 30 },
   bandage: { name: "树皮绷带", cost: [[BLOCK.WOOD, 2], [BLOCK.LEAF, 1]], healing: 20 },
   bigDressing: { name: "树叶大敷料", cost: [[BLOCK.LEAF, 4]], healing: 50 },
+  // Compost (R3, farming): leaves + dirt, mixed by hand like a
+  // dressing — no workbench, no equipment slot. Its key is a farm
+  // material id, so crafting one credits the campaign's seed counts
+  // (see progression.mjs craft()); it is spent on crops, one per plant.
+  fertilizer: { name: "腐叶", cost: [[BLOCK.LEAF, 2], [BLOCK.DIRT, 1]] },
   // The workbench is the gate to all equipment: it is built without one
   // (it is the first build), and every equipment recipe below needs it.
   workbench: { name: "工作台", cost: [[BLOCK.STONE, 5], [BLOCK.WOOD, 5]] },

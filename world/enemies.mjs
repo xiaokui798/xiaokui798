@@ -2,6 +2,7 @@
 // existing imports (game.js included) keep working unchanged; new enemy
 // kinds are added here, not in defense.mjs.
 import { BLOCK } from "./recipes.mjs";
+import { FARM_MATERIALS } from "./crops.mjs";
 
 // Rare crafting materials, by id: they are not blocks (no BLOCK id, no
 // terrain), they only live in the campaign's rare-material counts. Boss
@@ -27,7 +28,7 @@ export const ENEMIES = Object.freeze({
   spitter: { name: "投掷者", hp: 55, speed: 1.25, reach: 1.0, damage: 13, strikeDelay: .55, cooldown: 2.1,
     width: .85, height: .95, armor: false, attack: "ranged", range: 7.5, projectileSpeed: 6,
     coat: [.32, .42, .22], skin: [.62, .58, .34], eyes: [.45, .85, .30],
-    drops: [[BLOCK.STONE, 1], [BLOCK.LEAF, 2]] }
+    drops: [[BLOCK.STONE, 1], [BLOCK.LEAF, 2], ["wheatSeed", 1]] }
 });
 
 // Validate an enemy registry (defaults to this module's own): every kind
@@ -35,8 +36,9 @@ export const ENEMIES = Object.freeze({
 // (melee by default) or "melee" / "ranged"; a ranged kind needs a
 // positive range and projectileSpeed; every kind needs a drop table whose
 // entries are [material, count] pairs — the material is a registered
-// block (never AIR) or a registered rare material, the count a positive
-// whole number. Returns { valid, errors } so callers can report every
+// block (never AIR), a registered rare material or a registered farm
+// material (a seed, so the spitter can drop wheatSeed), the count a
+// positive whole number. Returns { valid, errors } so callers can report every
 // problem at once instead of failing on the first one — the same shape
 // as validateRecipes.
 export function validateEnemies(enemies = ENEMIES) {
@@ -69,7 +71,8 @@ export function validateEnemies(enemies = ENEMIES) {
       if (!Array.isArray(entry) || entry.length !== 2) { errors.push(`${dropLabel}不是 [材料, 数量]`); continue; }
       const [id, amount] = entry;
       const knownBlock = typeof id === "number" && Number.isInteger(id) && id !== BLOCK.AIR && id >= BLOCK.AIR && id <= BLOCK.LEAF;
-      if (!knownBlock && !(typeof id === "string" && Object.hasOwn(RARE_MATERIALS, id))) {
+      if (!knownBlock && !(typeof id === "string"
+        && (Object.hasOwn(RARE_MATERIALS, id) || Object.hasOwn(FARM_MATERIALS, id)))) {
         errors.push(`${dropLabel}：材料“${id}”未注册`);
       }
       if (!Number.isInteger(amount) || amount <= 0) errors.push(`${dropLabel}：数量不是正整数`);

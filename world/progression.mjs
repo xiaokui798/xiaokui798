@@ -3,6 +3,7 @@ import { BLOCK, RECIPES, validateRecipes } from "./recipes.mjs";
 import { ENEMIES, RARE_MATERIALS } from "./enemies.mjs";
 import { TECH, TECH_EFFECTS, assertValidTech, canUnlockTech, techForRecipe } from "./tech.mjs";
 import { DURABILITY_MAX, REPAIR_COSTS, assertValidDurability, durabilityMax, repairCost } from "./durability.mjs";
+import { CROPS, FARM_MATERIALS, STARTER_SEEDS, RAIN_GROWTH_MULTIPLIER, FERTILIZER_GROWTH_MULTIPLIER, growthStage, isMature } from "./crops.mjs";
 export { BLOCK, RECIPES, RARE_MATERIALS };
 
 // The recipe table is validated once at startup: a bad table (an
@@ -55,7 +56,7 @@ export const V4_SLOT_2_KEY = "block-world:save:v4:slot2";
 // come from here, so adding a v5 means adding one entry — not hunting
 // version literals through the loader. `shaped` marks the { version,
 // edits, materials, axeUnlocked, dressings, rareMaterials, equipment,
-// techUnlocked, workbenchBuilt, stats } saves (v5, v4, v3, v2) apart from
+// techUnlocked, workbenchBuilt, stats, seeds, crops } saves (v5, v4, v3, v2) apart from
 // the bare legacy edits array (v1); `coordinates` says whether the edits
 // are [x, y, z, block] (v5, v4, v3) or legacy cell indices (v2 and v1).
 // A bump never destroys the old primary or its slots — they stay in the
@@ -65,7 +66,9 @@ export const V4_SLOT_2_KEY = "block-world:save:v4:slot2";
 // { dressing, bandage, bigDressing }; v3 and v2 wrote one number counting
 // dressings only, which reloadState migrates into that object. v5 adds
 // equipment, techUnlocked, workbenchBuilt and stats, and carries the
-// rareMaterials field the v4 round added without a bump.
+// rareMaterials field the v4 round added without a bump. The farming
+// round (R2) adds seeds and crops the same way — additive with safe
+// defaults, so a save written before them existed loads without a bump.
 export const SAVE_MIGRATIONS = Object.freeze([
   { version: 5, key: SAVE_KEY, quarantine: true, coordinates: true, shaped: true },
   { version: 4, key: V4_SAVE_KEY, quarantine: true, coordinates: true, shaped: true },
@@ -94,7 +97,7 @@ const V4_SLOT_ENTRIES = Object.freeze([
 // Normalizes one stored payload against its table entry into the current
 // shape, or null when the payload is not that version. Shaped saves (v5,
 // v4, v3, v2) are { version, edits, materials, axeUnlocked, dressings,
-// rareMaterials, equipment, techUnlocked, workbenchBuilt, stats } objects;
+// rareMaterials, equipment, techUnlocked, workbenchBuilt, stats, seeds, crops } objects;
 // the legacy v1 save is a bare array of [cell, block] edits with no
 // supplies. `coordinates` says whether the edits are [x, y, z, block]
 // (v5, v4, v3) or legacy cell indices (v2 and v1). The dressings field
@@ -102,7 +105,8 @@ const V4_SLOT_ENTRIES = Object.freeze([
 // reloadState normalizes it into the per-recipe object. The v5 fields
 // (equipment, techUnlocked, workbenchBuilt, stats) and rareMaterials are
 // additive with safe defaults, so a save written before them existed
-// loads without another bump; reloadState normalizes each of them.
+// loads without another bump; reloadState normalizes each of them. The
+// farming fields (seeds, crops) are additive the same way.
 function normalizeSave(entry, stored) {
   if (entry.shaped) {
     if (stored?.version !== entry.version) return null;
@@ -110,12 +114,13 @@ function normalizeSave(entry, stored) {
       materials: stored.materials, axeUnlocked: stored.axeUnlocked, dressings: stored.dressings,
       rareMaterials: stored.rareMaterials, equipment: stored.equipment,
       techUnlocked: stored.techUnlocked, workbenchBuilt: stored.workbenchBuilt, stats: stored.stats,
+      seeds: stored.seeds, crops: stored.crops,
       coordinates: entry.coordinates };
   }
   if (!Array.isArray(stored)) return null;
   return { edits: stored, materials: undefined, axeUnlocked: undefined, dressings: undefined,
     rareMaterials: undefined, equipment: undefined, techUnlocked: undefined,
-    workbenchBuilt: undefined, stats: undefined, coordinates: false };
+    workbenchBuilt: undefined, stats: undefined, seeds: undefined, crops: undefined, coordinates: false };
 }
 
 // The version new saves are written with: the newest entry of the table,
@@ -331,6 +336,59 @@ export function createProgression(storage, layout = WORLD) {
     }
     return counts;
   }
+  // Farm materials (seeds and harvested products), counted per id — the
+  // same shape as rareMaterials, a different name, because seeds are a
+  // different economy (grown, not boss-dropped). A save written before
+  // this field existed loads the starter seeds as its fallback, the way
+  // materials loads the starter blocks; unknown ids are dropped and
+  // counts are clamped to the stack limit, like dressings.
+  const seeds = Object.fromEntries(Object.keys(FARM_MATERIALS).map(id => [id, 0]));
+  function normalizeSeeds(value) {
+    const counts = Object.fromEntries(Object.keys(FARM_MATERIALS).map(id => [id, 0]));
+    if (value && typeof value === "object") {
+      for (const id of Object.keys(FARM_MATERIALS)) counts[id] = savedCount(value[id], STARTER_SEEDS[id] ?? 0);
+    } else {
+      for (const id of Object.keys(FARM_MATERIALS)) counts[id] = STARTER_SEEDS[id] ?? 0;
+    }
+    return counts;
+  }
+  // Planted crops, by cell index: { crop, stage, plantedAt, growth,
+  // fertilized }. `growth` is the accumulated effective-growth seconds (rain already
+  // folded in by advanceCrops) and is the source of truth — `stage` is
+  // derived from it and recomputed on load, so a stored stage that
+  // disagrees with the growth is repaired instead of trusted. `plantedAt`
+  // is the game-time (dayTime seconds) the seed went in; it is only
+  // informational, the growth clock is `growth`. `fertilized` (R3) is
+  // set once by fertilizeCrop and lasts the crop's whole cycle; an old
+  // save (no flag) loads it as false. The edits Map cannot
+  // hold this (it maps a cell to one block id), so crops live in their
+  // own field — the crop is not a block, and its cell stays a block
+  // (the soil below it) in the edits.
+  const crops = {};
+  function normalizeCrops(value) {
+    const planted = {};
+    if (!value || typeof value !== "object") return planted;
+    for (const [key, entry] of Object.entries(value)) {
+      const cell = Number(key);
+      const def = entry && typeof entry === "object" ? CROPS[entry.crop] : null;
+      if (!Number.isInteger(cell) || !validCell(cell) || !def) continue;
+      const growth = entry.growth;
+      if (typeof growth !== "number" || !Number.isFinite(growth) || growth < 0) continue;
+      const plantedAt = entry.plantedAt;
+      if (typeof plantedAt !== "number" || !Number.isFinite(plantedAt) || plantedAt < 0) continue;
+      planted[cell] = { crop: entry.crop, stage: growthStage(def, growth), plantedAt, growth,
+        fertilized: entry.fertilized === true };
+    }
+    return planted;
+  }
+  // Fully restore the crop table from a snapshot (clear, then assign):
+  // the keys are dynamic (one per planted cell), so Object.assign alone
+  // would leave a crop planted since the snapshot in place. Used by the
+  // loader, the importer and change()'s rollback.
+  function restoreCrops(previous) {
+    for (const key of Object.keys(crops)) delete crops[key];
+    Object.assign(crops, previous);
+  }
   // Equipment, one piece per slot (null when empty): { key, tier }, where
   // key is a recipe whose `equipment` names the slot. A piece from an
   // unknown recipe, or a recipe that does not fill this slot, drops to
@@ -368,11 +426,16 @@ export function createProgression(storage, layout = WORLD) {
   // Run counters the tech tree reads (the swift-hands branch needs the
   // lifetime mining count). Only survival mining counts: creative edits
   // are free, so they are not progress. Unlike the material counts this
-  // is a lifetime counter, so it is not clamped to the stack limit.
-  const stats = { blocksMined: 0 };
+  // is a lifetime counter, so it is not clamped to the stack limit. The
+  // farming counters (planted / harvested) live here too, so the tech
+  // tree's farming branch can read them the same way.
+  const stats = { blocksMined: 0, cropsPlanted: 0, cropsHarvested: 0 };
   function normalizeStats(value) {
-    const mined = value?.blocksMined;
-    return { blocksMined: Number.isInteger(mined) && mined >= 0 ? mined : 0 };
+    const count = field => {
+      const amount = value?.[field];
+      return Number.isInteger(amount) && amount >= 0 ? amount : 0;
+    };
+    return { blocksMined: count("blocksMined"), cropsPlanted: count("cropsPlanted"), cropsHarvested: count("cropsHarvested") };
   }
   // Rebuilds all in-memory save state from storage. Runs once at
   // construction and again from loadRemote(), so both paths share the
@@ -433,6 +496,8 @@ export function createProgression(storage, layout = WORLD) {
     axeUnlocked = snapshot?.axeUnlocked === true;
     Object.assign(dressingCounts, normalizeDressings(snapshot?.dressings));
     Object.assign(rareMaterials, normalizeRareMaterials(snapshot?.rareMaterials));
+    Object.assign(seeds, normalizeSeeds(snapshot?.seeds));
+    restoreCrops(normalizeCrops(snapshot?.crops));
     Object.assign(equipment, normalizeEquipment(snapshot?.equipment));
     techUnlocked = normalizeTechUnlocked(snapshot?.techUnlocked);
     workbenchBuilt = snapshot?.workbenchBuilt === true;
@@ -449,7 +514,8 @@ export function createProgression(storage, layout = WORLD) {
     const positions = Array.from(edits, ([cell, block]) => [...voxelPosition(layout, cell), block]);
     return JSON.stringify({ version: SAVE_VERSION, edits: positions, materials, axeUnlocked, dressings: { ...dressingCounts },
       rareMaterials: { ...rareMaterials }, equipment: { ...equipment }, techUnlocked: [...techUnlocked],
-      workbenchBuilt, stats: { ...stats } });
+      workbenchBuilt, stats: { ...stats }, seeds: { ...seeds },
+      crops: Object.fromEntries(Object.entries(crops).map(([cell, crop]) => [cell, { ...crop }])) });
   }
 
   function save() {
@@ -618,13 +684,16 @@ export function createProgression(storage, layout = WORLD) {
     const previousMaterials = materials.slice(), previousAxe = axeUnlocked,
       previousDressings = { ...dressingCounts }, previousRare = { ...rareMaterials }, previousEdits = new Map(edits),
       previousEquipment = { ...equipment }, previousTech = [...techUnlocked],
-      previousWorkbench = workbenchBuilt, previousStats = { ...stats };
+      previousWorkbench = workbenchBuilt, previousStats = { ...stats },
+      previousSeeds = { ...seeds }, previousCrops = { ...crops };
     applyEdits(snapshot.edits, snapshot.coordinates);
     materials.splice(0, materials.length,
       ...starterMaterials.map((amount, block) => block ? savedCount(snapshot?.materials?.[block], amount) : 0));
     axeUnlocked = snapshot?.axeUnlocked === true;
     Object.assign(dressingCounts, normalizeDressings(snapshot?.dressings));
     Object.assign(rareMaterials, normalizeRareMaterials(snapshot?.rareMaterials));
+    Object.assign(seeds, normalizeSeeds(snapshot?.seeds));
+    restoreCrops(normalizeCrops(snapshot?.crops));
     Object.assign(equipment, normalizeEquipment(snapshot?.equipment));
     techUnlocked = normalizeTechUnlocked(snapshot?.techUnlocked);
     workbenchBuilt = snapshot?.workbenchBuilt === true;
@@ -635,6 +704,8 @@ export function createProgression(storage, layout = WORLD) {
       axeUnlocked = previousAxe;
       Object.assign(dressingCounts, previousDressings);
       Object.assign(rareMaterials, previousRare);
+      Object.assign(seeds, previousSeeds);
+      restoreCrops(previousCrops);
       Object.assign(equipment, previousEquipment);
       techUnlocked = previousTech;
       workbenchBuilt = previousWorkbench;
@@ -653,7 +724,8 @@ export function createProgression(storage, layout = WORLD) {
   function change(apply, cell) {
     const previousMaterials = materials.slice(), previousAxe = axeUnlocked, previousDressings = { ...dressingCounts },
       previousRare = { ...rareMaterials }, previousEquipment = { ...equipment }, previousTech = [...techUnlocked],
-      previousWorkbench = workbenchBuilt, previousStats = { ...stats };
+      previousWorkbench = workbenchBuilt, previousStats = { ...stats },
+      previousSeeds = { ...seeds }, previousCrops = { ...crops };
     const priorBlock = edits.get(cell);
     apply();
     const result = save();
@@ -667,6 +739,8 @@ export function createProgression(storage, layout = WORLD) {
       axeUnlocked = previousAxe;
       Object.assign(dressingCounts, previousDressings);
       Object.assign(rareMaterials, previousRare);
+      Object.assign(seeds, previousSeeds);
+      restoreCrops(previousCrops);
       Object.assign(equipment, previousEquipment);
       techUnlocked = previousTech;
       workbenchBuilt = previousWorkbench;
@@ -679,9 +753,21 @@ export function createProgression(storage, layout = WORLD) {
     return result;
   }
 
+  // String-id counts live in one of two tables: boss-drop rare materials
+  // or farm materials (seeds and harvested products). One helper owns the
+  // routing so count, loot, crafting and harvest all agree on where a
+  // string id is stored — a caller that hardcodes rareMaterials here
+  // would spend a seed from the wrong table.
+  function stringCounts(id) {
+    if (Object.hasOwn(RARE_MATERIALS, id)) return rareMaterials;
+    if (Object.hasOwn(FARM_MATERIALS, id)) return seeds;
+    return null;
+  }
+
   // Counts by material id: a numeric id reads the block counts, a
-  // string id (a boss-drop rare material) reads the rare counts.
-  function count(id) { return typeof id === "string" ? (rareMaterials[id] ?? 0) : (materials[id] ?? 0); }
+  // string id (a boss-drop rare material or a farm material) reads the
+  // matching string table.
+  function count(id) { return typeof id === "string" ? (stringCounts(id)?.[id] ?? 0) : (materials[id] ?? 0); }
   function collect(block) { materials[block] = Math.min(stackLimit, materials[block] + 1); }
 
   function editBlock(cell, before, after, limited) {
@@ -748,6 +834,7 @@ export function createProgression(storage, layout = WORLD) {
       const owned = equipment[recipe.equipment];
       if (owned && EQUIPMENT_TIERS.indexOf(owned.tier) >= EQUIPMENT_TIERS.indexOf(recipe.tier)) return false;
     } else if (key === "axe" ? axeUnlocked : key === "workbench" ? workbenchBuilt
+      : Object.hasOwn(FARM_MATERIALS, key) ? (seeds[key] ?? 0) >= stackLimit
       : (dressingCounts[key] ?? 0) >= stackLimit) return false;
     return recipe.cost.every(([block, amount]) => count(block) >= amount);
   }
@@ -773,7 +860,7 @@ export function createProgression(storage, layout = WORLD) {
     if (!canCraft(key)) return null;
     return change(() => {
       for (const [id, amount] of RECIPES[key].cost) {
-        if (typeof id === "string") rareMaterials[id] -= amount;
+        if (typeof id === "string") { const table = stringCounts(id); if (table) table[id] -= amount; }
         else materials[id] -= amount;
       }
       if (key === "axe") axeUnlocked = true;
@@ -781,6 +868,10 @@ export function createProgression(storage, layout = WORLD) {
       else if (RECIPES[key].equipment) {
         equipment[RECIPES[key].equipment] = { key, tier: RECIPES[key].tier, durability: durabilityMax(RECIPES[key].tier) };
       } else if (RECIPES[key].healing > 0) dressingCounts[key]++;
+      // A recipe whose key is a farm material id (compost) credits the
+      // seed counts instead of the dressings: the material is grown /
+      // crafted, not a dressing, and the farm tab reads it from there.
+      else if (Object.hasOwn(FARM_MATERIALS, key)) seeds[key]++;
     });
   }
 
@@ -833,14 +924,15 @@ export function createProgression(storage, layout = WORLD) {
   }
 
   // Pays one kill's drops from the enemy registry: block materials add
-  // to the block counts, rare material ids add to the rare counts. An
-  // unknown kind (or no kind, as the old callers pass) pays the old
+  // to the block counts, string ids add to the matching string table
+  // (rare materials for boss drops, farm materials for a seed drop).
+  // An unknown kind (or no kind, as the old callers pass) pays the old
   // fixed drop, so existing callers keep working unchanged.
   function grantLoot(kind) {
     const drops = ENEMIES[kind]?.drops ?? DEFAULT_DROPS;
     return change(() => {
       for (const [id, amount] of drops) {
-        if (typeof id === "string") rareMaterials[id] = Math.min(stackLimit, (rareMaterials[id] ?? 0) + amount);
+        if (typeof id === "string") { const table = stringCounts(id); if (table) table[id] = Math.min(stackLimit, (table[id] ?? 0) + amount); }
         else materials[id] = Math.min(stackLimit, materials[id] + amount);
       }
     });
@@ -856,6 +948,104 @@ export function createProgression(storage, layout = WORLD) {
     return change(() => { rareMaterials[rare] = Math.min(stackLimit, rareMaterials[rare] + count); });
   }
 
+  // Plant one seed in the cell above the soil: consumes 1 seed of the
+  // crop's kind, starts the growth clock at `now` (game-time seconds,
+  // the dayTime the caller reads), and counts the planting. Returns null
+  // when the crop is unknown, the cell is invalid or already planted, or
+  // the player holds no seed of that kind; otherwise change()'s result,
+  // so a failed save rolls the seed and the planting back together.
+  function plantCrop(cell, cropId, now) {
+    const def = CROPS[cropId];
+    if (!def || !validCell(cell) || crops[cell]
+      || typeof now !== "number" || !Number.isFinite(now) || now < 0) return null;
+    if ((seeds[def.seed] ?? 0) < 1) return null;
+    return change(() => {
+      seeds[def.seed]--;
+      crops[cell] = { crop: cropId, stage: 0, plantedAt: now, growth: 0, fertilized: false };
+      stats.cropsPlanted++;
+    });
+  }
+
+  // True when the crop at this cell is mature (a full growthSeconds of
+  // effective growth). The game reads this before harvesting so an
+  // immature crop falls through to the normal mining path instead of
+  // being eaten by the harvest branch.
+  function isCropMature(cell) {
+    const crop = crops[cell];
+    const def = crop && CROPS[crop.crop];
+    return Boolean(def && isMature(def, crop.growth));
+  }
+
+  // Harvest a mature crop: pays the crop's yield (farm materials and/or
+  // blocks) and counts the harvest. Returns null when nothing is planted
+  // there or it is not mature yet; otherwise change()'s result, so a
+  // failed save rolls the yield and the removal back together. On a
+  // successful save the result also carries the yield, so the UI can
+  // list what was harvested without hardcoding the crop's table.
+  function harvestCrop(cell) {
+    const crop = crops[cell];
+    const def = crop && CROPS[crop.crop];
+    if (!def || !isMature(def, crop.growth)) return null;
+    const result = change(() => {
+      for (const [id, amount] of def.yield) {
+        if (typeof id === "string") { const table = stringCounts(id); if (table) table[id] = Math.min(stackLimit, (table[id] ?? 0) + amount); }
+        else materials[id] = Math.min(stackLimit, materials[id] + amount);
+      }
+      delete crops[cell];
+      stats.cropsHarvested++;
+    });
+    return result.saved ? { ...result, yield: def.yield } : result;
+  }
+
+  // Uproot a crop without a yield (its soil was mined out from under
+  // it): the crop is gone, nothing is paid. Returns null when nothing is
+  // planted there.
+  function removeCrop(cell) {
+    if (!crops[cell]) return null;
+    return change(() => { delete crops[cell]; });
+  }
+
+  // Fertilize one planted crop: spends 1 compost (the "fertilizer" farm
+  // material) and sets the crop's fertilized flag for its whole cycle —
+  // one application, never re-applied, and it does not stack with a
+  // second one. Returns null when nothing is planted there, it is
+  // already fertilized, or the player holds no compost; otherwise
+  // change()'s result. The record is replaced, never mutated, so a
+  // failed save rolls the flag and the compost back together (the same
+  // shallow-rollback rule as advanceCrops).
+  function fertilizeCrop(cell) {
+    const crop = crops[cell];
+    if (!crop || !CROPS[crop.crop] || crop.fertilized) return null;
+    if ((seeds.fertilizer ?? 0) < 1) return null;
+    return change(() => {
+      seeds.fertilizer--;
+      crops[cell] = { ...crop, fertilized: true };
+    });
+  }
+
+  // Advance every planted crop's growth by dt game-time seconds (rain
+  // doubles the rate, fertilizer doubles it again per crop — a
+  // fertilized crop in the rain grows at x4). The growth accumulator
+  // changes every frame, so this marks the save dirty and schedules one
+  // flush (the batched path, like block edits) instead of writing
+  // synchronously — a frame's growth tick must never serialize the whole
+  // save. Crop records are replaced, never mutated, so a change()
+  // snapshot taken before the tick still holds the old record on a
+  // rollback.
+  function advanceCrops(dt, raining) {
+    if (!Number.isFinite(dt) || dt <= 0 || !Object.keys(crops).length) return { saved: true };
+    for (const [cell, crop] of Object.entries(crops)) {
+      const def = CROPS[crop.crop];
+      if (!def) continue;
+      const rate = (raining ? RAIN_GROWTH_MULTIPLIER : 1) * (crop.fertilized ? FERTILIZER_GROWTH_MULTIPLIER : 1);
+      const growth = (crop.growth ?? 0) + dt * rate;
+      crops[cell] = { ...crop, growth, stage: growthStage(def, growth) };
+    }
+    dirty = true;
+    scheduleFlush();
+    return { saved: true };
+  }
+
   function spendMaterial(block, amount) {
     if (!validBlock(block) || block === BLOCK.AIR || !Number.isInteger(amount) || amount <= 0 || count(block) < amount) return null;
     return change(() => { materials[block] -= amount; });
@@ -863,7 +1053,8 @@ export function createProgression(storage, layout = WORLD) {
 
   return {
     blockEdits: () => edits.entries(), count, editBlock, canCraft, craft, useDressing, unlockTech, techState,
-    wearEquipment, repairEquipment,
+    wearEquipment, repairEquipment, plantCrop, harvestCrop, removeCrop, advanceCrops, isCropMature, fertilizeCrop,
+    cropAt: cell => { const crop = crops[cell]; return crop ? { ...crop } : null; },
     grantLoot, grantBossLoot, spendMaterial, flush,
     checkConflict, keepLocal, loadRemote, exportSave, importSave,
     get pendingConflict() { return pendingConflict ? { ...pendingConflict } : null; },
@@ -883,6 +1074,14 @@ export function createProgression(storage, layout = WORLD) {
     // Rare crafting materials (boss drops), by id. A fresh copy each
     // read, so callers cannot mutate the live counts.
     get rareMaterials() { return { ...rareMaterials }; },
+    // Farm materials (seeds and harvested products), by id. A fresh copy
+    // each read, so callers cannot mutate the live counts.
+    get seeds() { return { ...seeds }; },
+    // Planted crops, by cell index. Each record is copied so callers
+    // cannot mutate the live crop state.
+    get crops() {
+      return Object.fromEntries(Object.entries(crops).map(([cell, crop]) => [cell, { ...crop }]));
+    },
     get workbenchBuilt() { return workbenchBuilt; },
     // The equipped piece per slot, or null. Each piece is copied so
     // callers cannot mutate the live equipment.

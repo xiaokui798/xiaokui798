@@ -27,7 +27,7 @@ test("defense re-exports the enemy registry from enemies.mjs unchanged", () => {
     spitter: { name: "投掷者", hp: 55, speed: 1.25, reach: 1.0, damage: 13, strikeDelay: .55, cooldown: 2.1,
       width: .85, height: .95, armor: false, attack: "ranged", range: 7.5, projectileSpeed: 6,
       coat: [.32, .42, .22], skin: [.62, .58, .34], eyes: [.45, .85, .30],
-      drops: [[BLOCK.STONE, 1], [BLOCK.LEAF, 2]] }
+      drops: [[BLOCK.STONE, 1], [BLOCK.LEAF, 2], ["wheatSeed", 1]] }
   });
   assert.ok(Object.isFrozen(ENEMIES));
 });

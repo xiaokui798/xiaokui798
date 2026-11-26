@@ -3,7 +3,7 @@ import { WORLD, CHUNK_SIZE, FACES as faces, contains, voxelIndex, voxelPosition,
   seeded, generateTerrain, createChunkGrid, distanceSquared, buildChunkMesh,
   ATLAS_TILES, atlasTileFor, faceUV,
   crackStage, crackPolylines, faceCorners, createBurst, stepParticles,
-  POP_DURATION, popScale, dayCycle, fogDensityForRange } from "./terrain.mjs";
+  POP_DURATION, popScale, dayCycle, fogDensityForRange, DAY_LENGTH } from "./terrain.mjs";
 import { ENEMIES, DEFENSE_WAVES, DEFENSE_TOTAL_WAVES, BEACON, choosesBeacon, defenseWaveRoster, selectWaveSpawns, repairPlan, defenseResult, defenseCleared,
   actorRay, findMeleeTarget, zombieParts, beaconParts } from "./defense.mjs";
 import { survivalRoster, scaledHp } from "./difficulty.mjs";
@@ -12,6 +12,7 @@ import { armorReduction } from "./armor.mjs";
 import { miningInterval } from "./tools.mjs";
 import { TECH, TECH_EFFECTS, canUnlockTech, techConditions, techDisplayOrder, techForRecipe, techLockReason } from "./tech.mjs";
 import { durabilityMax, repairCost } from "./durability.mjs";
+import { CROPS, FARM_MATERIALS, isMature } from "./crops.mjs";
 import { createMouseLook } from "./controls.mjs";
 import { PHYSICS_STEP, LANDING_SAMPLE_TIME, createSpeedReadout, overlapsPlayerBlock, stepPlayer } from "./movement.mjs";
 import { ARENA_PALETTE, BOSS, GUARDIAN_WAVES, COLOSSUS, BOSS_ATTACKS, buildBossTerrain, createBossFight, advanceBoss, strikeBoss, guardianBackOpen, interruptFurnace, damagePrism,
@@ -132,8 +133,8 @@ export function initGame(window) {
   // build row on top and the stone axe — a weapon recipe, not an
   // equipment recipe — in the stone group; rows keep the R3 ids
   // (#craft-<key>, #<key>-cost) so existing wiring keeps working.
-  const INVENTORY_TABS = ["backpack", "workbench", "equipment", "tech"];
-  const TAB_TITLES = { backpack: "背包", workbench: "工作台", equipment: "装备", tech: "科技树" };
+  const INVENTORY_TABS = ["backpack", "workbench", "equipment", "tech", "farm"];
+  const TAB_TITLES = { backpack: "背包", workbench: "工作台", equipment: "装备", tech: "科技树", farm: "种田" };
   const EQUIPMENT_KEYS = Object.keys(RECIPES).filter(key => RECIPES[key].equipment);
   const TIER_TITLES = { stone: "石阶", ember: "熔火阶", star: "断星阶" };
   const TIER_DOT = { stone: "#c5d3bd", ember: "#f0d285", star: "#edf2e7" };
@@ -188,6 +189,17 @@ export function initGame(window) {
       <p>解锁科技强化生存能力；条件满足后点解锁，立即生效</p>
       <p id="tech-empty">完成主干解锁更多分支</p>
       <div id="tech-list" style="border-left: 2px solid rgba(235,244,220,.18); padding-left: .75rem;"></div>
+    </div>
+    <div id="tab-farm" role="tabpanel" hidden>
+      <dl id="farm-materials" class="inventory-materials" aria-label="农场材料数量"></dl>
+      <div id="farm-sow-list"></div>
+      <div class="recipe" id="farm-fertilizer-row">
+        <div><h3>${RECIPES.fertilizer.name}</h3><p id="farm-fertilizer-cost"></p></div>
+        <button id="craft-fertilizer" type="button">制作${RECIPES.fertilizer.name}</button>
+      </div>
+      <div id="farm-crops"></div>
+      <p id="farm-empty" class="inventory-notice" style="margin: .45rem 0 0;"></p>
+      <p class="inventory-notice" style="margin: .75rem 0 0;">对准耕地播种，成熟后到田里左键收割；下雨时作物长得更快</p>
     </div>`;
   inventoryMaterials.before?.(inventoryTabs);
   // The static backpack rows move into the backpack panel, so hiding the
@@ -289,6 +301,38 @@ export function initGame(window) {
       if (piece && piece.durability <= 0) selectInventoryTab("workbench");
     });
   }
+  // The farm tab: one sow row per seed kind (built once — the seed kinds
+  // are fixed by the registry, only the counts change), a compost craft
+  // row, and the crop list, which updateFarmTab rebuilds because crops
+  // come and go. The crop rows carry no buttons (a growing crop has no
+  // action, a mature one only a disabled chip), so rebuilding their
+  // innerHTML never drops a listener.
+  const FARM_SEEDS = [...new Set(Object.values(CROPS).map(def => def.seed))];
+  const farmSowList = document.querySelector("#farm-sow-list");
+  farmSowList.innerHTML = FARM_SEEDS.map(seed => `
+    <div class="recipe" id="farm-sow-${seed}">
+      <div><h3>${FARM_MATERIALS[seed]}</h3><p id="farm-sow-${seed}-cost"></p></div>
+      <button id="farm-sow-${seed}-btn" type="button">播种</button>
+    </div>`).join("");
+  for (const seed of FARM_SEEDS) {
+    document.querySelector(`#farm-sow-${seed}-btn`).addEventListener("click", () => enterSowMode(seed));
+  }
+  const farmFertilizerCost = document.querySelector("#farm-fertilizer-cost");
+  const craftFertilizerButton = document.querySelector("#craft-fertilizer");
+  craftFertilizerButton.addEventListener("click", () => craftItem("fertilizer"));
+  // The sow-mode hint: a HUD line that only shows while the mode is
+  // armed, styled like #pulse-hint (styles.css is not touched by this
+  // change, so the look is inline). Query-first like the tab panels, so
+  // the harness reads the same element the game mutates.
+  const sowHint = document.querySelector("#sow-hint") ?? (() => {
+    const hint = document.createElement("div");
+    hint.id = "sow-hint";
+    return hint;
+  })();
+  sowHint.innerHTML = "播种：对准耕地<kbd>左键</kbd>种下，<kbd>右键</kbd>取消";
+  sowHint.setAttribute("style", "margin: 0 0 .42rem; color: #e2e8f7; font-size: .75rem;");
+  sowHint.hidden = true;
+  document.querySelector("#hud")?.append?.(sowHint);
   // Establish the initial tab state explicitly (the panels' hidden flags
   // in the markup are the browser default; the harness reads the flags
   // this call sets, so both agree the backpack tab is open).
@@ -475,6 +519,10 @@ export function initGame(window) {
   // a scaled overlay box drawn on top of it (see drawPops).
   const pops = [];
   let popMesh;
+  // Planted crops: one entry per crop in the campaign's crops field,
+  // drawn as their own mesh (see drawCrops) — a crop is not a block, so
+  // it never goes through the chunk mesh.
+  let cropMesh;
 
   function floorUnder(x, y, z) {
     const cx = Math.floor(x), cz = Math.floor(z);
@@ -1310,6 +1358,50 @@ export function initGame(window) {
     uploadActorMesh(popMesh, used);
     gl.depthMask(true);
     gl.enable(gl.DEPTH_TEST);
+  }
+
+  // Crops (R2): one small box per planted crop, drawn from the
+  // campaign's crops field — a thin box that grows taller and turns from
+  // pale green to gold as it matures. Follows the pop mesh (the same
+  // per-face colours and LEAF atlas tile), one mesh rebuilt each frame.
+  // The mesh holds 256 quads (42 crops); a field bigger than that draws
+  // its first 42 and the rest wait for the next frame — a field that big
+  // is a later-round problem, not an R2 one.
+  function drawCrops() {
+    const entries = Object.entries(campaign.crops);
+    if (!entries.length) return;
+    cropMesh ??= createActorMesh(256);
+    const { vertices } = cropMesh;
+    let used = 0;
+    const stageColors = [[.55, .75, .35], [.35, .62, .25], [.85, .72, .30]];
+    const stageHeights = [.35, .6, .85];
+    const width = .5;
+    for (const [cell, crop] of entries) {
+      if (used + 288 > vertices.length) break;
+      const [x, y, z] = voxelPosition(WORLD, Number(cell));
+      const height = stageHeights[crop.stage] ?? .35;
+      const color = stageColors[crop.stage] ?? stageColors[0];
+      const cx = x + .5, cy = y + height / 2, cz = z + .5;
+      for (const { d, v, light } of faces) {
+        const tile = atlasTileFor(LEAF, d, { grass: GRASS, leaf: LEAF, dirt: DIRT, stone: STONE, wood: WOOD });
+        for (const corner of v) {
+          const [fu, fv] = faceUV(d, corner);
+          vertices[used++] = cx + (corner[0] - .5) * width;
+          vertices[used++] = cy + (corner[1] - .5) * height;
+          vertices[used++] = cz + (corner[2] - .5) * width;
+          vertices[used++] = color[0] * light;
+          vertices[used++] = color[1] * light;
+          vertices[used++] = color[2] * light;
+          vertices[used++] = d[0];
+          vertices[used++] = d[1];
+          vertices[used++] = d[2];
+          vertices[used++] = 0;
+          vertices[used++] = (tile + fu) / ATLAS_TILES;
+          vertices[used++] = fv;
+        }
+      }
+    }
+    uploadActorMesh(cropMesh, used);
   }
 
   function drawRain3D(rain) {
@@ -2324,8 +2416,10 @@ export function initGame(window) {
     // The message lists what this kind actually dropped, from the same
     // registry table grantLoot just paid — a breaker pays 2 stone and a
     // runner pays a wood, so the old fixed "石头 +1 · 树叶 +1" would lie.
+    // A string id is a farm or rare material, not a block, so it reads
+    // its display name from the matching table instead of blockNames.
     const drops = ENEMIES[zombie.kind]?.drops ?? [[STONE, 1], [LEAF, 1]];
-    const loot = `${drops.map(([id, amount]) => `${blockNames[id]} +${amount}`).join(" · ")}${lootResult.saved ? "" : " · 未保存"}`;
+    const loot = `${drops.map(([id, amount]) => `${typeof id === "string" ? (FARM_MATERIALS[id] ?? RARE_MATERIALS[id]) : blockNames[id]} +${amount}`).join(" · ")}${lootResult.saved ? "" : " · 未保存"}`;
     if (!alive) {
       if (defense.beacon && defenseCleared(survival.wave, alive)) { finishDefense("cleared"); return; }
       const healed = Math.min(24, 100 - player.hp);
@@ -3889,6 +3983,58 @@ export function initGame(window) {
     setText(empty, campaign.workbenchBuilt ? "没有损坏的装备" : "需先建造工作台");
   }
 
+  // The farm tab (R3): the farm-material strip (every registered farm
+  // material, 0 included, so the player sees a seed exists before
+  // owning one), one sow row per seed, the compost craft row, and the
+  // crop list — one row per planted crop with its growth bar (the 6px
+  // durability bar, gold fill, no red: growth is not damage) and a
+  // status line. The rain suffix uses the same signal as the growth
+  // rate (weather.rain + the player's underRoof), so the line never
+  // claims a speedup the crop is not getting; per-crop shelter is still
+  // deferred to the watering-can round.
+  function updateFarmTab() {
+    const farmMaterials = document.querySelector("#farm-materials");
+    farmMaterials.innerHTML = Object.entries(FARM_MATERIALS).map(([id, name]) =>
+      `<div><dt>${name}</dt><dd>${campaign.count(id)}</dd></div>`).join("");
+    for (const seed of FARM_SEEDS) {
+      const owned = campaign.count(seed);
+      setText(document.querySelector(`#farm-sow-${seed}-cost`),
+        owned > 0 ? `已有 ${owned} 粒 · 对准耕地播种` : "已有 0 粒 · 投掷者掉落");
+      document.querySelector(`#farm-sow-${seed}-btn`).disabled = owned < 1;
+    }
+    setText(farmFertilizerCost, recipeCost("fertilizer"));
+    craftFertilizerButton.disabled = !campaign.canCraft("fertilizer");
+    const crops = campaign.crops;
+    const cells = Object.keys(crops);
+    const raining = weather.rain > .02;
+    const roofed = raining && underRoof();
+    document.querySelector("#farm-crops").innerHTML = cells.map(cell => {
+      const crop = crops[cell];
+      const def = CROPS[crop.crop];
+      const mature = isMature(def, crop.growth);
+      const [x, , z] = voxelPosition(WORLD, Number(cell));
+      const days = (crop.growth / DAY_LENGTH).toFixed(1);
+      const totalDays = def.growthSeconds / DAY_LENGTH;
+      const pct = Math.min(100, Math.round(crop.growth / def.growthSeconds * 100));
+      const rainNote = mature || !raining ? "" : roofed ? " · 有遮挡，雨淋不到" : " · 雨中加速";
+      const fedNote = crop.fertilized ? " · 已施肥" : "";
+      const status = mature ? `${def.name} · 已成熟 · 位于 (${x}, ${z})${fedNote}`
+        : `${def.name} · 生长中 · ${days} / ${totalDays} 天${rainNote}${fedNote}`;
+      const chip = mature ? `<button type="button" disabled>已成熟</button>` : "";
+      return `<div class="recipe" id="farm-crop-${cell}">
+        <div><h3>${def.name}</h3><p>${status}</p></div>
+        <div><div style="width: 6rem; height: 6px; background: #273526;"><span style="display: block; width: ${pct}%; height: 6px; background: #f0d285;"></span></div></div>
+        ${chip}
+      </div>`;
+    }).join("");
+    const empty = document.querySelector("#farm-empty");
+    empty.hidden = cells.length > 0;
+    const seedsOwned = FARM_SEEDS.reduce((sum, seed) => sum + campaign.count(seed), 0);
+    setText(empty, cells.length ? "" : seedsOwned > 0
+      ? "还没有种下作物——上面点播种，先选一粒种子"
+      : "还没有种子——投掷者掉落小麦种子，开局自带 2 粒");
+  }
+
   function updateInventory() {
     renderMaterials(inventoryMaterials);
     renderMaterials(workbenchMaterials);
@@ -3920,6 +4066,7 @@ export function initGame(window) {
     updateWorkbenchDetail(state);
     updateEquipmentCards();
     updateTechTree(state);
+    updateFarmTab();
   }
 
   function craftItem(key) {
@@ -3993,6 +4140,89 @@ export function initGame(window) {
     }
     if (debris.length > 48) debris.splice(0, debris.length - 48);
   }
+  // Sow mode (farm tab, R3): armed from a sow button, or by pressing F
+  // when there is nothing plantable under the crosshair. While armed the
+  // HUD hint stays up; a left-click plants when the aim is plantable and
+  // otherwise cancels the mode and falls through to the normal action,
+  // a right-click or Esc cancels it. Only one seed kind exists in R3,
+  // but the mode remembers which seed it was armed with.
+  let sowMode = false;
+  let sowSeed = "wheatSeed";
+  function enterSowMode(seed) {
+    if (!FARM_SEEDS.includes(seed) || campaign.count(seed) < 1) return;
+    sowMode = true;
+    sowSeed = seed;
+    sowHint.hidden = false;
+    if (!inventoryScreen.hidden) closeInventory(true);
+  }
+  function exitSowMode() {
+    sowMode = false;
+    sowHint.hidden = true;
+  }
+  // The cell a seed would go into, or why not: raycast from the rendered
+  // view, the soil must be GRASS with AIR above and no crop there.
+  // Returns { above } when plantable, else { reason } — plantSeed maps
+  // each reason to its message, and the sow-mode click uses the reason
+  // to decide whether the click falls through to the normal action.
+  function plantTarget() {
+    const { origin, direction } = renderedView ?? { origin: eye(), direction: viewDirection() };
+    const target = raycast(origin, direction, interactionReach);
+    if (!target) return { reason: "no-target" };
+    const [x, y, z] = target.hit;
+    if (get(x, y, z) !== GRASS) return { reason: "not-grass" };
+    if (get(x, y + 1, z) !== AIR) return { reason: "blocked" };
+    const above = index(x, y + 1, z);
+    if (campaign.cropAt(above)) return { reason: "occupied" };
+    return { above };
+  }
+  // Plant one seed in the cell above the aimed soil (KeyF, the backup
+  // for the farming tab's sow mode): the soil must be GRASS with AIR
+  // above (the canPlant rule, read at runtime), the cell must be empty,
+  // and the player must hold a seed. Seeds are not in the palette, so
+  // this is a dedicated action — adding a palette slot would shift the
+  // weapon slots. The crop defaults to wheat (R2's one crop); the sow
+  // mode passes the crop for the seed it was armed with. Returns
+  // "planted" on success, else the failure reason ("no-target",
+  // "not-grass", "blocked", "occupied", "no-seed", "conflict",
+  // "unavailable") — the sow-mode click and the F key read it instead
+  // of parsing the message.
+  function plantSeed(cropId = "wheat") {
+    if (boss || !player.hp) return "unavailable";
+    const def = CROPS[cropId];
+    if (!def) return "unavailable";
+    const found = plantTarget();
+    if (found.reason === "no-target") { showMessage("对准一块草地再种"); return "no-target"; }
+    if (found.reason === "not-grass") { showMessage("只能种在草地上"); return "not-grass"; }
+    if (found.reason === "blocked") { showMessage("上面被挡住了"); return "blocked"; }
+    if (found.reason === "occupied") { showMessage("这里已经种了作物"); return "occupied"; }
+    const result = campaign.plantCrop(found.above, cropId, dayTime);
+    if (!result) { showMessage(campaign.count(def.seed) < 1 ? "没有小麦种子（投掷者会掉）" : "种不下"); return "no-seed"; }
+    if (checkSaveConflict(result)) return "conflict";
+    showMessage(result.saved ? "种下了小麦种子" : "种下了小麦种子 · 本次改动无法保存");
+    return "planted";
+  }
+  // Fertilize the crop under the crosshair (KeyG, R3): the ray passes
+  // through the crop's AIR cell and hits the soil below, so the crop is
+  // the cell above the hit — the same aim as the harvest branch. One
+  // compost per plant, for the crop's whole cycle; a second dose on the
+  // same plant is refused, it would not stack.
+  function fertilizeCropAtAim() {
+    if (boss || !player.hp) return;
+    const { origin, direction } = renderedView ?? { origin: eye(), direction: viewDirection() };
+    const target = raycast(origin, direction, interactionReach);
+    if (!target) { showMessage("对准一株作物再施肥"); return; }
+    const [x, y, z] = target.hit;
+    const above = index(x, y + 1, z);
+    const crop = campaign.cropAt(above);
+    if (!crop) { showMessage("对准一株作物再施肥"); return; }
+    if (crop.fertilized) { showMessage("这株作物已经施过肥了"); return; }
+    if (campaign.count("fertilizer") < 1) { showMessage("没有腐叶（树叶 2 + 泥土 1，在种田页签制作）"); return; }
+    const result = campaign.fertilizeCrop(above);
+    if (!result) { showMessage("施不上肥"); return; }
+    if (checkSaveConflict(result)) return;
+    showMessage(result.saved ? `给${CROPS[crop.crop].name}施了腐叶，长得更快了` : `给${CROPS[crop.crop].name}施了腐叶 · 本次改动无法保存`);
+  }
+
   function interact(place) {
     const weapon = weapons[selected - palette.length];
     if (isGun(weapon)) {
@@ -4038,10 +4268,34 @@ export function initGame(window) {
       showMessage("这里有僵尸");
       return;
     }
+    // A mature crop above the aimed soil is harvested instead of mining
+    // the soil: the ray passes through the crop's AIR cell and hits the
+    // soil below, so the crop is the cell above the hit. An immature
+    // crop falls through to the mining path below — mining its soil
+    // uproots it (see the uproot below).
+    if (!place) {
+      const above = index(x, y + 1, z);
+      if (campaign.isCropMature(above)) {
+        const result = campaign.harvestCrop(above);
+        if (!result || checkSaveConflict(result)) return;
+        const got = result.yield.map(([id, amount]) =>
+          `${typeof id === "string" ? (FARM_MATERIALS[id] ?? RARE_MATERIALS[id]) : blockNames[id]} +${amount}`).join(" · ");
+        showMessage(result.saved ? `收获了${got}` : `收获了${got} · 本次改动无法保存`);
+        return;
+      }
+    }
     const result = campaign.editBlock(index(x, y, z), before, type, survival.enabled);
     if (!result || checkSaveConflict(result)) return;
     set(...cell, type);
     if (!place && survival.enabled) wearEquipped("tool");
+    // A crop needs its soil: mining the soil out from under a crop
+    // uproots it, with no yield. The mining message below carries the
+    // note so the loss is not silent.
+    let uprooted = false;
+    if (!place) {
+      const above = index(x, y + 1, z);
+      if (campaign.cropAt(above)) { campaign.removeCrop(above); uprooted = true; }
+    }
     if (place) {
       pops.push({ x, y, z, type, age: 0 });
       if (pops.length > 16) pops.shift();
@@ -4053,7 +4307,7 @@ export function initGame(window) {
     sound.play(place ? "place" : "break", effectMaterial);
     if (survival.enabled) updateHotbar();
     const action = place ? `已放置${blockNames[type]}` : survival.enabled ? `${blockNames[before]} +1` : "已破坏方块";
-    showMessage(result.saved ? action : `${action}，本次改动无法保存`);
+    showMessage(result.saved ? (uprooted ? `${action} · 作物被连根拔起` : action) : `${action}，本次改动无法保存`);
     invalidateChunks(x, z);
   }
   function resize() {
@@ -4089,6 +4343,27 @@ export function initGame(window) {
       updateCombat(interval);
       if (mouseMode !== "paused" && !boss) updateWeather(interval);
       elapsed -= interval;
+    }
+    // Crops grow on game time, once per frame (not per substep): paused,
+    // boss-fight and hidden-tab frames never reach advanceWorld, so a
+    // crop does not grow while the day clock is frozen.
+    if (!boss) updateCrops(dt);
+  }
+
+  // Growth tick (R2): rain doubles the rate; the shelter check is the
+  // player's underRoof, the same signal the rain mesh uses — per-crop
+  // shelter waits for R3's watering can, when water becomes a per-crop
+  // state. The campaign batches the write, so a frame's tick never
+  // serializes the save. A crop that crosses into maturity this frame is
+  // announced once, several at once merged into one line (the farm tab
+  // lists them any time after).
+  function updateCrops(dt) {
+    const immature = new Set(Object.keys(campaign.crops).filter(cell => !campaign.isCropMature(Number(cell))));
+    campaign.advanceCrops(dt, weather.rain > .02 && !underRoof());
+    const newly = Object.keys(campaign.crops).filter(cell => immature.has(cell) && campaign.isCropMature(Number(cell)));
+    if (newly.length) {
+      const name = CROPS[campaign.cropAt(Number(newly[0])).crop].name;
+      showMessage(newly.length === 1 ? `${name}已成熟，到田里收割` : `${name} ×${newly.length} 已成熟，到田里收割`);
     }
   }
 
@@ -4181,6 +4456,7 @@ export function initGame(window) {
     drawActors(bossModel);
     drawParticles3D();
     drawPops();
+    drawCrops();
     drawGuardianFire();
     drawDragonFire();
     drawRain3D(sheltered ? 0 : rain);
@@ -4209,6 +4485,7 @@ export function initGame(window) {
       closeInventory(inventoryFromPlay);
       return;
     }
+    if (sowMode && event.code === "Escape") { exitSowMode(); return; }
     if (event.code === "Escape" && (mouseMode !== "paused" || lockAttempt)) {
       suspendGame();
       return;
@@ -4245,6 +4522,16 @@ export function initGame(window) {
     if (event.code === "KeyC" && !event.repeat) { openInventory(); return; }
     if (event.code === "KeyH" && !event.repeat) { healWithDressing(); return; }
     if (event.code === "KeyE" && !event.repeat) { repairBeacon(); return; }
+    if (event.code === "KeyF" && !event.repeat) {
+      // F plants directly when the aim is plantable (the R2 action,
+      // unchanged); when the aim is not plantable it arms sow mode
+      // instead, so the player can aim and click — the backup entry.
+      const status = plantSeed();
+      if (status === "planted") { if (sowMode) exitSowMode(); }
+      else if (!sowMode && ["no-target", "not-grass", "blocked"].includes(status)) enterSowMode("wheatSeed");
+      return;
+    }
+    if (event.code === "KeyG" && !event.repeat) { fertilizeCropAtAim(); return; }
     if (event.code === "KeyB" && !event.repeat && defense.beacon && !survival.zombies.length) {
       survival.countdown = 0;
       return;
@@ -4393,6 +4680,24 @@ export function initGame(window) {
     if (!started || !player.hp || (event.button !== 0 && event.button !== 2)) return;
     if (mouseMode === "paused") return;
     wakeAudio();
+    // Sow mode (farm tab): a right-click cancels the mode instead of
+    // placing a block; a left-click plants when the aim is plantable,
+    // and otherwise cancels the mode and falls through to the normal
+    // action so the mode never swallows a click. A failed plant attempt
+    // (no seed, already planted, save conflict) spends the click and
+    // keeps the mode armed — the message says why. Click planting needs
+    // the pointer lock; in drag mode the click only starts a drag, and
+    // F still plants.
+    if (sowMode) {
+      if (event.button === 2) { exitSowMode(); return; }
+      if (event.button === 0 && mouseMode === "locked") {
+        const cropId = Object.keys(CROPS).find(id => CROPS[id].seed === sowSeed) ?? "wheat";
+        const status = plantSeed(cropId);
+        if (status === "planted") { exitSowMode(); return; }
+        if (["no-target", "not-grass", "blocked"].includes(status)) exitSowMode();
+        else return;
+      }
+    }
     if (mouseMode === "locked" && event.button === 0 && isGun(weapons[selected - palette.length])) firing = true;
     if (mouseMode === "locked" && event.button === 0) { mouseHeld = true; mouseHeldRepeat = 0; }
     if (mouseMode === "locked" || event.button === 2) interact(event.button === 2);

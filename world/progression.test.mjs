@@ -553,13 +553,14 @@ test("the migration table lists v5, v4, v3, v2 and v1 newest first, with one ver
 test("progression re-exports the recipes registry from recipes.mjs unchanged", () => {
   assert.equal(RECIPES, RECIPES_FROM_REGISTRY);
   assert.equal(BLOCK, BLOCK_FROM_REGISTRY);
-  assert.deepEqual(Object.keys(RECIPES), ["axe", "dressing", "bandage", "bigDressing", "workbench", "stoneArmor", "stonePickaxe",
+  assert.deepEqual(Object.keys(RECIPES), ["axe", "dressing", "bandage", "bigDressing", "fertilizer", "workbench", "stoneArmor", "stonePickaxe",
     "emberSword", "emberAxe", "starSword", "starAxe", "emberArmor", "starArmor", "emberPickaxe", "starPickaxe"]);
   assert.deepEqual(RECIPES, {
     axe: { name: "石斧", cost: [[BLOCK.STONE, 3], [BLOCK.WOOD, 2]] },
     dressing: { name: "树叶敷料", cost: [[BLOCK.LEAF, 2]], healing: 30 },
     bandage: { name: "树皮绷带", cost: [[BLOCK.WOOD, 2], [BLOCK.LEAF, 1]], healing: 20 },
     bigDressing: { name: "树叶大敷料", cost: [[BLOCK.LEAF, 4]], healing: 50 },
+    fertilizer: { name: "腐叶", cost: [[BLOCK.LEAF, 2], [BLOCK.DIRT, 1]] },
     workbench: { name: "工作台", cost: [[BLOCK.STONE, 5], [BLOCK.WOOD, 5]] },
     stoneArmor: { name: "石甲", cost: [[BLOCK.STONE, 6], [BLOCK.WOOD, 2]], equipment: "armor", tier: "stone" },
     stonePickaxe: { name: "石镐", cost: [[BLOCK.STONE, 3], [BLOCK.WOOD, 2]], equipment: "tool", tier: "stone" },
@@ -1311,13 +1312,19 @@ test("a v4 save migrates to v5, carrying its rare materials and defaulting the n
   assert.deepEqual(game.equipment, { weapon: null, armor: null, tool: null });
   assert.deepEqual(game.techUnlocked, []);
   assert.equal(game.workbenchBuilt, false);
-  assert.deepEqual(game.stats, { blocksMined: 0 });
+  assert.deepEqual(game.stats, { blocksMined: 0, cropsPlanted: 0, cropsHarvested: 0 });
+  // The farming fields default too: the starter seeds (a v4 save has no
+  // seeds field) and no planted crops.
+  assert.deepEqual(game.seeds, { wheatSeed: 2, wheat: 0, fertilizer: 0 });
+  assert.deepEqual(game.crops, {});
   // The next write upgrades the save to v5 and leaves the v4 file alone.
   assert.ok(game.editBlock(2, BLOCK.WOOD, BLOCK.AIR, true).saved);
   const written = JSON.parse(storage.getItem(SAVE_KEY));
   assert.equal(written.version, 5);
   assert.deepEqual(written.rareMaterials, { emberCore: 2, starShard: 0 });
   assert.deepEqual(written.equipment, { weapon: null, armor: null, tool: null });
+  assert.deepEqual(written.seeds, { wheatSeed: 2, wheat: 0, fertilizer: 0 });
+  assert.deepEqual(written.crops, {});
   assert.equal(storage.getItem(V4_SAVE_KEY), v4);
   // A v5 primary takes precedence over the v4 file underneath it.
   const storage2 = makeStorage([[SAVE_KEY, JSON.stringify({ version: 5, edits: [], materials: [0, 0, 0, 0, 0, 0],
@@ -1415,20 +1422,20 @@ test("a quota failure rolls back the workbench with its materials", () => {
 test("survival mining counts toward stats, placing and creative edits do not", () => {
   const storage = makeStorage();
   const game = createProgression(storage, line(10));
-  assert.deepEqual(game.stats, { blocksMined: 0 });
+  assert.deepEqual(game.stats, { blocksMined: 0, cropsPlanted: 0, cropsHarvested: 0 });
   assert.ok(game.editBlock(1, BLOCK.STONE, BLOCK.AIR, true).saved);
-  assert.deepEqual(game.stats, { blocksMined: 1 });
+  assert.deepEqual(game.stats, { blocksMined: 1, cropsPlanted: 0, cropsHarvested: 0 });
   assert.ok(game.editBlock(2, BLOCK.WOOD, BLOCK.AIR, true).saved);
-  assert.deepEqual(game.stats, { blocksMined: 2 });
+  assert.deepEqual(game.stats, { blocksMined: 2, cropsPlanted: 0, cropsHarvested: 0 });
   // Placing a block is not mining, and creative (unlimited) edits are free.
   assert.ok(game.editBlock(3, BLOCK.AIR, BLOCK.DIRT, true).saved);
   assert.ok(game.editBlock(4, BLOCK.STONE, BLOCK.AIR, false).saved);
-  assert.deepEqual(game.stats, { blocksMined: 2 });
+  assert.deepEqual(game.stats, { blocksMined: 2, cropsPlanted: 0, cropsHarvested: 0 });
   // The count persists (after the batched edit flushes) and is not
   // capped at the stack limit.
   assert.deepEqual(game.flush(), { saved: true });
   assert.equal(JSON.parse(storage.getItem(SAVE_KEY)).stats.blocksMined, 2);
-  assert.deepEqual(createProgression(storage, line(10)).stats, { blocksMined: 2 });
+  assert.deepEqual(createProgression(storage, line(10)).stats, { blocksMined: 2, cropsPlanted: 0, cropsHarvested: 0 });
 });
 
 test("a quota failure on a mining edit rolls the mining count back too", () => {
@@ -1436,7 +1443,7 @@ test("a quota failure on a mining edit rolls the mining count back too", () => {
   const game = createProgression(storage, line(10));
   storage.setItem = () => { throw Object.assign(new Error("quota exceeded"), { name: "QuotaExceededError" }); };
   assert.deepEqual(game.editBlock(1, BLOCK.STONE, BLOCK.AIR, true), { saved: false, reason: "quota" });
-  assert.deepEqual(game.stats, { blocksMined: 0 });
+  assert.deepEqual(game.stats, { blocksMined: 0, cropsPlanted: 0, cropsHarvested: 0 });
   assert.deepEqual([...game.blockEdits()], []);
 });
 
@@ -1445,12 +1452,12 @@ test("a v5 save sanitizes bad equipment, tech and stats instead of crashing the 
     dressings: { dressing: 0, bandage: 0, bigDressing: 0 },
     equipment: { weapon: { key: "stoneSword", tier: "stone" }, armor: { key: "dragonArmor", tier: "ember" }, tool: "not-an-object" },
     techUnlocked: ["toughness", 7, "toughness", null], workbenchBuilt: "yes",
-    stats: { blocksMined: -5 } });
+    stats: { blocksMined: -5, cropsPlanted: "three", cropsHarvested: -1 } });
   const game = createProgression(makeStorage([[SAVE_KEY, dirty]]), line(10));
   assert.deepEqual(game.equipment, { weapon: null, armor: null, tool: null });
   assert.deepEqual(game.techUnlocked, ["toughness"]);
   assert.equal(game.workbenchBuilt, false);
-  assert.deepEqual(game.stats, { blocksMined: 0 });
+  assert.deepEqual(game.stats, { blocksMined: 0, cropsPlanted: 0, cropsHarvested: 0 });
   // And a clean v5 file round-trips everything it carries, including a
   // mining count past the stack limit (a lifetime counter is not capped).
   const clean = JSON.stringify({ version: 5, edits: [], materials: [0, 0, 10, 0, 2, 0], axeUnlocked: false,
@@ -1464,7 +1471,7 @@ test("a v5 save sanitizes bad equipment, tech and stats instead of crashing the 
   assert.deepEqual(loaded.equipment.tool, { key: "stonePickaxe", tier: "stone", durability: 100 });
   assert.deepEqual(loaded.techUnlocked, ["toughness"]);
   assert.equal(loaded.workbenchBuilt, true);
-  assert.deepEqual(loaded.stats, { blocksMined: 1500 });
+  assert.deepEqual(loaded.stats, { blocksMined: 1500, cropsPlanted: 0, cropsHarvested: 0 });
   assert.deepEqual(loaded.rareMaterials, { emberCore: 2, starShard: 1 });
 });
 
@@ -1781,4 +1788,295 @@ test("a stored durability is clamped into [0, max]; a non-integer one loads full
   assert.equal(game.equipment.weapon.durability, 200);
   assert.equal(game.equipment.armor.durability, 0);
   assert.equal(game.equipment.tool.durability, 300);
+});
+
+// Farming (R2): seeds and crops in the v5 save.
+
+test("a v5 save loads its seeds and crops, dropping bad entries and repairing the stage", () => {
+  const save = JSON.stringify({ version: 5, edits: [], materials: [0, 0, 10, 0, 2, 0], axeUnlocked: false,
+    dressings: { dressing: 0, bandage: 0, bigDressing: 0 },
+    seeds: { wheatSeed: 5, wheat: 3, dragonScale: 9 },
+    crops: { 3: { crop: "wheat", stage: 0, plantedAt: 10, growth: 130, fertilized: false },
+      4: { crop: "wheat", stage: 2, plantedAt: 0, growth: 240, fertilized: true },
+      5: { crop: "dragonfruit", stage: 0, plantedAt: 0, growth: 0 },
+      6: { crop: "wheat", stage: 0, plantedAt: 0, growth: -5 },
+      99: { crop: "wheat", stage: 0, plantedAt: 0, growth: 0, fertilized: false } } });
+  const game = createProgression(makeStorage([[SAVE_KEY, save]]), line(10));
+  assert.deepEqual(game.seeds, { wheatSeed: 5, wheat: 3, fertilizer: 0 });
+  // Cell 3's stored stage 0 disagrees with its growth (130s is stage 1):
+  // the stage is recomputed from the growth on load. Cell 4's stored
+  // fertilized flag survives the load. The unknown crop, the negative
+  // growth and the out-of-range cell are all dropped.
+  assert.deepEqual(game.crops, {
+    3: { crop: "wheat", stage: 1, plantedAt: 10, growth: 130, fertilized: false },
+    4: { crop: "wheat", stage: 2, plantedAt: 0, growth: 240, fertilized: true }
+  });
+  assert.equal(game.isCropMature(voxelIndex(line(10), 3, 0, 0)), false);
+  assert.equal(game.isCropMature(voxelIndex(line(10), 4, 0, 0)), true);
+  assert.equal(game.isCropMature(voxelIndex(line(10), 5, 0, 0)), false);
+});
+
+test("planting spends one seed, starts the clock, and counts the planting", () => {
+  const storage = makeStorage();
+  const game = createProgression(storage, line(10));
+  const cell = voxelIndex(line(10), 3, 0, 0);
+  // The fresh save starts with the 2 starter seeds.
+  assert.equal(game.count("wheatSeed"), 2);
+  assert.ok(game.plantCrop(cell, "wheat", 30).saved);
+  assert.equal(game.count("wheatSeed"), 1);
+  assert.deepEqual(game.cropAt(cell), { crop: "wheat", stage: 0, plantedAt: 30, growth: 0, fertilized: false });
+  assert.deepEqual(game.stats, { blocksMined: 0, cropsPlanted: 1, cropsHarvested: 0 });
+  // The same cell twice, an unknown crop, a bad cell and a bad clock
+  // are all refused — and a second seed plants a second cell.
+  assert.equal(game.plantCrop(cell, "wheat", 31), null);
+  assert.equal(game.plantCrop(voxelIndex(line(10), 4, 0, 0), "dragonfruit", 31), null);
+  assert.equal(game.plantCrop(99, "wheat", 31), null);
+  assert.equal(game.plantCrop(voxelIndex(line(10), 5, 0, 0), "wheat", -1), null);
+  assert.ok(game.plantCrop(voxelIndex(line(10), 4, 0, 0), "wheat", 31).saved);
+  assert.equal(game.count("wheatSeed"), 0);
+  // No seeds left: a third planting is refused.
+  assert.equal(game.plantCrop(voxelIndex(line(10), 5, 0, 0), "wheat", 32), null);
+  // The planting persists across a reload.
+  const reloaded = createProgression(storage, line(10));
+  assert.deepEqual(reloaded.cropAt(cell), { crop: "wheat", stage: 0, plantedAt: 30, growth: 0, fertilized: false });
+  assert.equal(reloaded.count("wheatSeed"), 0);
+  assert.equal(reloaded.stats.cropsPlanted, 2);
+});
+
+test("a quota failure rolls a planting back, seed and crop together", () => {
+  const storage = makeStorage();
+  const game = createProgression(storage, line(10));
+  const quota = new Error("quota exceeded");
+  quota.name = "QuotaExceededError";
+  storage.setItem = () => { throw quota; };
+  const cell = voxelIndex(line(10), 3, 0, 0);
+  assert.deepEqual(game.plantCrop(cell, "wheat", 30), { saved: false, reason: "quota" });
+  assert.equal(game.count("wheatSeed"), 2);
+  assert.equal(game.cropAt(cell), null);
+  assert.equal(game.stats.cropsPlanted, 0);
+});
+
+test("harvesting pays the yield only when mature, and counts the harvest", () => {
+  const storage = makeStorage();
+  const game = createProgression(storage, line(10));
+  const cell = voxelIndex(line(10), 3, 0, 0);
+  const empty = voxelIndex(line(10), 4, 0, 0);
+  assert.ok(game.plantCrop(cell, "wheat", 0).saved);
+  // Nothing planted, and an immature crop, are both refused.
+  assert.equal(game.harvestCrop(empty), null);
+  assert.equal(game.harvestCrop(cell), null);
+  assert.equal(game.count("wheat"), 0);
+  // A full day of growth matures it; the harvest pays 2 wheat and the
+  // seed back, and the cell is empty again.
+  assert.deepEqual(game.advanceCrops(240, false), { saved: true });
+  assert.equal(game.isCropMature(cell), true);
+  const result = game.harvestCrop(cell);
+  assert.deepEqual(result, { saved: true, yield: [["wheat", 2], ["wheatSeed", 1]] });
+  assert.equal(game.count("wheat"), 2);
+  assert.equal(game.count("wheatSeed"), 2);
+  assert.equal(game.cropAt(cell), null);
+  assert.deepEqual(game.stats, { blocksMined: 0, cropsPlanted: 1, cropsHarvested: 1 });
+  assert.deepEqual(game.flush(), { saved: true });
+});
+
+test("a quota failure rolls a harvest back, yield and crop together", () => {
+  const storage = makeStorage();
+  const game = createProgression(storage, line(10));
+  const cell = voxelIndex(line(10), 3, 0, 0);
+  assert.ok(game.plantCrop(cell, "wheat", 0).saved);
+  assert.deepEqual(game.advanceCrops(240, false), { saved: true });
+  assert.deepEqual(game.flush(), { saved: true });
+  const quota = new Error("quota exceeded");
+  quota.name = "QuotaExceededError";
+  storage.setItem = () => { throw quota; };
+  assert.deepEqual(game.harvestCrop(cell), { saved: false, reason: "quota" });
+  assert.equal(game.count("wheat"), 0);
+  assert.equal(game.count("wheatSeed"), 1);
+  assert.deepEqual(game.cropAt(cell), { crop: "wheat", stage: 2, plantedAt: 0, growth: 240, fertilized: false });
+  assert.equal(game.stats.cropsHarvested, 0);
+});
+
+// Farming (R3): fertilizer.
+
+// A save with leaves to compost with: the starter save has 0 leaves.
+function leafySave() {
+  return JSON.stringify({ version: 5, edits: [], materials: [0, 0, 10, 0, 2, 10], axeUnlocked: false,
+    dressings: { dressing: 0, bandage: 0, bigDressing: 0 } });
+}
+
+test("crafting compost spends leaves and dirt and credits the farm counts", () => {
+  const game = createProgression(makeStorage([[SAVE_KEY, leafySave()]]), line(10));
+  // Leaves 10, dirt 10: the recipe (leaves 2 + dirt 1) is affordable,
+  // and it needs no workbench — it is mixed by hand like a dressing.
+  assert.equal(game.canCraft("fertilizer"), true);
+  assert.ok(game.craft("fertilizer").saved);
+  assert.equal(game.count("fertilizer"), 1);
+  assert.equal(game.count(BLOCK.LEAF), 8);
+  assert.equal(game.count(BLOCK.DIRT), 9);
+  // 10 leaves make 5 composts, then the leaves run out.
+  assert.ok(game.craft("fertilizer").saved);
+  assert.ok(game.craft("fertilizer").saved);
+  assert.ok(game.craft("fertilizer").saved);
+  assert.ok(game.craft("fertilizer").saved);
+  assert.equal(game.count("fertilizer"), 5);
+  assert.equal(game.count(BLOCK.LEAF), 0);
+  assert.equal(game.canCraft("fertilizer"), false);
+  assert.equal(game.craft("fertilizer"), null);
+  // At the stack limit the recipe is refused, like a dressing.
+  const full = createProgression(makeStorage([[SAVE_KEY, JSON.stringify({ version: 5, edits: [],
+    materials: [0, 0, 10, 0, 2, 10], axeUnlocked: false,
+    dressings: { dressing: 0, bandage: 0, bigDressing: 0 },
+    seeds: { wheatSeed: 2, wheat: 0, fertilizer: 999 } })]]), line(10));
+  assert.equal(full.canCraft("fertilizer"), false);
+  assert.equal(full.craft("fertilizer"), null);
+});
+
+test("fertilizing spends one compost, sets the flag for the whole cycle, and refuses repeats", () => {
+  const storage = makeStorage([[SAVE_KEY, leafySave()]]);
+  const game = createProgression(storage, line(10));
+  const cell = voxelIndex(line(10), 3, 0, 0);
+  const other = voxelIndex(line(10), 4, 0, 0);
+  // No crop here, and no compost yet: both are refused.
+  assert.equal(game.fertilizeCrop(cell), null);
+  assert.ok(game.plantCrop(cell, "wheat", 0).saved);
+  assert.equal(game.fertilizeCrop(cell), null);
+  // One compost, then the flag is set and the compost is spent.
+  assert.ok(game.craft("fertilizer").saved);
+  assert.ok(game.fertilizeCrop(cell).saved);
+  assert.equal(game.count("fertilizer"), 0);
+  assert.deepEqual(game.cropAt(cell), { crop: "wheat", stage: 0, plantedAt: 0, growth: 0, fertilized: true });
+  // A second dose on the same plant is refused — it would not stack.
+  assert.equal(game.fertilizeCrop(cell), null);
+  // Another plant can be fertilized with another compost.
+  assert.ok(game.craft("fertilizer").saved);
+  assert.ok(game.plantCrop(other, "wheat", 0).saved);
+  assert.ok(game.fertilizeCrop(other).saved);
+  assert.equal(game.count("fertilizer"), 0);
+  // The flag persists across a reload.
+  const reloaded = createProgression(storage, line(10));
+  assert.equal(reloaded.cropAt(cell).fertilized, true);
+  assert.equal(reloaded.cropAt(other).fertilized, true);
+});
+
+test("a quota failure rolls a fertilizing back, compost and flag together", () => {
+  const storage = makeStorage([[SAVE_KEY, leafySave()]]);
+  const game = createProgression(storage, line(10));
+  const cell = voxelIndex(line(10), 3, 0, 0);
+  assert.ok(game.plantCrop(cell, "wheat", 0).saved);
+  assert.ok(game.craft("fertilizer").saved);
+  assert.deepEqual(game.flush(), { saved: true });
+  const quota = new Error("quota exceeded");
+  quota.name = "QuotaExceededError";
+  storage.setItem = () => { throw quota; };
+  assert.deepEqual(game.fertilizeCrop(cell), { saved: false, reason: "quota" });
+  assert.equal(game.count("fertilizer"), 1);
+  assert.equal(game.cropAt(cell).fertilized, false);
+});
+
+test("a fertilized crop grows twice as fast, four times in the rain", () => {
+  const game = createProgression(makeStorage([[SAVE_KEY, leafySave()]]), line(10));
+  const fed = voxelIndex(line(10), 3, 0, 0);
+  const plain = voxelIndex(line(10), 4, 0, 0);
+  assert.ok(game.plantCrop(fed, "wheat", 0).saved);
+  assert.ok(game.plantCrop(plain, "wheat", 0).saved);
+  assert.ok(game.craft("fertilizer").saved);
+  assert.ok(game.fertilizeCrop(fed).saved);
+  // 60s dry: the fertilized crop gains 120s, the plain one 60s.
+  assert.deepEqual(game.advanceCrops(60, false), { saved: true });
+  assert.equal(game.cropAt(fed).growth, 120);
+  assert.equal(game.cropAt(plain).growth, 60);
+  assert.equal(game.cropAt(fed).stage, 1);
+  assert.equal(game.cropAt(plain).stage, 0);
+  // 30s of rain: the fertilized crop gains 120s more (x4), the plain
+  // one 60s (x2) — the fertilized crop is mature at 240s.
+  assert.deepEqual(game.advanceCrops(30, true), { saved: true });
+  assert.equal(game.cropAt(fed).growth, 240);
+  assert.equal(game.cropAt(plain).growth, 120);
+  assert.equal(game.isCropMature(fed), true);
+  assert.equal(game.isCropMature(plain), false);
+});
+
+test("uprooting removes a crop without a yield", () => {
+  const storage = makeStorage();
+  const game = createProgression(storage, line(10));
+  const cell = voxelIndex(line(10), 3, 0, 0);
+  assert.equal(game.removeCrop(cell), null);
+  assert.ok(game.plantCrop(cell, "wheat", 0).saved);
+  assert.ok(game.removeCrop(cell).saved);
+  assert.equal(game.cropAt(cell), null);
+  assert.equal(game.count("wheat"), 0);
+  assert.equal(game.count("wheatSeed"), 1);
+  assert.equal(game.stats.cropsHarvested, 0);
+});
+
+test("advanceCrops grows on game time, doubles in the rain, and batches the write", () => {
+  const storage = makeStorage();
+  const game = createProgression(storage, line(10));
+  const cell = voxelIndex(line(10), 3, 0, 0);
+  // No crops: a tick is a no-op and marks nothing dirty.
+  assert.deepEqual(game.advanceCrops(10, false), { saved: true });
+  assert.equal(game.pendingSave, false);
+  assert.ok(game.plantCrop(cell, "wheat", 0).saved);
+  const before = storage.getItem(SAVE_KEY);
+  // 100s at the base rate: still stage 0 (a stage lasts 120s).
+  assert.deepEqual(game.advanceCrops(100, false), { saved: true });
+  assert.deepEqual(game.cropAt(cell), { crop: "wheat", stage: 0, plantedAt: 0, growth: 100, fertilized: false });
+  // 20s more crosses the stage boundary — but the write is batched, so
+  // the storage text is unchanged until the flush.
+  assert.deepEqual(game.advanceCrops(20, false), { saved: true });
+  assert.deepEqual(game.cropAt(cell), { crop: "wheat", stage: 1, plantedAt: 0, growth: 120, fertilized: false });
+  assert.equal(game.pendingSave, true);
+  assert.equal(storage.getItem(SAVE_KEY), before);
+  assert.deepEqual(game.flush(), { saved: true });
+  assert.equal(game.pendingSave, false);
+  assert.equal(JSON.parse(storage.getItem(SAVE_KEY)).crops[cell].growth, 120);
+  // Rain doubles the rate: 60s of rain is 120s of growth, and the crop
+  // is mature at 240s.
+  assert.deepEqual(game.advanceCrops(60, true), { saved: true });
+  assert.deepEqual(game.cropAt(cell), { crop: "wheat", stage: 2, plantedAt: 0, growth: 240, fertilized: false });
+  assert.equal(game.isCropMature(cell), true);
+  // A zero or negative tick is a no-op.
+  assert.deepEqual(game.advanceCrops(0, false), { saved: true });
+  assert.deepEqual(game.advanceCrops(-5, false), { saved: true });
+  assert.deepEqual(game.cropAt(cell), { crop: "wheat", stage: 2, plantedAt: 0, growth: 240, fertilized: false });
+  assert.deepEqual(game.flush(), { saved: true });
+});
+
+test("a spitter kill pays its seed, and string counts route to the right table", () => {
+  const storage = makeStorage();
+  const game = createProgression(storage, line(10));
+  // The starter seeds plus one spitter kill.
+  assert.equal(game.count("wheatSeed"), 2);
+  assert.ok(game.grantLoot("spitter").saved);
+  assert.equal(game.count("wheatSeed"), 3);
+  assert.equal(game.count(BLOCK.STONE), 1);
+  assert.equal(game.count(BLOCK.LEAF), 2);
+  assert.equal(game.count("wheat"), 0);
+  // A boss material still routes to the rare table, not the seeds.
+  assert.ok(game.grantBossLoot("boss", 1).saved);
+  assert.equal(game.count("emberCore"), 1);
+  assert.equal(game.count("wheatSeed"), 3);
+  assert.equal(game.count("nope"), 0);
+});
+
+test("an export/import round-trip carries seeds and crops", () => {
+  const storage = makeStorage();
+  const game = createProgression(storage, line(10));
+  const cell = voxelIndex(line(10), 3, 0, 0);
+  assert.ok(game.plantCrop(cell, "wheat", 5).saved);
+  assert.deepEqual(game.advanceCrops(130, false), { saved: true });
+  assert.deepEqual(game.flush(), { saved: true });
+  const exported = game.exportSave();
+  const storage2 = makeStorage();
+  const game2 = createProgression(storage2, line(10));
+  assert.deepEqual(game2.importSave(exported), { imported: true });
+  assert.deepEqual(game2.cropAt(cell), { crop: "wheat", stage: 1, plantedAt: 5, growth: 130, fertilized: false });
+  assert.equal(game2.count("wheatSeed"), 1);
+  assert.equal(game2.stats.cropsPlanted, 1);
+  // Importing a save with no crops clears the planted ones.
+  const bare = JSON.stringify({ version: 5, edits: [], materials: [0, 0, 10, 0, 2, 0], axeUnlocked: false,
+    dressings: { dressing: 0, bandage: 0, bigDressing: 0 } });
+  assert.deepEqual(game2.importSave(bare), { imported: true });
+  assert.deepEqual(game2.crops, {});
+  assert.equal(game2.count("wheatSeed"), 2);
 });

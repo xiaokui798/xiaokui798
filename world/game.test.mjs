@@ -1957,7 +1957,8 @@ test("the pause menu exports the save and imports a file back", async () => {
   assert.deepEqual(JSON.parse(data.get(SAVE_KEY)),
     { ...JSON.parse(imported), version: 5, rareMaterials: { emberCore: 0, starShard: 0 },
       equipment: { weapon: null, armor: null, tool: null }, techUnlocked: [],
-      workbenchBuilt: false, stats: { blocksMined: 0 } });
+      workbenchBuilt: false, stats: { blocksMined: 0, cropsPlanted: 0, cropsHarvested: 0 },
+      seeds: { wheatSeed: 2, wheat: 0, fertilizer: 0 }, crops: {} });
   assert.equal(game.get("start-screen").hidden, false);
   assert.equal(game.get("pause").hidden, true);
   // A fresh game from the menu picks the imported state up: the HUD
@@ -2626,4 +2627,471 @@ test("a broken tool's card shows the fallback and the star repair cost", () => {
   assert.equal(game.get("equip-tool-info").textContent, "失效，回退到石阶 / 拳头 / 0.28 秒");
   assert.equal(game.get("equip-tool-durability-text").textContent, "耐久 0%");
   assert.equal(game.get("equip-tool-state").textContent, "在工作台修理（石头 5 + 断星碎片 1）");
+});
+
+// Farming (R2): planting, growth and harvest in the world.
+
+// A v5 save carrying seeds and planted crops, for the farming tests.
+function v5SaveWithSeeds(seeds = { wheatSeed: 5, wheat: 0 }, crops = {}, materials = [0, 0, 10, 0, 2, 0]) {
+  return JSON.stringify({ version: 5, edits: [], materials, axeUnlocked: false,
+    dressings: { dressing: 0, bandage: 0, bigDressing: 0 }, rareMaterials: { emberCore: 0, starShard: 0 },
+    equipment: { weapon: null, armor: null, tool: null }, techUnlocked: [], workbenchBuilt: false,
+    stats: { blocksMined: 0, cropsPlanted: 0, cropsHarvested: 0 }, seeds, crops });
+}
+
+// Aim the player down at the ground in front of the spawn and return the
+// aimed soil cell, settled (the same settle the mining tests use: 60
+// frames for the landing dip, then look down, then 5 frames of stability).
+function settledAimCell(game, frame) {
+  for (let i = 0; i < 60; i++) frame();
+  for (let i = 0; i < 6; i++) game.document.emit("mousemove", { movementX: 0, movementY: 65 });
+  for (let i = 0; i < 10; i++) frame();
+  assert.ok(game.target, "aiming down targets a block");
+  const before = game.target.join(",");
+  for (let i = 0; i < 5; i++) frame();
+  assert.equal(game.target.join(","), before, "the aim is settled");
+  return game.target;
+}
+
+// The top y of the crop box at this cell in the last actor-mesh upload:
+// the crop is the only actor mesh in its cell's footprint, and its box
+// tops out at cellY + the stage height (0.35 / 0.6 / 0.85).
+function cropTopY(game, cell) {
+  const [x, y, z] = cell;
+  let top = -Infinity;
+  const vertices = game.actorVertices ?? [];
+  for (let v = 0; v + 2 < vertices.length; v += 12) {
+    const vx = vertices[v], vy = vertices[v + 1], vz = vertices[v + 2];
+    if (vx >= x + .24 && vx <= x + .76 && vz >= z + .24 && vz <= z + .76 && vy > y + .01) {
+      top = Math.max(top, vy);
+    }
+  }
+  return top;
+}
+
+test("KeyF plants a wheat seed on the aimed grass", () => {
+  const data = new Map([[SAVE_KEY, v5SaveWithSeeds()]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 16;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  const soil = settledAimCell(game, frame);
+  game.key("KeyF");
+  frame();
+  assert.equal(game.get("message").textContent, "种下了小麦种子");
+  const saved = JSON.parse(data.get(SAVE_KEY));
+  assert.equal(saved.seeds.wheatSeed, 4);
+  const cropCell = voxelIndex(WORLD, soil[0], soil[1] + 1, soil[2]);
+  assert.equal(saved.crops[cropCell].crop, "wheat");
+  assert.equal(saved.crops[cropCell].stage, 0);
+  assert.equal(saved.crops[cropCell].growth, 0);
+  assert.ok(saved.crops[cropCell].plantedAt >= 30);
+  assert.equal(saved.stats.cropsPlanted, 1);
+  // A second KeyF on the same cell is refused (already planted).
+  game.key("KeyF");
+  frame();
+  assert.equal(game.get("message").textContent, "这里已经种了作物");
+});
+
+test("KeyF with no seeds says so instead of planting", () => {
+  const data = new Map([[SAVE_KEY, v5SaveWithSeeds({ wheatSeed: 0, wheat: 0 })]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 16;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  settledAimCell(game, frame);
+  game.key("KeyF");
+  frame();
+  assert.equal(game.get("message").textContent, "没有小麦种子（投掷者会掉）");
+  assert.deepEqual(JSON.parse(data.get(SAVE_KEY)).crops, {});
+});
+
+// Probe the aim cell in a throwaway game, so the crop under test sits
+// where the camera can see it (the terrain and the spawn are fixed, so
+// the settled aim is the same in both mounts).
+function probeSoilCell() {
+  const probeData = new Map();
+  const probeStorage = { getItem: key => probeData.get(key) ?? null, setItem: (key, value) => probeData.set(key, value) };
+  const probe = mountGame({ storage: probeStorage, pointerLock: true });
+  let probeTime = 16;
+  const probeFrame = () => probe.frame(probeTime += 20);
+  probe.click("start-button");
+  probe.grantPointerLock();
+  return settledAimCell(probe, probeFrame);
+}
+
+test("a crop grows on game time: its stage flips after one stage of growth", () => {
+  const soil = probeSoilCell();
+  const cropCell = voxelIndex(WORLD, soil[0], soil[1] + 1, soil[2]);
+  // A crop 2s short of stage 1 (growth 118, a stage lasts 120s): the
+  // 75-frame settle grows it 1.48s (to 119.48, still stage 0), and the
+  // 60 frames below grow it 1.2s more (to 120.68, stage 1).
+  const data = new Map([[SAVE_KEY, v5SaveWithSeeds({ wheatSeed: 0, wheat: 0 },
+    { [cropCell]: { crop: "wheat", stage: 0, plantedAt: 30, growth: 118 } })]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 16;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  settledAimCell(game, frame);
+  const cell = [soil[0], soil[1] + 1, soil[2]];
+  // The crop is a seedling: its box tops out at 0.35 above the soil.
+  assert.ok(Math.abs(cropTopY(game, cell) - (cell[1] + .35)) < .02, `seedling top is ${cropTopY(game, cell)}`);
+  // 60 frames is 1.2s of game time: the growth crosses 120s and the
+  // stage flips to 1, 0.6 tall.
+  for (let i = 0; i < 60; i++) frame();
+  assert.ok(Math.abs(cropTopY(game, cell) - (cell[1] + .6)) < .02, `grown top is ${cropTopY(game, cell)}`);
+});
+
+test("clicking the soil under a mature crop harvests it", () => {
+  const soil = probeSoilCell();
+  const cropCell = voxelIndex(WORLD, soil[0], soil[1] + 1, soil[2]);
+  const data = new Map([[SAVE_KEY, v5SaveWithSeeds({ wheatSeed: 1, wheat: 0 },
+    { [cropCell]: { crop: "wheat", stage: 2, plantedAt: 30, growth: 240 } })]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 16;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  settledAimCell(game, frame);
+  assert.equal(game.target.join(","), soil.join(","), "the aim is the same soil as the probe");
+  // A click with the sword selected swings; switch to a block slot first.
+  game.key("Digit1");
+  frame();
+  game.get("game").emit("mousedown", { button: 0 });
+  frame();
+  assert.equal(game.get("message").textContent, "收获了小麦 +2 · 小麦种子 +1");
+  const saved = JSON.parse(data.get(SAVE_KEY));
+  assert.equal(saved.seeds.wheat, 2);
+  assert.equal(saved.seeds.wheatSeed, 2);
+  assert.deepEqual(saved.crops, {});
+  assert.equal(saved.stats.cropsHarvested, 1);
+  game.document.emit("mouseup", { button: 0 });
+});
+
+test("mining the soil under an immature crop uproots it", () => {
+  const soil = probeSoilCell();
+  const cropCell = voxelIndex(WORLD, soil[0], soil[1] + 1, soil[2]);
+  const data = new Map([[SAVE_KEY, v5SaveWithSeeds({ wheatSeed: 1, wheat: 0 },
+    { [cropCell]: { crop: "wheat", stage: 0, plantedAt: 30, growth: 0 } })]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 16;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  settledAimCell(game, frame);
+  game.key("Digit1");
+  frame();
+  game.get("game").emit("mousedown", { button: 0 });
+  frame();
+  assert.match(game.get("message").textContent, /作物被连根拔起/);
+  assert.notEqual(game.target.join(","), soil.join(","), "the click mines the aimed soil");
+  const saved = JSON.parse(data.get(SAVE_KEY));
+  assert.deepEqual(saved.crops, {});
+  assert.equal(saved.seeds.wheat, 0);
+  game.document.emit("mouseup", { button: 0 });
+});
+
+test("a kill's loot message names every drop, never \"undefined\"", () => {
+  // The message is built from the kind's drop table (the same line that
+  // now also renders a spitter's seed via FARM_MATERIALS); a string id
+  // read through blockNames would print "undefined +1".
+  const data = new Map();
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 16;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  for (let i = 0; i < 60; i++) frame();
+  // Wait for the first survival wave and kill its first zombie the way
+  // the swing helper does, then read the loot message.
+  game.key("Digit6");
+  frame();
+  let looted = null;
+  for (let attempt = 0; attempt < 5 && !looted; attempt++) {
+    game.get("message").textContent = "";
+    swingAtAdjacentZombie(game, frame);
+    if (game.get("message").textContent) looted = game.get("message").textContent;
+  }
+  assert.ok(looted, "a zombie was killed and its loot messaged");
+  assert.ok(!looted.includes("undefined"), `loot names every drop: ${looted}`);
+});
+
+// Farming (R3): the farm tab, sow mode, fertilizer (KeyG), mature notices.
+
+test("the farm tab is fifth and last, with seed counts, sow rows and a crop list", () => {
+  const soil = probeSoilCell();
+  const cropCell = voxelIndex(WORLD, soil[0], soil[1] + 1, soil[2]);
+  const data = new Map([[SAVE_KEY, v5SaveWithSeeds({ wheatSeed: 5, wheat: 0, fertilizer: 0 },
+    { [cropCell]: { crop: "wheat", stage: 0, plantedAt: 30, growth: 100 } })]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 16;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  for (let i = 0; i < 5; i++) frame();
+  game.key("KeyC");
+  frame();
+  const panel = game.document.querySelector("#inventory-screen .inventory-panel");
+  game.click("tab-btn-farm");
+  assert.equal(game.get("tab-farm").hidden, false);
+  assert.equal(game.get("tab-backpack").hidden, true);
+  assert.equal(game.get("tab-tech").hidden, true);
+  assert.equal(panel.classList.contains("wide"), false, "the farm tab stays 38rem, not wide");
+  assert.equal(game.get("tab-btn-farm").classList.contains("secondary-button"), false);
+  // The material strip shows every farm material, 0 included.
+  const strip = game.get("farm-materials").innerHTML;
+  assert.match(strip, /小麦种子/);
+  assert.match(strip, /<dd>5<\/dd>/);
+  assert.match(strip, /小麦/);
+  assert.match(strip, /腐叶/);
+  assert.match(strip, /<dd>0<\/dd>/);
+  // The sow row names the seed count; the compost row names its cost.
+  assert.equal(game.get("farm-sow-wheatSeed-cost").textContent, "已有 5 粒 · 对准耕地播种");
+  assert.equal(game.get("farm-sow-wheatSeed-btn").disabled, false);
+  assert.match(game.get("farm-fertilizer-cost").textContent, /树叶 0\/2 · 泥土 10\/1/);
+  assert.equal(game.get("craft-fertilizer").disabled, true, "no leaves, so no compost");
+  // The planted crop is one row: growth in days, a 42% bar (100/240s).
+  const crops = game.get("farm-crops").innerHTML;
+  assert.match(crops, /小麦 · 生长中 · 0\.4 \/ 1 天/);
+  assert.match(crops, /width: 42%/);
+  assert.doesNotMatch(crops, /已成熟/);
+  assert.equal(game.get("farm-empty").hidden, true, "a planted crop hides the empty line");
+});
+
+test("the farm tab's empty line says why, and the sow button disables with no seeds", () => {
+  const data = new Map([[SAVE_KEY, v5SaveWithSeeds({ wheatSeed: 0, wheat: 0, fertilizer: 0 })]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 16;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  for (let i = 0; i < 5; i++) frame();
+  game.key("KeyC");
+  frame();
+  game.click("tab-btn-farm");
+  assert.equal(game.get("farm-sow-wheatSeed-cost").textContent, "已有 0 粒 · 投掷者掉落");
+  assert.equal(game.get("farm-sow-wheatSeed-btn").disabled, true);
+  assert.equal(game.get("farm-empty").hidden, false);
+  assert.equal(game.get("farm-empty").textContent, "还没有种子——投掷者掉落小麦种子，开局自带 2 粒");
+  assert.equal(game.get("farm-crops").innerHTML, "");
+});
+
+test("the farm tab crafts compost from its own row", () => {
+  const data = new Map([[SAVE_KEY, v5SaveWithSeeds({ wheatSeed: 5, wheat: 0, fertilizer: 0 }, {},
+    [0, 0, 10, 0, 2, 10])]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 16;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  for (let i = 0; i < 5; i++) frame();
+  game.key("KeyC");
+  frame();
+  game.click("tab-btn-farm");
+  assert.equal(game.get("craft-fertilizer").disabled, false);
+  game.click("craft-fertilizer");
+  assert.match(game.get("inventory-notice").textContent, /已制作腐叶/);
+  assert.match(game.get("farm-materials").innerHTML, /腐叶<\/dt><dd>1<\/dd>/);
+  assert.match(game.get("farm-fertilizer-cost").textContent, /树叶 8\/2 · 泥土 9\/1/);
+});
+
+test("sow mode plants on a click and the hint goes away", () => {
+  const data = new Map([[SAVE_KEY, v5SaveWithSeeds()]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 16;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  const soil = settledAimCell(game, frame);
+  game.key("KeyC");
+  frame();
+  assert.equal(game.get("inventory-screen").hidden, false);
+  game.click("tab-btn-farm");
+  game.click("farm-sow-wheatSeed-btn");
+  // The bag closes and the HUD hint comes up.
+  assert.equal(game.get("inventory-screen").hidden, true);
+  assert.equal(game.get("sow-hint").hidden, false);
+  assert.match(game.get("sow-hint").innerHTML, /播种：对准耕地/);
+  game.grantPointerLock();
+  frame();
+  // A left-click on the aimed grass plants, spends the seed, ends mode.
+  game.get("game").emit("mousedown", { button: 0 });
+  frame();
+  assert.equal(game.get("message").textContent, "种下了小麦种子");
+  assert.equal(game.get("sow-hint").hidden, true);
+  const saved = JSON.parse(data.get(SAVE_KEY));
+  assert.equal(saved.seeds.wheatSeed, 4);
+  const cropCell = voxelIndex(WORLD, soil[0], soil[1] + 1, soil[2]);
+  assert.equal(saved.crops[cropCell].crop, "wheat");
+  game.document.emit("mouseup", { button: 0 });
+});
+
+test("a non-plantable click in sow mode cancels the mode and mines instead", () => {
+  const data = new Map([[SAVE_KEY, v5SaveWithSeeds()]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 16;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  const soil = settledAimCell(game, frame);
+  // Place a dirt block on the grass, so the aim above is dirt — not
+  // plantable. The placed block sits one cell above the soil.
+  game.key("Digit2");
+  frame();
+  game.get("game").emit("mousedown", { button: 2 });
+  frame();
+  game.document.emit("mouseup", { button: 2 });
+  assert.equal(game.target[1], soil[1] + 1, "the aim is the placed dirt now");
+  assert.equal(JSON.parse(data.get(SAVE_KEY)).materials[2], 9, "one dirt spent on the place");
+  // F on dirt says so — and arms sow mode, the backup entry.
+  game.key("KeyF");
+  frame();
+  assert.equal(game.get("message").textContent, "只能种在草地上");
+  assert.equal(game.get("sow-hint").hidden, false);
+  // A left-click on the dirt cancels the mode and mines the dirt: the
+  // mode never swallows the action.
+  const dirt = game.target;
+  game.get("game").emit("mousedown", { button: 0 });
+  frame();
+  game.document.emit("mouseup", { button: 0 });
+  assert.equal(game.get("sow-hint").hidden, true, "the mode is off");
+  assert.notEqual(game.target.join(","), dirt.join(","), "the click mined the dirt");
+  assert.deepEqual(JSON.parse(data.get(SAVE_KEY)).crops, {}, "nothing was planted");
+});
+
+test("right-click and Esc cancel sow mode without planting", () => {
+  const data = new Map([[SAVE_KEY, v5SaveWithSeeds()]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 16;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  settledAimCell(game, frame);
+  game.key("KeyC");
+  frame();
+  game.click("tab-btn-farm");
+  game.click("farm-sow-wheatSeed-btn");
+  assert.equal(game.get("sow-hint").hidden, false);
+  game.grantPointerLock();
+  frame();
+  // Right-click cancels; no block is placed and nothing is planted.
+  game.get("game").emit("mousedown", { button: 2 });
+  frame();
+  assert.equal(game.get("sow-hint").hidden, true);
+  assert.deepEqual(JSON.parse(data.get(SAVE_KEY)).crops, {});
+  // Arm it again (F on the aimed grass plants directly, so arm it from
+  // the tab instead) and cancel with Esc.
+  game.key("KeyC");
+  frame();
+  game.click("tab-btn-farm");
+  game.click("farm-sow-wheatSeed-btn");
+  assert.equal(game.get("sow-hint").hidden, false);
+  game.grantPointerLock();
+  frame();
+  game.key("Escape");
+  frame();
+  assert.equal(game.get("sow-hint").hidden, true);
+  assert.deepEqual(JSON.parse(data.get(SAVE_KEY)).crops, {});
+});
+
+test("KeyG fertilizes the aimed crop, and refuses a second dose", () => {
+  const soil = probeSoilCell();
+  const cropCell = voxelIndex(WORLD, soil[0], soil[1] + 1, soil[2]);
+  const data = new Map([[SAVE_KEY, v5SaveWithSeeds({ wheatSeed: 5, wheat: 0, fertilizer: 2 },
+    { [cropCell]: { crop: "wheat", stage: 0, plantedAt: 30, growth: 0 } })]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 16;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  settledAimCell(game, frame);
+  assert.equal(game.target.join(","), soil.join(","), "the aim is the soil under the crop");
+  game.key("KeyG");
+  frame();
+  assert.equal(game.get("message").textContent, "给小麦施了腐叶，长得更快了");
+  const saved = JSON.parse(data.get(SAVE_KEY));
+  assert.equal(saved.seeds.fertilizer, 1);
+  assert.equal(saved.crops[cropCell].fertilized, true);
+  // A second dose on the same plant is refused, compost unspent.
+  game.key("KeyG");
+  frame();
+  assert.equal(game.get("message").textContent, "这株作物已经施过肥了");
+  assert.equal(JSON.parse(data.get(SAVE_KEY)).seeds.fertilizer, 1);
+});
+
+test("KeyG with no compost or no crop says so", () => {
+  const soil = probeSoilCell();
+  const cropCell = voxelIndex(WORLD, soil[0], soil[1] + 1, soil[2]);
+  // A crop, but no compost.
+  const data = new Map([[SAVE_KEY, v5SaveWithSeeds({ wheatSeed: 5, wheat: 0, fertilizer: 0 },
+    { [cropCell]: { crop: "wheat", stage: 0, plantedAt: 30, growth: 0 } })]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 16;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  settledAimCell(game, frame);
+  game.key("KeyG");
+  frame();
+  assert.match(game.get("message").textContent, /没有腐叶/);
+  // The farm tab shows the crop still unfertilized (the save text holds
+  // the pre-R3 record shape until a write re-serializes it, so the tab
+  // — not the disk — is the honest read here).
+  game.key("KeyC");
+  frame();
+  game.click("tab-btn-farm");
+  assert.doesNotMatch(game.get("farm-crops").innerHTML, /已施肥/);
+  // No crop at all: aiming at bare grass.
+  const data2 = new Map([[SAVE_KEY, v5SaveWithSeeds({ wheatSeed: 5, wheat: 0, fertilizer: 2 })]]);
+  const storage2 = { getItem: key => data2.get(key) ?? null, setItem: (key, value) => data2.set(key, value) };
+  const game2 = mountGame({ storage: storage2, pointerLock: true });
+  let time2 = 16;
+  const frame2 = () => game2.frame(time2 += 20);
+  game2.click("start-button");
+  game2.grantPointerLock();
+  settledAimCell(game2, frame2);
+  game2.key("KeyG");
+  frame2();
+  assert.equal(game2.get("message").textContent, "对准一株作物再施肥");
+});
+
+test("a crop maturing announces itself once, several at once in one line", () => {
+  const soil = probeSoilCell();
+  const cellA = voxelIndex(WORLD, soil[0], soil[1] + 1, soil[2]);
+  const cellB = voxelIndex(WORLD, soil[0] + 1, soil[1] + 1, soil[2]);
+  // Both crops 2s short of maturity (growth 238): the 75-frame settle
+  // grows them 1.48s (to 239.48), and 40 frames more cross 240s.
+  const data = new Map([[SAVE_KEY, v5SaveWithSeeds({ wheatSeed: 0, wheat: 0 },
+    { [cellA]: { crop: "wheat", stage: 1, plantedAt: 30, growth: 238 },
+      [cellB]: { crop: "wheat", stage: 1, plantedAt: 30, growth: 238 } })]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 16;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  settledAimCell(game, frame);
+  game.get("message").textContent = "";
+  for (let i = 0; i < 40; i++) frame();
+  assert.equal(game.get("message").textContent, "小麦 ×2 已成熟，到田里收割");
+  // It fires once: 40 more frames leave the same line in place.
+  for (let i = 0; i < 40; i++) frame();
+  assert.equal(game.get("message").textContent, "小麦 ×2 已成熟，到田里收割");
 });

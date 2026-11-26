@@ -20,6 +20,7 @@ const files = new Map([
   ["/tools.mjs", ["tools.mjs", "text/javascript; charset=utf-8"]],
   ["/tech.mjs", ["tech.mjs", "text/javascript; charset=utf-8"]],
   ["/durability.mjs", ["durability.mjs", "text/javascript; charset=utf-8"]],
+  ["/crops.mjs", ["crops.mjs", "text/javascript; charset=utf-8"]],
   ["/controls.mjs", ["controls.mjs", "text/javascript; charset=utf-8"]],
   ["/movement.mjs", ["movement.mjs", "text/javascript; charset=utf-8"]],
   ["/boss.mjs", ["boss.mjs", "text/javascript; charset=utf-8"]],
