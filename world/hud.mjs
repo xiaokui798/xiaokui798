@@ -68,12 +68,26 @@ export function createHud(elements, timers) {
     segmentIndex = 0;
   }
   const percent = frac => `${Math.round(Math.min(1, Math.max(0, frac)) * 1000) / 10}%`;
-  function writeBar(bar) {
+  function writeBar(bar, elapsed = 0) {
     if (bar.count !== segmentCount) buildSegments(bar.count);
+    // The shatter flash (batch 64) is a timed class of its
+    // own, landed the frame the index moves — the same frame
+    // the boss's bar-change pose starts — and lifted 0.45s
+    // later, so a test can pin both ends of it.
+    for (const segment of segments) {
+      if (segment.shatterUntil && elapsed >= segment.shatterUntil) {
+        segment.root.classList.toggle("shattering", false);
+        segment.shatterUntil = 0;
+      }
+    }
     if (bar.index !== segmentIndex) {
       segmentIndex = bar.index;
       segments.forEach((segment, i) => {
         const state = i < bar.index - 1 ? "broken" : i === bar.index - 1 ? "current" : "idle";
+        if (state === "broken" && !segment.root.classList.contains("broken")) {
+          segment.root.classList.add("shattering");
+          segment.shatterUntil = elapsed + .45;
+        }
         segment.root.classList.toggle("broken", state === "broken");
         segment.root.classList.toggle("current", state === "current");
         segment.root.classList.toggle("idle", state === "idle");
@@ -107,7 +121,7 @@ export function createHud(elements, timers) {
   //                 lights the whole HUD root's red edge flash)
   //   bannerVisible / bannerText   the bar-change big print
   function updateBossHud(view) {
-    writeBar(view.bar);
+    writeBar(view.bar, view.elapsed ?? 0);
     setText(bossHealthValue, view.healthText);
     if (view.name !== null) setText(bossName, view.name);
     setText(waveStatus, view.statusText);

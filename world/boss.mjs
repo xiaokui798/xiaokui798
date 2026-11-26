@@ -37,6 +37,25 @@ export const COLOSSUS = Object.freeze({ id: "colossus", name: "断星巨像", ar
 // The current bar of a fight, for HUD and tuning readers: fight.phase
 // IS the bar index (1-based) for both bosses; hp is always the
 // current bar's remaining health.
+// The bar palette (batch 64): one table for the segmented
+// health bar (styles.css carries the same hexes) and for the
+// bosses' cores, so a bar's colour means the same thing on
+// the HUD and on the boss's chest. Guardian #df784e /
+// #f0d25a / #f04632; colossus #ad8aed / #f082dc / #f59e4c /
+// #fdf6ec.
+export const BAR_COLORS = {
+  boss: [[.875, .471, .306], [.941, .824, .275], [.941, .275, .196]],
+  colossus: [[.678, .541, .929], [.941, .510, .863], [.961, .620, .298], [.992, .965, .925]]
+};
+
+// The bar-change envelope (batch 64): across the 2s
+// phaseShift window the pose sinks in over the first
+// quarter, holds, and rises through the last quarter.
+function shiftSink(fight) {
+  const t = 1 - Math.min(2, Math.max(0, fight.phaseShift ?? 0)) / 2;
+  return Math.min(Math.min(1, t / .25), Math.min(1, Math.max(0, (1 - t) / .25)));
+}
+
 export function bossBar(fight) {
   const index = fight.phase;
   const bar = fight.profile === BOSS ? GUARDIAN_WAVES[index - 1] : fight.profile.bars[index - 1];
@@ -854,12 +873,13 @@ export function posedColossus(fight) {
   const attackAge = releasing ? release * BOSS_ATTACKS[move].duration : Infinity;
   const rebound = attackAge < .12 ? .04 * (1 - attackAge / .12) : 0;
   const shiftNorm = Math.min(1, (fight.phaseShift ?? 0) / 1.2);
-  const phaseDip = shiftNorm > 0 ? -.45 * Math.sin(Math.PI * (1 - shiftNorm)) : 0;
+  const phaseDip = -1.0 * shiftSink(fight);
   const starLift = move === "starfall" ? 1.7 * (winding ? charge : 1) : 0;
   const lift = Math.max(.42, liftBase - .12 * charge + rebound + phaseDip + starLift);
-  const cool = [.21, .74, .95], teal = [.26, 1, .83], enraged = [1, .35, .22];
   const energyBoost = Math.min(2.5, (1 + .8 * charge) * (1 + 1.5 * shiftNorm));
-  const energy = cool.map((value, i) => (open || won ? teal[i] : value + (enraged[i] - value) * fight.phaseGlow) * (1 - fall * .92) * energyBoost);
+  const barColor = BAR_COLORS.colossus[fight.phase - 1];
+  const energy = barColor.map(value => (open || won ? value + (1 - value) * .55 : value)
+    * (1 - fall * .92) * energyBoost * (open ? 1.3 : 1));
   const gesture = [-1, 1].map(side => {
     let raise = .14 * Math.sin(fight.elapsed * 3.1 + side) + drive * .30 + fall * .50;
     let reach = drive * -.48 + fall * .44 - fight.hurt * 1.15;
@@ -889,6 +909,7 @@ export function posedColossus(fight) {
       raise += 1.5 * charge;
       spread += .62 * charge;
     }
+    raise -= .38 * shiftSink(fight);
     return { raise, reach, spread };
   });
   // The three orbiting crystals light one by one across the prism
@@ -1102,46 +1123,46 @@ export function posedGuardian(fight) {
   const follow = striking ? 1 - ease(release) : downswing;
   const stride = Math.sin(fight.stride) * fight.gait;
   const phaseShift = Math.min(1, (fight.phaseShift ?? 0) / 1.2);
+  const kneel = shiftSink(fight), drop = kneel * .5;
   const vulnerable = fight.state === "recovery";
   const dead = fight.state === "defeated";
   const dark = [.12, .15, .18], steel = [.28, .32, .38], iron = [.43, .47, .53];
-  const copper = [.61, .27, .11], hot = fight.phase === 1 ? [1, .19, .025]
-    : fight.phase === 2 ? [1, .36, .035] : [1, .59, .09];
+  const copper = [.61, .27, .11], hot = BAR_COLORS.boss[fight.phase - 1];
   // Charge and phase theatre (batch 49): the core brightens toward
   // 1.8x across a windup and bursts toward 2.5x as a phase opens.
   const coreBoost = dead ? 1 : Math.min(2.5, (1 + .8 * ease(wind)) * (1 + 1.5 * phaseShift));
   const core = (dead ? [.15, .09, .06] : vulnerable ? [.22, 1, .82]
     : hot.map(channel => channel + (1 - channel) * phaseShift * .42)).map(channel => channel * coreBoost);
-  const lean = (action?.kind === "ram" ? (drive + follow) * .44 : follow * .28 - drive * .09) - fight.hurt * .16;
-  const torso = [0, 1.87 + Math.abs(stride) * .08 - (vulnerable ? .20 : 0) + phaseShift * .14, -.03 + lean];
+  const lean = (action?.kind === "ram" ? (drive + follow) * .44 : follow * .28 - drive * .09) - fight.hurt * .16 + kneel * .3;
+  const torso = [0, 1.87 + Math.abs(stride) * .08 - (vulnerable ? .20 : 0) - drop, -.03 + lean];
   const parts = [
-    piece(hull, [-.48 - phaseShift * .15, .52 + Math.max(0, stride) * .13, -.02], [.48, 1.06, .47], steel, axes(0, stride * -.22)),
-    piece(hull, [.48 + phaseShift * .15, .52 + Math.max(0, -stride) * .13, -.02], [.48, 1.06, .47], steel, axes(0, stride * .22)),
+    piece(hull, [-.48 - kneel * .12, .52 + Math.max(0, stride) * .13, -.02], [.48, 1.06, .47], steel, axes(0, stride * -.22)),
+    piece(hull, [.48 + kneel * .12, .52 + Math.max(0, -stride) * .13, -.02], [.48, 1.06, .47], steel, axes(0, stride * .22)),
     piece(plate, [-.48, .15 + Math.max(0, stride) * .22, .12 + stride * .34], [.61, .30, .76], dark, axes(0, stride * .2)),
     piece(plate, [.48, .15 + Math.max(0, -stride) * .22, .12 - stride * .34], [.61, .30, .76], dark, axes(0, -stride * .2)),
-    piece(hull, [0, 1.04, -.02], [1.12, .72, .72], dark, axes(0, lean * -.16)),
+    piece(hull, [0, 1.04 - kneel * .25, -.02], [1.12, .72, .72], dark, axes(0, lean * -.16)),
     piece(hull, torso, [1.55, 1.72, 1.03], steel, axes(0, lean * -.27)),
-    piece(plate, [0, 2.05 - (vulnerable ? .18 : 0), .55 + lean * .25], [1.22, .88, .20], copper, axes(0, -.20 - lean * .11)),
-    piece(crystal, [0, 1.95 - (vulnerable ? .20 : 0), .73 + lean * .27], [.46, .71, .22], core, axes(fight.elapsed * (1.3 + drive * 2)), 0, true),
-    piece(cylinder, [0, 2.83, -.02 + lean * .34], [.38, .48, .38], copper, axes(0, lean * -.15)),
-    piece(hull, [0, 3.22, .02 + lean * .43], [.92, .76, .71], dark, axes(0, lean * -.22)),
-    piece(plate, [0, 3.21, .43 + lean * .47], [.63, .24, .10], core, axes(0, -.08), 0, true)
+    piece(plate, [0, 2.05 - (vulnerable ? .18 : 0) - drop, .55 + lean * .25], [1.22, .88, .20], copper, axes(0, -.20 - lean * .11)),
+    piece(crystal, [0, 1.95 - (vulnerable ? .20 : 0) - drop, .73 + lean * .27], [.46, .71, .22], core, axes(fight.elapsed * (1.3 + drive * 2)), 0, true),
+    piece(cylinder, [0, 2.83 - drop, -.02 + lean * .34], [.38, .48, .38], copper, axes(0, lean * -.15)),
+    piece(hull, [0, 3.22 - drop, .02 + lean * .43], [.92, .76, .71], dark, axes(0, lean * -.22)),
+    piece(plate, [0, 3.21 - drop, .43 + lean * .47], [.63, .24, .10], core, axes(0, -.08), 0, true)
   ];
   let hammerBase;
   for (const side of [-1, 1]) {
     // Split shutters slide into the collar as pressure drops. The back vent
     // uses the same cyan cue as the front counterattack window.
     const aperture = fight.lowered;
-    const shutterY = 1.95 - aperture * .17;
+    const shutterY = 1.95 - aperture * .17 - drop;
     parts.push(piece(plate, [side * (.22 + .39 * aperture), shutterY, .87],
       [.23, .74, .09], dark, axes(side * aperture * .55, 0, side * .12)));
     if (fight.phase === 1) {
       const vent = winding ? [.24, 1, .82] : copper;
-      parts.push(piece(plate, [side * .23, 1.88, -.94],
+      parts.push(piece(plate, [side * .23, 1.88 - drop, -.94],
         [.18, .65, .09], vent, axes(0, 0, side * .18), 0, winding));
     }
     const sweep = action?.kind === "sweep" ? side * (drive - follow) : 0;
-    const raised = drive * (action?.kind === "shock" ? .72 : action?.kind === "ram" ? -.16 : .25) + phaseShift * .46;
+    const raised = drive * (action?.kind === "shock" ? .72 : action?.kind === "ram" ? -.16 : .25) - kneel * .55;
     const shoulder = [side * 1.03, 2.38 + raised * .24, .05 + lean * .45];
     const elbow = [side * (1.49 + Math.abs(sweep) * .26), 1.57 + raised * .72, .26 + drive * .28 + lean * .56];
     const wrist = [side * (1.68 - sweep * .22), .83 + raised * .98, .48 + drive * .67 + lean * .68];
@@ -1226,13 +1247,12 @@ export function posedGuardian(fight) {
   // the recovery clock to 3, a hit to .85 — advanceBoss owns both).
   const attackAge = striking && action ? release * BOSS_ATTACKS[action.kind].duration : Infinity;
   const rebound = attackAge < .12 ? .04 * (1 - attackAge / .12) : 0;
-  const phaseRise = phaseShift > 0 ? .5 * Math.sin(Math.PI * (1 - phaseShift)) : 0;
   let shakeX = 0;
   if (fight.state === "recovery" && action?.kind === "ram" && !action.hit) {
     const age = 3 - fight.time;
     if (age >= 0 && age < .3) shakeX = Math.sin(fight.elapsed * 95) * .05 * (1 - age / .3);
   }
-  return transformParts(parts, [fight.x + shakeX, fight.y - .12 * ease(wind) + rebound + phaseRise, fight.z], axes(fight.angle, 0, 0));
+  return transformParts(parts, [fight.x + shakeX, fight.y - .12 * ease(wind) + rebound, fight.z], axes(fight.angle, 0, 0));
 }
 
 // Six dormant forge pylons turn the surrounding wall into a machine room.

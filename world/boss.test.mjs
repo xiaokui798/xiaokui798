@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ARENA, BOSS, GUARDIAN_WAVES, COLOSSUS, SKY_COURT, SKY_COURT_COVERS, BOSS_ATTACKS, buildArena, buildBossTerrain,
-  createBossFight, advanceBoss, strikeBoss, interruptFurnace, damagePrism, damageTurret, posedColossus, insideColossusHazard, insideHazard, posedGuardian, modelHit, pulseViewModel, meleeViewModel } from "./boss.mjs";
+  createBossFight, advanceBoss, strikeBoss, interruptFurnace, damagePrism, damageTurret, BAR_COLORS, posedColossus, insideColossusHazard, insideHazard, posedGuardian, modelHit, pulseViewModel, meleeViewModel } from "./boss.mjs";
 import { WORLD, voxelIndex } from "./terrain.mjs";
 
 const player = { x: ARENA.x, y: ARENA.floor, z: ARENA.spawnZ };
@@ -839,4 +839,51 @@ test("the last bar refracts on four tracks and answers its nova with an inward r
   assert.equal(nova.attack.kind, "nova");
   assert.equal(nova.attack.waves.length, 3);
   assert.equal(nova.attack.waves[2].reverse, true, "the third ring runs back inward");
+});
+
+test("bar colours are one table for the segments and the cores (batch 64)", () => {
+  // The same hexes styles.css paints the segments with:
+  // guardian #df784e / #f0d25a / #f04632, colossus #ad8aed /
+  // #f082dc / #f59e4c / #fdf6ec.
+  assert.deepEqual(BAR_COLORS.boss, [[.875, .471, .306], [.941, .824, .275], [.941, .275, .196]]);
+  assert.deepEqual(BAR_COLORS.colossus, [[.678, .541, .929], [.941, .510, .863], [.961, .620, .298], [.992, .965, .925]]);
+  for (let phase = 1; phase <= 3; phase++) {
+    const fight = createBossFight(BOSS);
+    fight.phase = phase;
+    const core = posedGuardian(fight).find(part => part.glow && part.dimensions[0] === .46);
+    for (let c = 0; c < 3; c++) assert.ok(Math.abs(core.color[c] - BAR_COLORS.boss[phase - 1][c]) < .01,
+      `guardian bar ${phase} core channel ${c} wears the bar colour`);
+  }
+  for (let phase = 1; phase <= 4; phase++) {
+    const fight = createBossFight(COLOSSUS);
+    fight.phase = phase;
+    const core = posedColossus(fight).find(part => part.target === 1);
+    for (let c = 0; c < 3; c++) assert.ok(Math.abs(core.color[c] - BAR_COLORS.colossus[phase - 1][c]) < .01,
+      `colossus bar ${phase} core channel ${c} wears the bar colour`);
+    fight.state = "recovery";
+    const exposed = posedColossus(fight).find(part => part.target === 1);
+    assert.ok(exposed.color[0] + exposed.color[1] + exposed.color[2]
+      > core.color[0] + core.color[1] + core.color[2], "the exposed core flushes brighter than its rest colour");
+  }
+});
+
+test("a broken bar drops both bosses into a visible sink and kneel for the window (batch 64)", () => {
+  const giant = createBossFight(COLOSSUS);
+  const coreY = () => posedColossus(giant).find(part => part.target === 1).center[1];
+  const giantRest = coreY();
+  giant.phaseShift = 1; // mid-window: the sink is fully in
+  assert.ok(giantRest - coreY() > .9, `the colossus sinks a full unit mid-window (got ${giantRest - coreY()})`);
+  giant.phaseShift = .1; // nearly over: mostly risen again
+  assert.ok(giantRest - coreY() < .3, "the colossus rises before the window ends");
+  giant.phaseShift = 0;
+  assert.ok(Math.abs(coreY() - giantRest) < .01, "the colossus is back at hover height when the window closes");
+
+  const guard = createBossFight(BOSS);
+  guard.elapsed = 2;
+  const torsoY = () => posedGuardian(guard).find(part => part.dimensions[0] === 1.55).center[1];
+  const guardRest = torsoY();
+  guard.phaseShift = 1;
+  assert.ok(guardRest - torsoY() > .4, `the guardian kneels mid-window (got ${guardRest - torsoY()})`);
+  guard.phaseShift = 0;
+  assert.ok(Math.abs(torsoY() - guardRest) < .01, "the guardian stands again when the window closes");
 });

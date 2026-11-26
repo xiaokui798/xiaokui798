@@ -20,7 +20,7 @@ import { durabilityMax, repairCost } from "./durability.mjs";
 import { CROPS, FARM_MATERIALS, isMature } from "./crops.mjs";
 import { createMouseLook } from "./controls.mjs";
 import { PHYSICS_STEP, LANDING_SAMPLE_TIME, createSpeedReadout, overlapsPlayerBlock, stepPlayer } from "./movement.mjs";
-import { ARENA_PALETTE, BOSS, GUARDIAN_WAVES, COLOSSUS, BOSS_ATTACKS, buildBossTerrain, createBossFight, advanceBoss, strikeBoss, guardianBackOpen, interruptFurnace, damagePrism, damageTurret,
+import { ARENA_PALETTE, BOSS, GUARDIAN_WAVES, COLOSSUS, BAR_COLORS, BOSS_ATTACKS, buildBossTerrain, createBossFight, advanceBoss, strikeBoss, guardianBackOpen, interruptFurnace, damagePrism, damageTurret,
   bossParts, posedGuardian, forgeStageParts, posedColossus, insideHazard, modelFaces, modelHit, pulseViewModel, meleeViewModel, dragonImpact, bossBar } from "./boss.mjs";
 
 import { renderForgeCue } from "./forge-audio.mjs";
@@ -3108,6 +3108,14 @@ export function initGame(window) {
       const phaseShiftHint = boss.profile === BOSS && boss.phaseShift > 0
         ? { 2: "守卫进入第二管：火焰变强了！先清随从能打断它放火", 3: "守卫进入第三管：小心它的冲锋，躲开后反击更久" }[boss.phase]
         : null;
+      // The colossus's bar-change lines (batch 64), in the
+      // guardian's praised shape: the new threat, then the
+      // answer to it. The last bar carries the finisher.
+      const colossusPhaseLine = boss.profile === COLOSSUS
+        ? { 2: "断星巨像进入第二管 · 震星：星环会从场地边上收回来，贴近它或跳过环",
+            3: "断星巨像进入第三管 · 逐星：它会冲锋、会升炮台，先打碎空中的晶体",
+            4: "断星巨像进入最后一管 · 碎星：它要拼命了！断星升空时，数着环跳" }[boss.phase]
+        : null;
       // Phase-change show (batch 49): the first frame of a new
       // phase fires a shock ring out to the arena edge and raises
       // the big banner with the phase sentence; the health bar
@@ -3116,8 +3124,8 @@ export function initGame(window) {
       if (bossPhaseSeen && boss.phase !== bossPhaseSeen) {
         survival.zombies.length = 0;
         groundDecals.push({ kind: "phasering", x: boss.x, z: boss.z, radius: boss.profile.arena.radius, age: 0, ttl: .9,
-          color: boss.profile === COLOSSUS ? [1, .55, .9] : [1, .6, .25] });
-        phaseBanner = { text: boss.profile === COLOSSUS ? `断星巨像进入第 ${boss.phase} 管 · ${bar.name}` : phaseShiftHint ?? "", until: boss.elapsed + 1.5 };
+          color: boss.profile === COLOSSUS ? BAR_COLORS.colossus[boss.phase - 1] : [1, .6, .25] });
+        phaseBanner = { text: boss.profile === COLOSSUS ? colossusPhaseLine ?? "" : phaseShiftHint ?? "", until: boss.elapsed + 1.5 };
       }
       bossPhaseSeen = boss.phase;
       // Danger sentences per kind: the plan's kept variants first,
@@ -3141,7 +3149,7 @@ export function initGame(window) {
         : phaseShiftHint ? phaseShiftHint
         : boss.state === "ready" ? (boss.profile === COLOSSUS ? "巨像正在逼近，准备闪避" : "守卫靠近中，看它抬手就准备躲")
           : boss.state === "reposition" ? (boss.travel.pursuit ? "巨像追过来了，往侧面跑，别直着后退" : "巨像在换位置，下一招马上来")
-          : boss.state === "recovery" ? (boss.profile === COLOSSUS ? "巨像下来了！打中间发青光的核心" : "核心张开了！现在打，伤害最高")
+          : boss.state === "recovery" ? (boss.profile === COLOSSUS ? "巨像下来了！打中间露出来的核心" : "核心张开了！现在打，伤害最高")
             : boss.attack.kind === "prism" && covered ? `${attackHint} · 掩体遮住折光，换侧瞄准晶体`
             : boss.attack.kind === "prism" && boss.state === "windup" ? attackHint
             : danger ? `${attackName} · ${dangerHint}`

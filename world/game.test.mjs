@@ -381,7 +381,7 @@ test("the boss arena can be won and replayed, paying its reward without touching
   assert.match(game.get("weapon-label").textContent, /石斧/);
   attack();
   assert.equal(game.get("boss-health-value").textContent, "260 / 260");
-  let overcharged = false;
+  let overcharged = false, guardianBreakSeen = false;
   const summonWaves = new Set();
   let jumpPrimed = false;
   const jumpQueue = [];
@@ -389,6 +389,13 @@ test("the boss arena can be won and replayed, paying its reward without touching
   let ramParity = 0, wasRamWindup = false;
   for (let i = 0; i < 12000 && game.get("death-screen").hidden; i++) {
     frame();
+    if (!guardianBreakSeen && game.get("boss-name").textContent.includes("烈火")) {
+      guardianBreakSeen = true;
+      assert.equal(game.get("boss-phase-banner").textContent, "守卫进入第二管：火焰变强了！先清随从能打断它放火");
+      const first = game.get("boss-health-track").children[0];
+      assert.ok(first.classList.contains("broken") && first.classList.contains("shattering"),
+        "the guardian's broken segment flashes on the break frame");
+    }
     // Track the guardian's helmet as it circles between attacks.
     let dx = 0, dz = 0, helmetVertices = 0, bossDistNow = 5;
     const vertices = game.actorVertices;
@@ -740,8 +747,35 @@ test("the pulse weapon can interrupt the crystal and win the colossus fight thro
   game.release("KeyW");
   let secondPhase = false, shifted = false, nova = false, rangedHit = false, interrupted = false;
   let dodge = null, dodgeUntil = 0, dodged = false, strafe = null, dangerWas = false, dragonBlind = 0;
+  const barLines = {
+    "震星": "断星巨像进入第二管 · 震星：星环会从场地边上收回来，贴近它或跳过环",
+    "逐星": "断星巨像进入第三管 · 逐星：它会冲锋、会升炮台，先打碎空中的晶体",
+    "碎星": "断星巨像进入最后一管 · 碎星：它要拼命了！断星升空时，数着环跳"
+  };
+  const barsSeen = new Set();
+  let shatterFrame = -1;
   for (let i = 0; i < 16000 && game.get("death-screen").hidden; i++) {
     frame();
+    // Bar-change theatre (batch 64): the frame a new bar's
+    // name lands, the banner carries that bar's own line and
+    // the newly broken segment is mid-flash; 0.45s later the
+    // flash is gone and the segment stays broken.
+    for (const [mark, line] of Object.entries(barLines)) {
+      if (!barsSeen.has(mark) && game.get("boss-name").textContent.includes(mark)) {
+        barsSeen.add(mark);
+        assert.equal(game.get("boss-phase-banner").textContent, line);
+        assert.equal(game.get("boss-phase-banner").hidden, false);
+        const broken = game.get("boss-health-track").children.filter(segment => segment.classList.contains("broken"));
+        assert.ok(broken.length >= 1 && broken[broken.length - 1].classList.contains("shattering"),
+          "the newly broken segment flashes on the break frame");
+        if (shatterFrame < 0) shatterFrame = i;
+      }
+    }
+    if (shatterFrame >= 0 && i === shatterFrame + 40) {
+      const first = game.get("boss-health-track").children[0];
+      assert.ok(first.classList.contains("broken") && !first.classList.contains("shattering"),
+        "the flash lifts after 0.45s and the segment stays broken");
+    }
     const callout = game.get("boss-callout").textContent;
     if (strafe && !/炮台|星震|断星|星环/.test(callout)) { game.release(strafe); strafe = null; }
     secondPhase ||= game.get("wave-status").textContent.includes("第 2 / 4 管");
@@ -760,7 +794,7 @@ test("the pulse weapon can interrupt the crystal and win the colossus fight thro
         frame();
         interrupted = game.get("message").textContent.includes("三轨折光中断");
         assert.match(game.get("pulse-info").textContent, /4 \/ 6/);
-        assert.ok(game.get("boss-callout").textContent.includes("发青光的核心"));
+        assert.ok(game.get("boss-callout").textContent.includes("露出来的核心"));
       }
       continue;
     }
@@ -794,7 +828,7 @@ test("the pulse weapon can interrupt the crystal and win the colossus fight thro
     // on the next move.
     if (dragonBlind > 0) dragonBlind--;
     const distance = callout.includes("断星") || dragonBlind > 0 ? 9 : aimAtPart(aimMark);
-    if (callout.includes("发青光的核心")) {
+    if (callout.includes("露出来的核心")) {
       dodged = false;
       if (game.get("target-status").textContent !== "核心暴露") continue;
       // The dragon volley strikes where the camera aims:
