@@ -3459,11 +3459,7 @@ export function initGame(window) {
   // recipe key is its own icon key except the stone axe: the
   // recipe predates the tier naming, so its key is just "axe"
   // while the icon set names it stoneAxe.
-  const CRAFT_ICON_KEYS = { axe: "stoneAxe",
-    // Placeholder: the watering can's own icon is not drawn yet
-    // (visual group's list) — the toast reuses the fertilizer icon
-    // rather than a missing file. Swap when wateringCan.svg lands.
-    wateringCan: "fertilizer" };
+  const CRAFT_ICON_KEYS = { axe: "stoneAxe" };
 
   function craftItem(key) {
     if (inventoryScreen.hidden || !survival.enabled) return;

@@ -16,7 +16,7 @@ progression.mjs（BOSS_DROPS）、game.js（blockNames）。逐表核对，一�
 - 绿勾：单独一个 `check.svg`（绿圆底白勾角标），不画进任何物品图标；
   接线时由 UI 叠加到物品图标右下角。
 
-## 清单（40 个物品图标 + 1 个角标）
+## 清单（42 个物品图标 + 1 个角标；batch 75 补 R6 两枚）
 
 ### 方块材料（5）
 | key | 文件 | 中文名 |
@@ -27,12 +27,13 @@ progression.mjs（BOSS_DROPS）、game.js（blockNames）。逐表核对，一�
 | wood | wood.svg | 木头 |
 | leaf | leaf.svg | 树叶 |
 
-### 农场材料（3）
+### 农场材料（4）
 | key | 文件 | 中文名 |
 |---|---|---|
 | wheatSeed | wheatSeed.svg | 小麦种子 |
 | wheat | wheat.svg | 小麦 |
 | fertilizer | fertilizer.svg | 腐叶 |
+| wateringCan | wateringCan.svg | 洒水壶（R6，batch 75 补） |
 
 ### 稀有材料 / Boss 掉落（2）
 | key | 文件 | 中文名 |
@@ -90,7 +91,7 @@ progression.mjs（BOSS_DROPS）、game.js（blockNames）。逐表核对，一�
 | rapid | rapid.svg | 蜂鸣速射枪 |
 | cannon | cannon.svg | 裂晶重炮 |
 
-### 科技节点（8）
+### 科技节点（9）
 | key | 文件 | 中文名 |
 |---|---|---|
 | stoneGear | stoneGear.svg | 石阶装备 |
@@ -101,6 +102,7 @@ progression.mjs（BOSS_DROPS）、game.js（blockNames）。逐表核对，一�
 | toughness | toughness.svg | 坚韧 |
 | swiftHands | swiftHands.svg | 快手 |
 | firstAid | firstAid.svg | 急救 |
+| bountifulHarvest | bountifulHarvest.svg | 丰收（R6，batch 75 补） |
 
 ### 角标（1）
 | key | 文件 | 用途 |
