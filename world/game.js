@@ -20,7 +20,7 @@ import { durabilityMax, repairCost } from "./durability.mjs";
 import { CROPS, FARM_MATERIALS, isMature } from "./crops.mjs";
 import { createMouseLook } from "./controls.mjs";
 import { PHYSICS_STEP, LANDING_SAMPLE_TIME, createSpeedReadout, overlapsPlayerBlock, stepPlayer } from "./movement.mjs";
-import { ARENA_PALETTE, BOSS, GUARDIAN_WAVES, COLOSSUS, BOSS_ATTACKS, buildBossTerrain, createBossFight, advanceBoss, strikeBoss, guardianBackOpen, interruptFurnace, damagePrism,
+import { ARENA_PALETTE, BOSS, GUARDIAN_WAVES, COLOSSUS, BOSS_ATTACKS, buildBossTerrain, createBossFight, advanceBoss, strikeBoss, guardianBackOpen, interruptFurnace, damagePrism, damageTurret,
   bossParts, posedGuardian, forgeStageParts, posedColossus, insideHazard, modelFaces, modelHit, pulseViewModel, meleeViewModel, dragonImpact, bossBar } from "./boss.mjs";
 
 import { renderForgeCue } from "./forge-audio.mjs";
@@ -2010,6 +2010,9 @@ export function initGame(window) {
         sound.play(voice, STONE);
         cueGuardianFx(cue);
         if (cue === "boss-strike") cueBossImpact();
+        if (cue === "boss-charge" && boss.attack?.kind === "starfall") {
+          phaseBanner = { text: "断星！数着环跳", until: boss.elapsed + 1.5 };
+        }
       }
       if (damage) {
         takeDamage(damage);
@@ -2165,7 +2168,7 @@ export function initGame(window) {
     pulse.rounds -= cost;
     const heavy = charged || gun.style === "cannon";
     pulse.shot = { style: gun.style, seed: Math.random() * Math.PI * 2, charged: heavy, endpoint, age: 0, duration: heavy ? .39 : .24,
-      impact: aim?.crystal ? "crystal" : aim ? (aim.weak && boss.state === "recovery" ? "core" : "armor") : block ? "stone" : null };
+      impact: aim?.crystal || aim?.turret != null ? "crystal" : aim ? (aim.weak && boss.state === "recovery" ? "core" : "armor") : block ? "stone" : null };
     sound.play(heavy ? "cannon-fire" : gun.style === "rapid" ? "rapid-fire" : "pulse-fire", STONE);
     attack(gun, aim, profile);
   }
@@ -2199,6 +2202,17 @@ export function initGame(window) {
           player.hitConfirm = .25;
           sound.play(remaining ? "hit" : "pulse-crystal", STONE);
           showMessage(remaining ? `命中晶体 · 剩余 ${remaining}` : "晶体破碎 · 三轨折光中断");
+          return;
+        }
+      }
+      if (aim.turret != null) {
+        const remaining = damageTurret(boss, aim.turret, hitDamage);
+        if (remaining !== null) {
+          wearWeaponOnHit(weapon);
+          player.hitConfirm = .25;
+          const allDown = boss.attack.turrets.every(crystal => crystal.hp <= 0);
+          sound.play(remaining ? "hit" : "pulse-crystal", STONE);
+          showMessage(allDown ? "星尘炮台全碎 · 提前熄火" : remaining ? `命中星尘晶体 · 剩余 ${remaining}` : "星尘晶体破碎");
           return;
         }
       }
@@ -3077,8 +3091,18 @@ export function initGame(window) {
       // The bar-3 nova is a three-ring move (batch 61); its name
       // and hint say so wherever the shared table would say two.
       const tripleNova = boss.profile === BOSS && boss.phase === 3 && boss.attack?.kind === "nova";
-      const attackName = tripleNova ? "三环星震" : attack?.name;
-      const attackHint = tripleNova ? "三圈冲击波！前两圈慢、第三圈快，数着节奏跳三次" : attack?.hint;
+      const giantTriple = boss.profile === COLOSSUS && boss.phase === 4 && boss.attack?.kind === "nova";
+      const quadPrism = boss.profile === COLOSSUS && boss.phase === 4 && boss.attack?.kind === "prism";
+      const chain = boss.profile === COLOSSUS && boss.attack?.kind === "meteor" ? boss.attack.chainTotal ?? 1 : 1;
+      const attackName = tripleNova || giantTriple ? "三环星震"
+        : quadPrism ? "四轨折光"
+        : boss.attack?.pending ? "追星坠落 · 连珠"
+        : attack?.name;
+      const attackHint = tripleNova ? "三圈冲击波！前两圈慢、第三圈快，数着节奏跳三次"
+        : giantTriple ? "三圈冲击波！前两圈往外扩、第三圈往回收，数着节奏跳三次"
+        : quadPrism ? "四道光束要亮了！站到光束之间的空地，或打碎金色晶体"
+        : boss.attack?.pending ? "还有陨石要落！别停在原地，继续跑"
+        : chain > 1 ? "陨石连着砸！每一颗落下，下一颗会锁你新的位置，继续跑" : attack?.hint;
       const covered = bossHasCover();
       const danger = !finished && insideHazard(boss, { ...player, covered });
       const phaseShiftHint = boss.profile === BOSS && boss.phaseShift > 0
@@ -3107,7 +3131,11 @@ export function initGame(window) {
         flare: "你在火圈里，快跑出去",
         shock: "震圈到脚下了，跳！",
         ram: "你在冲锋线上，往侧边躲",
-        prism: "你在光束里，站到空地上"
+        prism: "你在光束里，站到空地上",
+        charge: "你在冲锋线上，往侧边躲",
+        converge: "震圈逼近，准备起跳",
+        starfall: "震圈逼近，准备起跳",
+        turret: "脚下已锁定，立刻跑开"
       }[boss.attack.kind];
       const callout = finished ? "挑战结束"
         : phaseShiftHint ? phaseShiftHint
@@ -3117,7 +3145,7 @@ export function initGame(window) {
             : boss.attack.kind === "prism" && covered ? `${attackHint} · 掩体遮住折光，换侧瞄准晶体`
             : boss.attack.kind === "prism" && boss.state === "windup" ? attackHint
             : danger ? `${attackName} · ${dangerHint}`
-            : boss.state === "attack" && (boss.attack.kind === "shock" || boss.attack.kind === "nova") ? `${attackName} · 跳！`
+            : boss.state === "attack" && ["shock", "nova", "starfall", "converge"].includes(boss.attack.kind) ? `${attackName} · 跳！`
             : attackHint;
       // The big central warning mirrors the callout for as long as
       // the attack is telegraphed or landing — the moment the
@@ -3163,7 +3191,7 @@ export function initGame(window) {
     targetStatus.hidden = !aim;
     const backOpen = boss && guardianBackOpen(boss, player);
     const exposed = backOpen || boss?.state === "recovery" && (boss.profile !== COLOSSUS || aim?.weak);
-    crosshair.classList.toggle("on-target", Boolean(inReach && (!boss || target || exposed || aim.crystal)));
+    crosshair.classList.toggle("on-target", Boolean(inReach && (!boss || target || exposed || aim.crystal || aim.turret != null)));
     crosshair.classList.toggle("hit-confirm", player.hitConfirm > 0);
     crosshair.classList.toggle("charged", charging && pulse.charge === pulseBurst.windup);
     const showRecovery = weapon || aim || player.cooldown > 0;
@@ -3201,6 +3229,7 @@ export function initGame(window) {
     }
     if (boss && aim && !aim.zombie) {
       setText(targetStatus, !inReach ? "超出攻击距离" : aim.crystal ? `金色晶体 ${boss.attack.crystalHp} / ${BOSS_ATTACKS.prism.crystalHp} · 打碎它能停掉光束`
+        : aim.turret != null ? `星尘晶体 ${boss.attack.turrets[aim.turret].hp} / ${BOSS_ATTACKS.turret.crystalHp} · 打碎它能停掉炮台`
         : backOpen ? "背部炉门暴露" : exposed ? "核心暴露" : boss.state === "recovery" ? "瞄准青色核心" : "护甲生效中 · 现在打不动，等核心张开");
     } else if (target) {
       const style = ENEMIES[target.kind] ?? ENEMIES.walker;

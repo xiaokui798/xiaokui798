@@ -739,10 +739,11 @@ test("the pulse weapon can interrupt the crystal and win the colossus fight thro
   advance(39);
   game.release("KeyW");
   let secondPhase = false, shifted = false, nova = false, rangedHit = false, interrupted = false;
-  let dodge = null, dodged = false, dodgeUntil = 0;
+  let dodge = null, dodgeUntil = 0, dodged = false, strafe = null, dangerWas = false, dragonBlind = 0;
   for (let i = 0; i < 16000 && game.get("death-screen").hidden; i++) {
     frame();
     const callout = game.get("boss-callout").textContent;
+    if (strafe && !/炮台|星震|断星|星环/.test(callout)) { game.release(strafe); strafe = null; }
     secondPhase ||= game.get("wave-status").textContent.includes("第 2 / 4 管");
     shifted ||= callout.includes("换位置");
     nova ||= callout.includes("双环星震");
@@ -763,22 +764,82 @@ test("the pulse weapon can interrupt the crystal and win the colossus fight thro
       }
       continue;
     }
-    if (callout.includes("跳！")) { game.key("Space"); game.release("Space"); }
-    if (Number(game.get("health-value").textContent) <= 55) { game.key("Digit1"); game.release("Digit1"); }
-    const distance = aimAtPart(-2);
+    // Jump presses must be single clean taps: a press every
+    // frame keeps the game's jump buffer permanently open,
+    // the physics never sees a new rising edge, and only the
+    // first jump of a long attack ever fires. Tap on the
+    // danger sentence's arrival, and otherwise every dozen
+    // frames so a fresh edge lands soon after each touchdown.
+    const dangerNow = callout.includes("震圈逼近");
+    if ((callout.includes("跳！") || dangerNow) && ((dangerNow && !dangerWas) || i % 12 === 0)) {
+      game.key("Space"); game.release("Space");
+    }
+    dangerWas = dangerNow;
+    if (Number(game.get("health-value").textContent) <= 65) { game.key("Digit1"); game.release("Digit1"); }
+    // While the turret battery is up (batch 62), the first
+    // live crystal is the target, not the core: two shots
+    // each, and the battery ends early when all four fall.
+    let aimMark = -2;
+    if (callout.includes("炮台")) {
+      for (const mark of [-11, -12, -13, -14]) {
+        let found = 0;
+        const vertices = game.actorVertices;
+        for (let o = 0; o < vertices.length; o += 12) if (vertices[o + 9] === mark) found++;
+        if (found) { aimMark = mark; break; }
+      }
+    }
+    // During the starfall — and while the dragon volley is
+    // in flight — bursts flood the actor snapshot for long
+    // stretches; the robot just dodges it out and re-aims
+    // on the next move.
+    if (dragonBlind > 0) dragonBlind--;
+    const distance = callout.includes("断星") || dragonBlind > 0 ? 9 : aimAtPart(aimMark);
     if (callout.includes("发青光的核心")) {
       dodged = false;
       if (game.get("target-status").textContent !== "核心暴露") continue;
+      // The dragon volley strikes where the camera aims:
+      // loose it only on a verified core aim, then let it
+      // fly unaimed while its bursts flood the snapshot.
+      if (game.get("boss-skill-dragons").textContent.includes("就绪")) { game.key("Digit4"); game.release("Digit4"); dragonBlind = 300; }
       const hp = game.get("boss-health-value").textContent;
       attack();
       frame();
       rangedHit ||= distance > 7 && hp !== game.get("boss-health-value").textContent;
     } else {
-      if (!dodged && (callout.includes("脚下已锁定") || callout.includes("你在光带中"))) {
+      const inDanger = callout.includes("脚下已锁定") || callout.includes("你在光带中") || callout.includes("你在冲锋线上") || callout.includes("要冲过来了");
+      if (!inDanger) dodged = false;
+      if (!dodged && inDanger) {
         dodge = game.camera[0] > 16.5 ? "KeyA" : "KeyD";
         game.key(dodge);
         dodgeUntil = time + 850;
         dodged = true;
+      }
+      if (aimMark !== -2 && game.get("target-status").textContent.startsWith("星尘晶体")) attack();
+      // While rings or battery shots are live (batch 62),
+      // never stand still: a moving target slips the mini
+      // locks and shifts the ring crossings off the jump
+      // cycle.
+      if (!strafe && !dodge && /炮台|星震|断星|星环/.test(callout)) {
+        strafe = game.camera[0] > 16.5 ? "KeyA" : "KeyD";
+        game.key(strafe);
+      }
+      if (callout.includes("断星")) {
+        // Point blank is the starfall's blind spot: the
+        // rings are born at 1.72, so at the collision gap
+        // they cross almost as they spawn — inside a single
+        // jump cycle — and the fire rings at 13.6 never
+        // reach there. Charge the giant for the whole move.
+        game.key("KeyW");
+        game.release("KeyS");
+      } else if (!dodge) {
+        // Hold mid-range: past 11.2 the giant answers
+        // every pattern slot with a meteor and the prism
+        // never opens; closer than 6 the charge crowds.
+        if (distance > 10.5) game.key("KeyW"); else game.release("KeyW");
+        if (distance < 6) game.key("KeyS"); else game.release("KeyS");
+      } else {
+        game.release("KeyW");
+        game.release("KeyS");
       }
       if (/能量 [0-5] \/ 6/.test(game.get("pulse-info").textContent)) game.key("KeyR");
     }

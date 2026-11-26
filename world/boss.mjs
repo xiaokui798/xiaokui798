@@ -29,9 +29,9 @@ export const BOSS = Object.freeze({ id: "boss", name: "熔炉守卫", arena: ARE
 export const COLOSSUS = Object.freeze({ id: "colossus", name: "断星巨像", arena: SKY_COURT, maxHp: 700, radius: 1.95, height: 8.3,
   bars: [
     { name: "裂星", hp: 700, recovery: 2.55, windupScale: 1, speedScale: 1, damageScale: 1, patterns: ["meteor", "rift"] },
-    { name: "震星", hp: 750, recovery: 2.3, windupScale: .92, speedScale: 1, damageScale: 1.05, patterns: ["nova", "prism", "meteor", "rift"] },
-    { name: "逐星", hp: 800, recovery: 2, windupScale: .84, speedScale: 1.15, damageScale: 1.1, patterns: ["nova", "prism", "meteor", "rift"] },
-    { name: "碎星", hp: 850, recovery: 1.7, windupScale: .78, speedScale: 1.25, damageScale: 1.2, patterns: ["nova", "prism", "meteor", "rift"] }
+    { name: "震星", hp: 750, recovery: 2.3, windupScale: .92, speedScale: 1, damageScale: 1.05, patterns: ["nova", "prism", "meteor", "rift", "converge"] },
+    { name: "逐星", hp: 800, recovery: 2, windupScale: .84, speedScale: 1.15, damageScale: 1.1, patterns: ["nova", "prism", "charge", "turret", "meteor", "rift"] },
+    { name: "碎星", hp: 850, recovery: 1.7, windupScale: .78, speedScale: 1.25, damageScale: 1.2, patterns: ["nova", "prism", "charge", "turret", "meteor", "rift"] }
   ] });
 
 // The current bar of a fight, for HUD and tuning readers: fight.phase
@@ -57,11 +57,17 @@ export const BOSS_ATTACKS = Object.freeze({
   rift: { name: "裂地冲线", hint: "地面要裂开了！横着跑出光带", windup: 1.26, duration: .27, damage: 27, reach: 17.4, width: 1.62 },
   nova: { name: "双环星震", hint: "两圈冲击波！红圈到脚下就跳，一共跳两次", windup: 1.35, duration: 2.62, damage: 18, reach: 19.7 },
   prism: { name: "三轨折光", hint: "三道光束要亮了！站到光束之间的空地，或打碎金色晶体", windup: 2.14, duration: .48, damage: 32, reach: 20,
-    tracks: [-4.1, 0, 4.1], width: 1.05, crystalHp: 42 }
+    tracks: [-4.1, 0, 4.1], width: 1.05, crystalHp: 42 },
+  converge: { name: "星环收束", hint: "星环在收束！等它过身跳，或贴近巨像", windup: 1.35, duration: 1.68, damage: 18, reach: 19.7 },
+  charge: { name: "巨像冲锋", hint: "巨像要冲过来了！离开地上的光带，它撞到场地边会停下", windup: 1.35, duration: 1.2, damage: 30, reach: 34, width: 2.3 },
+  turret: { name: "星尘炮台", hint: "炮台升起来了！打碎空中的星尘晶体，躲开落下来的小陨石", windup: 1.5, duration: 9, damage: 14, reach: 1.6, crystalHp: 42 },
+  starfall: { name: "断星", hint: "断星！数着环跳", windup: 1.2, duration: 4.39, damage: 16, reach: 13.6 }
 });
 
 const orbitPoints = [[4.8, 0], [0, -4.8], [-4.8, 0], [0, 4.8]];
 const novaDelay = .82, novaStart = 1.72, novaBand = .57;
+const novaSpeed = (BOSS_ATTACKS.nova.reach - novaStart) / (BOSS_ATTACKS.nova.duration - novaDelay);
+const ringEnd = 3.4;
 const pursuitRange = 10.8, fightingDistance = 7.8;
 const repelRange = 3.85, longRange = 11.2;
 // The rendered guardian is much wider than its compact hit silhouette.  At
@@ -160,7 +166,7 @@ export function createBossFight(profile = BOSS) {
   return { profile, x, y: floor, z, angle: 0, hp: profile.maxHp, hurt: 0, elapsed: 0, lowered: 0,
     healReady: 0, dragonsReady: 0, dragons: [], dragonHits: 0, pushX: 0, pushZ: 0, stride: 0, gait: 0,
     state: "ready", time: 1.2, phase: 1, phaseGlow: 0, phaseShift: 0, collapse: 0, attacks: 0, attack: null, hits: 0, orbit: -1, travel: null,
-    fireZones: [], fireDebt: 0 };
+    fireZones: [], fireDebt: 0, starfallSeen: 0, starfallPending: false, forceKind: null };
 }
 
 export function guardianBackOpen(fight, attacker) {
@@ -182,6 +188,14 @@ export function strikeBoss(fight, damage, exposedCore = false, attacker = null) 
   fight.hp -= landed;
   fight.hurt = .20;
   fight.hits++;
+  if (!guardian && fight.phase === 4 && fight.hp > 0) {
+    const bar = bossBar(fight);
+    const crossed = Math.min(4, Math.floor((bar.maxHp - fight.hp) / (bar.maxHp * .2)));
+    if (crossed > (fight.starfallSeen ?? 0)) {
+      fight.starfallSeen = crossed;
+      fight.starfallPending = true;
+    }
+  }
   if (!fight.hp && fight.phase < bossBar(fight).count) {
     fight.phase++;
     const next = bossBar(fight);
@@ -189,6 +203,14 @@ export function strikeBoss(fight, damage, exposedCore = false, attacker = null) 
     if (fight.fireZones) fight.fireZones.length = 0;
   } else if (!fight.hp) fight.state = "defeated";
   return landed;
+}
+
+export function damageTurret(fight, index, damage) {
+  if ((fight.state !== "windup" && fight.state !== "attack") || fight.attack?.kind !== "turret") return null;
+  const crystal = fight.attack.turrets?.[index];
+  if (!crystal || crystal.hp <= 0) return null;
+  crystal.hp = Math.max(0, crystal.hp - damage);
+  return crystal.hp;
 }
 
 export function damagePrism(fight, damage) {
@@ -216,6 +238,13 @@ function chooseColossusAttack(fight, player, phase, fallback) {
   return fallback;
 }
 
+function chargeLength(fight, angle) {
+  const dx = Math.sin(angle), dz = Math.cos(angle);
+  const ox = fight.x - SKY_COURT.x, oz = fight.z - SKY_COURT.z, along = ox * dx + oz * dz;
+  const wall = -along + Math.sqrt(Math.max(0, along * along + (SKY_COURT.radius - 2.2) ** 2 - ox * ox - oz * oz));
+  return Math.min(BOSS_ATTACKS.charge.reach, wall);
+}
+
 function ramLength(fight, angle, player) {
   const dx = Math.sin(angle), dz = Math.cos(angle);
   const ox = fight.x - ARENA.x, oz = fight.z - ARENA.z, along = ox * dx + oz * dz;
@@ -229,13 +258,14 @@ function windUp(fight, player) {
   const patterns = guardian?.attacks ?? fight.profile.bars[phase - 1].patterns;
   const fallback = patterns[fight.attacks % patterns.length];
   const beyondSweep = Math.hypot(player.x - fight.x, player.z - fight.z) > BOSS_ATTACKS.sweep.reach;
-  const kind = fight.profile === COLOSSUS ? chooseColossusAttack(fight, player, phase, fallback)
+  let kind = fight.profile === COLOSSUS ? chooseColossusAttack(fight, player, phase, fallback)
     : phase === 2 && beyondSweep ? "flare" : fallback;
+  if (fight.forceKind) { kind = fight.forceKind; fight.forceKind = null; }
   fight.attacks++;
   const attack = BOSS_ATTACKS[kind];
   fight.angle = Math.atan2(player.x - fight.x, player.z - fight.z);
   const targeted = kind === "flare" || kind === "meteor";
-  const width = attack.width && attack.width * (phase >= 2 ? 1.3 : 1);
+  const width = attack.width && attack.width * (phase >= 2 && kind !== "charge" ? 1.3 : 1);
   // The 0.65s floor is the readability line from the design (§3):
   // frenzy scales may shorten a windup, never below this.
   fight.time = Math.max(.65, attack.windup * (guardian?.windup ?? fight.profile.bars[phase - 1].windupScale));
@@ -283,16 +313,60 @@ function windUp(fight, player) {
     fight.attack.travelled = 0;
     fight.attack.leg = 1;
   }
-  if (kind === "nova") {
-    fight.attack.elapsed = 0;
-    // The guardian's bar-3 nova carries a third, faster ring
-    // (batch 61: delays 0 / 0.82 / 1.37 — slow, slow, fast); the
-    // colossus keeps its two rings for its own bars.
-    const delays = fight.profile === BOSS && phase === 3 ? [0, novaDelay, novaDelay + .55] : [0, novaDelay];
-    fight.attack.waves = delays.map(delay => ({ delay, radius: null, previous: novaStart, hit: false }));
-    if (delays.length > 2) fight.attack.duration = delays[delays.length - 1] + (attack.duration - novaDelay);
+  if (kind === "meteor" && fight.profile === COLOSSUS) {
+    // The chain is declared on the first meteor (batch 62):
+    // two falls in bars 1-2, three from bar 3 on. The renderer
+    // and the callout read the total from the first windup —
+    // the follow-ups are previewed, never sprung (design §3,
+    // rule 5).
+    fight.attack.chainTotal = phase >= 3 ? 3 : 2;
+    fight.attack.chainIndex = 1;
   }
-  if (kind === "prism") fight.attack.crystalHp = attack.crystalHp;
+  if (kind === "charge") {
+    fight.attack.length = chargeLength(fight, fight.angle);
+    fight.attack.travelled = 0;
+    fight.attack.duration = Math.min(2.2, Math.max(.5, fight.attack.length / 16));
+  }
+  if (kind === "nova" || kind === "converge" || kind === "starfall") {
+    fight.attack.elapsed = 0;
+    if (kind === "converge") {
+      // The mirror nova (batch 62): one ring that starts at the
+      // court's edge and shrinks to ringEnd around the giant.
+      fight.attack.waves = [{ delay: 0, radius: null, previous: attack.reach, hit: false,
+        reverse: true, end: ringEnd, travel: (attack.reach - ringEnd) / novaSpeed }];
+    } else if (kind === "starfall") {
+      // Five rings on a tightening clock (batch 62): the gaps
+      // run .9 / .75 / .6 / .5 / .45 from the rise to the last.
+      const travel = (attack.reach - novaStart) / novaSpeed;
+      fight.attack.waves = [.9, 1.65, 2.25, 2.75, 3.2]
+        .map(delay => ({ delay, radius: null, previous: novaStart, hit: false, travel }));
+    } else if (fight.profile === BOSS && phase === 3) {
+      // The guardian's bar-3 nova carries a third, faster ring
+      // (batch 61: delays 0 / 0.82 / 1.37 — slow, slow, fast).
+      fight.attack.waves = [0, novaDelay, novaDelay + .55]
+        .map(delay => ({ delay, radius: null, previous: novaStart, hit: false }));
+    } else if (fight.profile === COLOSSUS && phase === 4) {
+      // The last bar's nova answers its two outward rings with
+      // a third that runs back inward to ringEnd.
+      fight.attack.waves = [0, novaDelay, novaDelay * 2]
+        .map(delay => ({ delay, radius: null, previous: novaStart, hit: false }));
+      Object.assign(fight.attack.waves[2], { reverse: true, end: ringEnd, previous: attack.reach,
+        travel: (attack.reach - ringEnd) / novaSpeed });
+    } else {
+      fight.attack.waves = [0, novaDelay].map(delay => ({ delay, radius: null, previous: novaStart, hit: false }));
+    }
+    fight.attack.duration = Math.max(...fight.attack.waves.map(wave => wave.delay + (wave.travel ?? (attack.duration - novaDelay))));
+  }
+  if (kind === "prism") {
+    fight.attack.crystalHp = attack.crystalHp;
+    // The last bar refracts on four tracks (batch 62).
+    if (fight.profile === COLOSSUS && phase === 4) fight.attack.tracks = [-6.15, -2.05, 2.05, 6.15];
+  }
+  if (kind === "turret") {
+    fight.attack.elapsed = 0;
+    fight.attack.turrets = [0, 1, 2, 3].map(index => ({ index, hp: attack.crystalHp, next: 1.2 + index * .8 }));
+    fight.attack.minis = [];
+  }
   fight.state = "windup";
 }
 
@@ -405,21 +479,30 @@ function insideColossusMark(action, dx, dz, height) {
   const plan = BOSS_ATTACKS[action.kind];
   if (action.kind === "meteor") return Math.hypot(dx, dz) <= plan.reach && height < 2;
   if (action.kind === "repel") return Math.hypot(dx, dz) <= plan.reach && height < 1.4;
-  if (action.kind === "nova") {
+  if (action.kind === "nova" || action.kind === "converge" || action.kind === "starfall") {
     const distance = Math.hypot(dx, dz);
     return height < .54 && action.waves.some(wave => wave.radius !== null && !wave.hit
-      && distance >= wave.radius - novaBand && distance <= wave.radius + 2.3);
+      && (wave.reverse ? distance >= wave.radius - 2.3 && distance <= wave.radius + novaBand
+        : distance >= wave.radius - novaBand && distance <= wave.radius + 2.3));
+  }
+  if (action.kind === "turret") {
+    return height < 2 && (action.minis ?? []).some(mini => !mini.hit
+      && Math.hypot(dx - (mini.x - action.x), dz - (mini.z - action.z)) <= plan.reach);
   }
   const s = Math.sin(action.angle), c = Math.cos(action.angle);
   const along = dx * s + dz * c;
   const side = dx * c - dz * s;
+  if (action.kind === "charge") {
+    return along >= 0 && along <= action.length && Math.abs(side) <= action.width && height < 2;
+  }
   if (along < 0 || along > plan.reach) return false;
-  if (action.kind === "prism") return height < 2.6 && plan.tracks.some(track => Math.abs(side - track) <= plan.width);
+  if (action.kind === "prism") return height < 2.6 && (action.tracks ?? plan.tracks).some(track => Math.abs(side - track) <= plan.width);
   return Math.abs(side) <= action.width && height < 1.65;
 }
 
 export function insideColossusHazard(fight, player) {
   if (fight.profile !== COLOSSUS || (fight.state !== "windup" && fight.state !== "attack")) return false;
+  if (fight.attack?.pending) return false;
   const { attack } = fight;
   return insideColossusMark(attack, player.x - attack.x, player.z - attack.z, player.y - fight.y);
 }
@@ -459,18 +542,29 @@ export function insideHazard(fight, player) {
   }
 }
 
-function advanceNova(action, player, height, dt) {
-  const plan = BOSS_ATTACKS.nova;
+function advanceNova(fight, action, player, height, dt) {
+  const plan = BOSS_ATTACKS[action.kind];
   const distance = Math.hypot(player.x - action.x, player.z - action.z);
-  const travel = plan.duration - novaDelay;
   action.elapsed += dt;
   let damage = 0;
   for (const wave of action.waves) {
     const age = action.elapsed - wave.delay;
+    const travel = wave.travel ?? (BOSS_ATTACKS.nova.duration - novaDelay);
+    if (action.kind === "starfall" && !wave.burned && age > travel) {
+      // A spent starfall ring leaves its band burning (batch
+      // 62, Kui's C on the colossus side): a fire ring at the
+      // ring's full reach, on the environmental channel.
+      wave.burned = true;
+      fight.fireZones.push({ ring: true, x: action.x, z: action.z, radius: plan.reach, halfWidth: .85, until: fight.elapsed + 2 });
+    }
     if (age < 0 || age > travel + dt) { wave.radius = null; continue; }
-    wave.previous = wave.radius ?? novaStart;
-    wave.radius = novaStart + (plan.reach - novaStart) * Math.min(1, age / travel);
-    if (!wave.hit && height < .54 && distance >= wave.previous - novaBand && distance <= wave.radius + novaBand) {
+    wave.previous = wave.radius ?? (wave.reverse ? plan.reach : novaStart);
+    const span = wave.reverse ? plan.reach - (wave.end ?? ringEnd) : plan.reach - novaStart;
+    wave.radius = wave.reverse ? plan.reach - span * Math.min(1, age / travel)
+      : novaStart + span * Math.min(1, age / travel);
+    const lo = Math.min(wave.previous, wave.radius) - novaBand;
+    const hi = Math.max(wave.previous, wave.radius) + novaBand;
+    if (!wave.hit && height < .54 && distance >= lo && distance <= hi) {
       wave.hit = true;
       damage += plan.damage;
     }
@@ -484,23 +578,27 @@ function strikePlayer(fight, player, dt) {
   const dx = player.x - action.x, dz = player.z - action.z;
   const distance = Math.hypot(dx, dz);
   const height = player.y - fight.y;
-  if (action.kind === "ram") {
+  if (action.kind === "ram" || action.kind === "charge") {
     if (action.hit) return 0;
+    const hitWidth = action.kind === "charge" ? action.width : attack.width;
     const from = action.travelled;
-    let to = Math.min(action.length, from + dt * action.length / attack.duration);
+    let to = Math.min(action.length, from + dt * action.length / (action.duration ?? attack.duration));
     const s = Math.sin(action.angle), c = Math.cos(action.angle);
     const along = dx * s + dz * c, nearest = Math.min(to, Math.max(from, along));
-    if (height <= 2 && Math.hypot(dx - nearest*s, dz - nearest*c) <= attack.width) {
+    if (height <= 2 && Math.hypot(dx - nearest*s, dz - nearest*c) <= hitWidth) {
       action.hit = true;
       const side = dx * c - dz * s;
-      to = Math.max(from, along - Math.sqrt(Math.max(0, attack.width ** 2 - side ** 2)));
+      to = Math.max(from, along - Math.sqrt(Math.max(0, hitWidth ** 2 - side ** 2)));
     }
     action.travelled = to;
     fight.x = action.x + s * to;
     fight.z = action.z + c * to;
     return action.hit ? attack.damage : 0;
   }
-  if (action.kind === "nova") return advanceNova(action, player, height, dt);
+  if (action.kind === "nova" || action.kind === "converge" || action.kind === "starfall") {
+    return advanceNova(fight, action, player, height, dt);
+  }
+  if (action.kind === "turret") return 0;
   // A prism is a straight refracted beam: unlike the shockwaves, it terminates
   // on an obelisk. The render loop provides this from the terrain raycast.
   if (action.kind === "prism" && player.covered) return 0;
@@ -594,7 +692,8 @@ export function advanceBoss(fight, player, dt) {
     if (fight.fireZones?.length) {
       fight.fireZones = fight.fireZones.filter(zone => zone.until > fight.elapsed);
       const inZone = fight.fireZones.some(zone => player.y - fight.y < 2
-        && Math.hypot(player.x - zone.x, player.z - zone.z) <= zone.radius);
+        && (zone.ring ? Math.abs(Math.hypot(player.x - zone.x, player.z - zone.z) - zone.radius) <= zone.halfWidth
+          : Math.hypot(player.x - zone.x, player.z - zone.z) <= zone.radius));
       if (inZone) {
         fight.fireDebt = (fight.fireDebt ?? 0) + 5 * interval;
         const due = Math.floor(fight.fireDebt);
@@ -604,25 +703,79 @@ export function advanceBoss(fight, player, dt) {
         }
       }
     }
+    if (fight.state === "attack" && fight.attack?.kind === "turret") {
+      const action = fight.attack;
+      action.elapsed += interval;
+      for (const crystal of action.turrets) {
+        if (crystal.hp <= 0) continue;
+        crystal.next -= interval;
+        if (crystal.next <= 0) {
+          crystal.next = Math.max(.4, crystal.next + 3.2);
+          action.minis.push({ x: player.x, z: player.z, at: action.elapsed + .9, hit: false });
+        }
+      }
+      for (const mini of action.minis) {
+        if (mini.hit || action.elapsed < mini.at) continue;
+        mini.hit = true;
+        if (player.y - fight.y < 2 && Math.hypot(player.x - mini.x, player.z - mini.z) <= BOSS_ATTACKS.turret.reach) {
+          result.damage += Math.round(BOSS_ATTACKS.turret.damage * bossBar(fight).damageScale);
+        }
+      }
+      action.minis = action.minis.filter(mini => action.elapsed < mini.at + .2);
+      if (action.turrets.every(crystal => crystal.hp <= 0)) fight.time = Math.min(fight.time, 1e-4);
+    }
     if (fight.state === "reposition") moveColossus(fight, player, interval);
     if (fight.state === "ready" && fight.profile === COLOSSUS) advanceIntro(fight, player, interval);
     remaining -= interval;
     fight.time -= interval;
     if (fight.time > 1e-8) break;
     if (fight.state === "windup") {
-      fight.state = "attack";
-      fight.time = fight.attack.duration ?? BOSS_ATTACKS[fight.attack.kind].duration;
-      result.cue = "boss-strike";
+      if (fight.attack.pending) {
+        // A chained meteor locks its next fall now (batch
+        // 62): half a second after the previous one landed,
+        // the mark takes the player's current position and
+        // the full telegraph runs again from the top.
+        fight.attack.x = player.x;
+        fight.attack.z = player.z;
+        fight.attack.pending = false;
+        fight.attack.windup = Math.max(.65, BOSS_ATTACKS.meteor.windup * fight.profile.bars[fight.phase - 1].windupScale);
+        fight.time = fight.attack.windup;
+        result.cue = "boss-charge";
+      } else {
+        fight.state = "attack";
+        fight.time = fight.attack.duration ?? BOSS_ATTACKS[fight.attack.kind].duration;
+        result.cue = "boss-strike";
+      }
     } else if (fight.state === "attack") {
       // A bar-3 flare leaves its marks burning (batch 61, Kui's
       // C): two seconds of fire zone per mark, on the
       // environmental channel below.
+      // The chain transition and the flare's fire zones are
+      // both pre-recovery steps, not alternatives to it: the
+      // flare only leaves its zones and still falls through
+      // to the recovery below, while a chained meteor skips
+      // the rest outright.
+      let chained = false;
+      if (fight.attack.kind === "meteor" && fight.profile === COLOSSUS
+        && (fight.attack.chainIndex ?? 1) < (fight.attack.chainTotal ?? 1)) {
+        // The next fall in the chain (batch 62): a 0.5s beat
+        // with no mark, then the lock and a full new telegraph.
+        const chain = fight.attack;
+        fight.attack = { kind: "meteor", pending: true, chainIndex: chain.chainIndex + 1, chainTotal: chain.chainTotal,
+          x: fight.x, z: fight.z, angle: fight.angle, radius: 1.35, windup: .5, hit: false };
+        fight.time = .5;
+        fight.state = "windup";
+        result.cue = "boss-charge";
+        chained = true;
+      }
       if (fight.attack.kind === "flare" && fight.profile === BOSS && fight.phase === 3) {
         for (const mark of fight.attack.marks) {
           fight.fireZones.push({ x: mark.x, z: mark.z, radius: BOSS_ATTACKS.flare.reach, until: fight.elapsed + 2 });
         }
       }
-      if (fight.attack.kind === "ram" && fight.phase === 3 && !fight.attack.hit && fight.attack.leg !== 2) {
+      if (chained) {
+        // The chain beat replaces this attack's ending.
+      } else if (fight.attack.kind === "ram" && fight.phase === 3 && !fight.attack.hit && fight.attack.leg !== 2) {
         // The bar-3 ram returns (batch 61): a missed first leg is
         // answered by a second charge back along the reverse line,
         // corrected toward the player by at most ±25°. Only a
@@ -655,6 +808,7 @@ export function advanceBoss(fight, player, dt) {
         fight.state = "recovery";
         fight.time = fight.profile === BOSS ? GUARDIAN_WAVES[fight.phase - 1].recovery : fight.profile.bars[fight.phase - 1].recovery;
         if (fight.attack.kind === "ram") fight.time = fight.attack.hit ? .85 : 3;
+        if (fight.attack.kind === "charge") fight.time = fight.attack.hit ? .85 : 1.5;
         result.cue = "boss-exposed";
       }
     } else if (fight.state === "recovery" && fight.profile === COLOSSUS) {
@@ -665,6 +819,10 @@ export function advanceBoss(fight, player, dt) {
       fight.time = GUARDIAN_WAVES[fight.phase - 1].pursuit;
       result.cue = "boss-move";
     } else {
+      if (fight.profile === COLOSSUS && fight.starfallPending) {
+        fight.starfallPending = false;
+        fight.forceKind = "starfall";
+      }
       windUp(fight, player);
       result.cue = "boss-charge";
     }
@@ -697,7 +855,8 @@ export function posedColossus(fight) {
   const rebound = attackAge < .12 ? .04 * (1 - attackAge / .12) : 0;
   const shiftNorm = Math.min(1, (fight.phaseShift ?? 0) / 1.2);
   const phaseDip = shiftNorm > 0 ? -.45 * Math.sin(Math.PI * (1 - shiftNorm)) : 0;
-  const lift = Math.max(.42, liftBase - .12 * charge + rebound + phaseDip);
+  const starLift = move === "starfall" ? 1.7 * (winding ? charge : 1) : 0;
+  const lift = Math.max(.42, liftBase - .12 * charge + rebound + phaseDip + starLift);
   const cool = [.21, .74, .95], teal = [.26, 1, .83], enraged = [1, .35, .22];
   const energyBoost = Math.min(2.5, (1 + .8 * charge) * (1 + 1.5 * shiftNorm));
   const energy = cool.map((value, i) => (open || won ? teal[i] : value + (enraged[i] - value) * fight.phaseGlow) * (1 - fall * .92) * energyBoost);
@@ -722,13 +881,23 @@ export function posedColossus(fight) {
       spread += .73 + .45 * charge;
       reach += .71 + .56 * hit;
     }
+    if (move === "charge") {
+      raise += .42 * charge - .3 * hit;
+      reach += -.34 * charge + 1.2 * hit;
+    }
+    if (move === "starfall") {
+      raise += 1.5 * charge;
+      spread += .62 * charge;
+    }
     return { raise, reach, spread };
   });
   // The three orbiting crystals light one by one across the prism
   // windup, one every half second; the third is the beams' cue.
   const prismLit = winding && move === "prism" ? Math.min(3, Math.floor(t * action.windup / .5) + 1) : 0;
   return colossusModel(fight, { lift, exposed: dip, energy, gesture, drive, fall, prismLit,
-    stagger: Math.sin(fight.hurt * 21) * fight.hurt * .75, prism: move === "prism" && winding ? .08 + charge * .92 : 0 });
+    stagger: Math.sin(fight.hurt * 21) * fight.hurt * .75, prism: move === "prism" && winding ? .08 + charge * .92 : 0,
+    turrets: (winding || releasing) && action?.kind === "turret"
+      ? { rise: winding ? ease(t) : 1, list: action.turrets } : null });
 }
 
 export function bossParts(fight, emit) {
@@ -909,7 +1078,9 @@ export function modelHit(parts, origin, direction, reach) {
       }
       if (near > far) break;
     }
-    if (near <= far && near < (hit?.distance ?? reach)) hit = { distance: near, weak: target === 1, crystal: target === 2 };
+    if (near <= far && near < (hit?.distance ?? reach)) {
+      hit = { distance: near, weak: target === 1, crystal: target === 2, turret: target >= 10 ? target - 10 : null };
+    }
   }
   return hit;
 }
@@ -1132,6 +1303,17 @@ function colossusModel(fight, pose) {
     // court floor (local ground sits at -lift).
     if (lit) parts.push(piece(cylinder, [cx, (cy - lift) / 2, -.94], [.15, cy + lift, .15],
       [.55, .36, .10], identity, -1, true));
+  }
+  if (pose.turrets) {
+    // The turret battery (batch 62): four gold crystals on a
+    // slow orbit, hittable parts (targets 10-13). A broken
+    // crystal simply stops being drawn.
+    for (const crystalState of pose.turrets.list) {
+      if (crystalState.hp <= 0) continue;
+      const angle = crystalState.index * TAU / 4 + fight.elapsed * .25;
+      parts.push(piece(crystal, [Math.sin(angle) * 4.8, .4 + 2.4 * pose.turrets.rise, Math.cos(angle) * 4.8],
+        [.55, .95, .55], [1, .68, .22], axes(fight.elapsed * 2 + crystalState.index), 10 + crystalState.index, true));
+    }
   }
   if (pose.prism) {
     parts.push(piece(crystal, [0, 1.91 + pose.prism * .4, 2.08], [.69, 1.16, .67],

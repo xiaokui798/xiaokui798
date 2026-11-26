@@ -512,7 +512,27 @@ export function createBossRender({ gl, createActorMesh, uploadActorMesh, appendM
       prevBossState = boss.state;
       if (bossModel) pen.used = appendModel(pen.vertices, pen.used, bossModel, boss.hurt);
       else bossParts(boss, (...part) => box(boss, s, c, ...part));
-      if (boss.attack && (boss.state === "windup" || boss.state === "attack")) {
+      // Fire zones: a dark scorch fill with a breathing
+      // orange-red rim, a colour family of its own — never
+      // the telegraph red. Discs for the guardian's flare
+      // marks (batch 61), rings for the starfall (batch 62).
+      if (boss.fireZones?.length && boss.state !== "defeated") {
+        const fy = boss.y + .025;
+        for (const zone of boss.fireZones) {
+          const at = { x: zone.x, z: zone.z, angle: 0 };
+          const breathe = .7 + .3 * Math.sin(boss.elapsed * 4 + zone.x * 1.7 + zone.z);
+          const rim = [breathe, .5 * breathe, .13 * breathe];
+          if (zone.ring) {
+            groundArc(at, zone.radius - zone.halfWidth, zone.radius + zone.halfWidth, 2 * Math.PI, fy, [.30, .12, .03]);
+            groundArc(at, zone.radius - zone.halfWidth, zone.radius - zone.halfWidth + .16, 2 * Math.PI, fy + .005, rim);
+            groundArc(at, zone.radius + zone.halfWidth - .16, zone.radius + zone.halfWidth, 2 * Math.PI, fy + .005, rim);
+          } else {
+            groundArc(at, 0, zone.radius, 2 * Math.PI, fy, [.30, .12, .03]);
+            groundArc(at, zone.radius - .16, zone.radius, 2 * Math.PI, fy + .005, rim);
+          }
+        }
+      }
+      if (boss.attack && !boss.attack.pending && (boss.state === "windup" || boss.state === "attack")) {
         const action = boss.attack, plan = BOSS_ATTACKS[action.kind];
         const striking = boss.state === "attack";
         const cold = boss.profile === COLOSSUS;
@@ -599,11 +619,11 @@ export function createBossRender({ gl, createActorMesh, uploadActorMesh, appendM
         if (action.kind === "prism") {
           const rim = striking ? [1, .88, .57] : edge;
           const prismFill = striking ? [1, .53, .23] : fill;
-          for (const track of plan.tracks) {
+          for (const track of action.tracks ?? plan.tracks) {
             telegraphStrip(action, track - plan.width, track + plan.width, plan.reach, prismFill, rim);
             if (striking) groundStrip(action, track - .25, track + .25, plan.reach, y + .17, rim);
           }
-        } else if (action.kind === "nova") {
+        } else if (action.kind === "nova" || action.kind === "starfall") {
           if (!striking) {
             groundArc(action, 0, 2.52 + underlay, full, y - .012, under);
             groundArc(action, 0, 2.52 * progress, full, y, heat);
@@ -616,7 +636,31 @@ export function createBossRender({ gl, createActorMesh, uploadActorMesh, appendM
               groundArc(action, wave.radius + .34, wave.radius + .52, full, y + .017, edge);
             }
             countdownRing(action, action.waves.filter(wave => wave.radius !== null).map(wave => wave.radius),
-              (plan.reach - 1.72) / (plan.duration - .82));
+              (plan.reach - 1.72) / (action.waves[0]?.travel ?? (plan.duration - .82)));
+          }
+        } else if (action.kind === "converge") {
+          if (!striking) {
+            groundArc(action, 0, plan.reach + underlay, full, y - .012, under);
+            groundArc(action, Math.max(3.4, plan.reach * (1 - progress)), plan.reach, full, y, heat);
+            groundArc(action, plan.reach - .16, plan.reach, full, y + .017, edge);
+            groundArc(action, 3.24, 3.4, full, y + .017, edge);
+          } else {
+            for (const wave of action.waves) {
+              if (wave.radius === null) continue;
+              groundArc(action, wave.radius - .52, wave.radius + .52, full, y, heat);
+              groundArc(action, wave.radius - .52, wave.radius - .34, full, y + .017, edge);
+            }
+            const wave = action.waves[0];
+            if (wave && wave.radius !== null) {
+              const distance = Math.hypot(player.x - action.x, player.z - action.z);
+              const gap = wave.radius - distance;
+              if (gap >= -.6 && gap <= 6.6) {
+                const ring = Math.max(.12, Math.min(6, gap));
+                const at = { x: player.x, z: player.z, angle: 0 };
+                groundArc(at, ring - .10, ring + .10, full, y + .03,
+                  gap / ((plan.reach - 3.4) / wave.travel) < .35 ? [1, 1, 1] : edge);
+              }
+            }
           }
         } else if (action.kind === "ram") {
           telegraphStrip(action, -plan.width, plan.width, action.length, heat, edge);
@@ -633,12 +677,25 @@ export function createBossRender({ gl, createActorMesh, uploadActorMesh, appendM
               groundStrip(dash, -plan.width, plan.width, .55, y + .005, dim);
             }
           }
+        } else if (action.kind === "charge") {
+          telegraphStrip(action, -action.width, action.width, action.length, heat, edge);
+          if (striking) groundStrip(action, -.26, .26, action.length, y + .017, edge);
         } else if (action.marks) {
           for (const mark of action.marks) {
             const circle = { ...mark, angle: 0 };
             telegraphCircle(circle, plan.reach, heat, edge);
             groundPillar(mark.x, mark.z, plan.reach * .92, 9, y, edge.map(v => v * .5));
             escapeTabs(mark.x, mark.z, plan.reach, edge);
+          }
+        } else if (action.kind === "turret") {
+          for (const mini of action.minis ?? []) {
+            if (mini.hit) continue;
+            const mp = Math.min(1, Math.max(0, 1 - (mini.at - action.elapsed) / .9));
+            const circle = { x: mini.x, z: mini.z, angle: 0 };
+            groundArc(circle, 0, plan.reach + underlay, full, y - .012, under);
+            groundArc(circle, 0, Math.max(.05, plan.reach * mp), full, y, heat);
+            groundArc(circle, plan.reach - .16, plan.reach, full, y + .017, edge);
+            groundPillar(mini.x, mini.z, plan.reach * .92, 9, y, edge.map(v => v * .5));
           }
         } else if (action.kind === "rift") {
           telegraphStrip(action, -action.width, action.width, plan.reach, heat, edge);

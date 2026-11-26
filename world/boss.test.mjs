@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ARENA, BOSS, GUARDIAN_WAVES, COLOSSUS, SKY_COURT, SKY_COURT_COVERS, BOSS_ATTACKS, buildArena, buildBossTerrain,
-  createBossFight, advanceBoss, strikeBoss, interruptFurnace, damagePrism, posedColossus, insideColossusHazard, insideHazard, posedGuardian, modelHit, pulseViewModel, meleeViewModel } from "./boss.mjs";
+  createBossFight, advanceBoss, strikeBoss, interruptFurnace, damagePrism, damageTurret, posedColossus, insideColossusHazard, insideHazard, posedGuardian, modelHit, pulseViewModel, meleeViewModel } from "./boss.mjs";
 import { WORLD, voxelIndex } from "./terrain.mjs";
 
 const player = { x: ARENA.x, y: ARENA.floor, z: ARENA.spawnZ };
@@ -123,7 +123,7 @@ test("the colossus advances on a stationary player at the far end of the entranc
   assert.equal(advanceBoss(fight, entrance, fight.time + .08).damage, BOSS_ATTACKS.meteor.damage);
 
   const retreat = { ...entrance, z: SKY_COURT.z - 14 };
-  advanceBoss(fight, retreat, fight.time + COLOSSUS.bars[0].recovery);
+  for (let i = 0; i < 400 && fight.state !== "reposition"; i++) advanceBoss(fight, retreat, .05);
   assert.equal(fight.state, "reposition");
   assert.equal(fight.travel.pursuit, true);
   const before = Math.hypot(fight.x - retreat.x, fight.z - retreat.z);
@@ -288,7 +288,7 @@ test("the colossus marks a delayed meteor and expands its rift from the second b
 test("the colossus relocates between attacks and stops short of the player", () => {
   const fight = createBossFight(COLOSSUS);
   const player = { x: fight.x, y: fight.y, z: fight.z + 6 };
-  advanceBoss(fight, player, 1.2 + BOSS_ATTACKS.meteor.windup + BOSS_ATTACKS.meteor.duration + COLOSSUS.bars[0].recovery);
+  for (let i = 0; i < 400 && fight.state !== "reposition"; i++) advanceBoss(fight, player, .05);
   assert.equal(fight.state, "reposition");
   const blocker = { x: fight.x + 3.4, y: fight.y, z: fight.z };
   const original = fight.x;
@@ -635,4 +635,208 @@ test("bar-3 flare marks burn as fire zones for two seconds at 5 hp/s, on their o
   guard = 0;
   while (earlier.state !== "recovery" && guard++ < 600) advanceBoss(earlier, target, .02);
   assert.equal(earlier.fireZones.length, 0);
+});
+
+// ---- Batch 62: the colossus's new moves ----
+
+// Step a fight in small increments until a condition holds
+// (or the guard runs out) and return the last result.
+function stepUntil(fight, player, done, guard = 800) {
+  let result = { damage: 0, fire: 0 };
+  while (!done() && guard-- > 0) result = advanceBoss(fight, player, .05);
+  return result;
+}
+
+test("the colossus meteor falls in chains: two in the early bars, three from bar 3", () => {
+  const fight = createBossFight(COLOSSUS);
+  const player = { x: fight.x, y: fight.y, z: fight.z + 5 };
+  advanceBoss(fight, player, 1.2);
+  assert.equal(fight.attack.kind, "meteor");
+  // The chain is declared on the first windup — the follow-up
+  // falls are previewed, never sprung (design §3, rule 5).
+  assert.equal(fight.attack.chainTotal, 2);
+  assert.equal(fight.attack.chainIndex, 1);
+  let first = 0, guard = 0;
+  while (!(fight.state === "windup" && fight.attack?.pending) && guard++ < 400) {
+    first += advanceBoss(fight, player, .05).damage;
+  }
+  assert.equal(first, BOSS_ATTACKS.meteor.damage, "the first fall hits once, at full value");
+  assert.equal(fight.attack.chainIndex, 2);
+  // The second fall locks the player's NEW position half a
+  // second after the first one landed.
+  player.x += 6;
+  stepUntil(fight, player, () => fight.attack?.pending === false);
+  assert.equal(fight.attack.x, player.x);
+  assert.equal(fight.attack.z, player.z);
+  let second = 0;
+  guard = 0;
+  while (fight.state !== "recovery" && guard++ < 400) second += advanceBoss(fight, player, .05).damage;
+  assert.equal(second, BOSS_ATTACKS.meteor.damage, "the chained fall hits once too — no more, no less");
+
+  const late = createBossFight(COLOSSUS);
+  late.hp = COLOSSUS.bars[2].hp;
+  late.phase = 3;
+  late.attacks = 4;
+  const latePlayer = { x: late.x, y: late.y, z: late.z + 5 };
+  advanceBoss(late, latePlayer, 1.2);
+  assert.equal(late.attack.kind, "meteor");
+  assert.equal(late.attack.chainTotal, 3);
+});
+
+test("the bar-2 converging ring closes to the giant's feet and the pocket inside is safe", () => {
+  const fight = createBossFight(COLOSSUS);
+  fight.hp = COLOSSUS.bars[1].hp;
+  fight.phase = 2;
+  fight.attacks = 4;
+  const player = { x: fight.x, y: fight.y, z: fight.z + 8 };
+  advanceBoss(fight, player, 1.2);
+  assert.equal(fight.attack.kind, "converge");
+  let total = 0, guard = 0;
+  while (fight.state !== "recovery" && guard++ < 400) total += advanceBoss(fight, player, .05).damage;
+  assert.equal(total, Math.round(BOSS_ATTACKS.converge.damage * COLOSSUS.bars[1].damageScale));
+
+  const pocket = createBossFight(COLOSSUS);
+  pocket.hp = COLOSSUS.bars[1].hp;
+  pocket.phase = 2;
+  pocket.attacks = 4;
+  const inside = { x: pocket.x, y: pocket.y, z: pocket.z + 8 };
+  advanceBoss(pocket, inside, 1.2);
+  assert.equal(pocket.attack.kind, "converge");
+  // The pocket is a place to run to during the windup —
+  // standing point-blank at the start would draw a repel.
+  inside.z = pocket.z + 2.5;
+  let safe = 0;
+  guard = 0;
+  while (pocket.state !== "recovery" && guard++ < 400) safe += advanceBoss(pocket, inside, .05).damage;
+  assert.equal(safe, 0, "inside the ring's end radius the ground stays safe");
+
+  const jumper = createBossFight(COLOSSUS);
+  jumper.hp = COLOSSUS.bars[1].hp;
+  jumper.phase = 2;
+  jumper.attacks = 4;
+  const airborne = { x: jumper.x, y: jumper.y + 1, z: jumper.z + 8 };
+  advanceBoss(jumper, airborne, 1.2);
+  let dodged = 0;
+  guard = 0;
+  while (jumper.state !== "recovery" && guard++ < 400) dodged += advanceBoss(jumper, airborne, .05).damage;
+  assert.equal(dodged, 0, "a jump clears the converging ring like any other");
+});
+
+test("the bar-3 charge runs its strip, hits for 30 scaled, and a miss costs a 1.5s stagger", () => {
+  const fight = createBossFight(COLOSSUS);
+  fight.hp = COLOSSUS.bars[2].hp;
+  fight.phase = 3;
+  fight.attacks = 2;
+  const player = { x: fight.x, y: fight.y, z: fight.z + 8 };
+  const startZ = fight.z;
+  advanceBoss(fight, player, 1.2);
+  assert.equal(fight.attack.kind, "charge");
+  let total = 0, guard = 0;
+  while (fight.state !== "recovery" && guard++ < 400) total += advanceBoss(fight, player, .05).damage;
+  assert.equal(total, Math.round(BOSS_ATTACKS.charge.damage * COLOSSUS.bars[2].damageScale));
+  assert.ok(fight.z - startZ > 3, "the giant's body travelled down the strip");
+
+  const dodged = createBossFight(COLOSSUS);
+  dodged.hp = COLOSSUS.bars[2].hp;
+  dodged.phase = 3;
+  dodged.attacks = 2;
+  const aside = { x: dodged.x, y: dodged.y, z: dodged.z + 8 };
+  advanceBoss(dodged, aside, 1.2);
+  assert.equal(dodged.attack.kind, "charge");
+  stepUntil(dodged, aside, () => dodged.state === "attack");
+  aside.x += 6;
+  let missed = 0;
+  guard = 0;
+  while (dodged.state !== "recovery" && guard++ < 400) missed += advanceBoss(dodged, aside, .02).damage;
+  assert.equal(missed, 0);
+  assert.ok(Math.abs(dodged.time - 1.5) < .1, `a charge that runs out its strip staggers 1.5s (got ${dodged.time})`);
+});
+
+test("the bar-3 turret battery marks the player's spot for small meteors and ends early when broken", () => {
+  const fight = createBossFight(COLOSSUS);
+  fight.hp = COLOSSUS.bars[2].hp;
+  fight.phase = 3;
+  fight.attacks = 3;
+  const player = { x: fight.x, y: fight.y, z: fight.z + 8 };
+  advanceBoss(fight, player, 1.2);
+  assert.equal(fight.attack.kind, "turret");
+  assert.equal(fight.attack.turrets.length, 4);
+  assert.ok(fight.attack.turrets.every(crystal => crystal.hp === BOSS_ATTACKS.turret.crystalHp));
+  stepUntil(fight, player, () => fight.state === "attack");
+  let sawMini = false, hits = 0, guard = 0;
+  while (guard++ < 120) {
+    const result = advanceBoss(fight, player, .05);
+    if (fight.attack.minis.length) sawMini = true;
+    if (result.damage) { assert.equal(result.damage, Math.round(BOSS_ATTACKS.turret.damage * COLOSSUS.bars[2].damageScale)); hits++; }
+  }
+  assert.ok(sawMini, "the crystals mark shots while the battery runs");
+  assert.ok(hits >= 1, "a player standing on the marks takes the small meteors");
+  assert.equal(damageTurret(fight, 0, 24), BOSS_ATTACKS.turret.crystalHp - 24);
+  for (let index = 0; index < 4; index++) damageTurret(fight, index, 999);
+  stepUntil(fight, player, () => fight.state === "recovery", 40);
+  assert.equal(fight.state, "recovery", "breaking every crystal ends the move early");
+});
+
+test("the last bar arms the starfall every fifth of its health, and its rings leave fire", () => {
+  const player = { x: 0, y: 0, z: 0 };
+  const fight = createBossFight(COLOSSUS);
+  fight.hp = COLOSSUS.bars[3].hp;
+  fight.phase = 4;
+  fight.state = "recovery";
+  fight.time = 10;
+  const near = { x: fight.x, y: fight.y, z: fight.z + 9 };
+  player.x = near.x; player.y = near.y; player.z = near.z;
+  assert.equal(strikeBoss(fight, 200, true, player), 200);
+  assert.equal(fight.starfallPending, true, "crossing a fifth of the bar arms the finisher");
+  stepUntil(fight, player, () => fight.attack?.kind === "starfall", 400);
+  assert.equal(fight.attack.kind, "starfall");
+  assert.deepEqual(fight.attack.waves.map(wave => wave.delay), [.9, 1.65, 2.25, 2.75, 3.2]);
+  let total = 0, guard = 0;
+  while (fight.state !== "recovery" && guard++ < 400) total += advanceBoss(fight, player, .05).damage;
+  assert.ok(total > 0, "a standing player is caught by the rings");
+  const ring = fight.fireZones.find(zone => zone.ring);
+  assert.ok(ring, "each spent ring leaves its band burning");
+  assert.equal(ring.radius, BOSS_ATTACKS.starfall.reach);
+  // Standing in the band burns; standing inside it does not.
+  const inBand = { x: fight.x, y: fight.y, z: fight.z + BOSS_ATTACKS.starfall.reach };
+  let fire = 0;
+  for (let i = 0; i < 4; i++) fire += advanceBoss(fight, inBand, .05).fire ?? 0;
+  assert.ok(fire > 0, "the fire ring burns on the environmental channel");
+  const inside = { x: fight.x, y: fight.y, z: fight.z + 10 };
+  let calm = 0;
+  for (let i = 0; i < 4; i++) calm += advanceBoss(fight, inside, .05).fire ?? 0;
+  assert.equal(calm, 0);
+
+  const earlier = createBossFight(COLOSSUS);
+  earlier.hp = COLOSSUS.bars[2].hp;
+  earlier.phase = 3;
+  earlier.state = "recovery";
+  earlier.time = 10;
+  strikeBoss(earlier, 200, true, player);
+  assert.ok(!earlier.starfallPending, "the finisher belongs to the last bar only");
+});
+
+test("the last bar refracts on four tracks and answers its nova with an inward ring", () => {
+  const fight = createBossFight(COLOSSUS);
+  fight.hp = COLOSSUS.bars[3].hp;
+  fight.phase = 4;
+  fight.attacks = 1;
+  const player = { x: fight.x, y: fight.y, z: fight.z + 8 };
+  advanceBoss(fight, player, 1.2);
+  assert.equal(fight.attack.kind, "prism");
+  assert.equal(fight.attack.tracks.length, 4);
+  const { angle } = fight.attack;
+  const s = Math.sin(angle), c = Math.cos(angle);
+  const at = (along, side) => ({ x: fight.x + along * s + side * c, y: fight.y, z: fight.z + along * c - side * s });
+  assert.equal(insideColossusHazard(fight, at(10, 0)), false, "the old centre line is a gap now");
+  assert.equal(insideColossusHazard(fight, at(10, 2.05)), true, "the new inner tracks threaten their lines");
+
+  const nova = createBossFight(COLOSSUS);
+  nova.hp = COLOSSUS.bars[3].hp;
+  nova.phase = 4;
+  nova.attacks = 0;
+  advanceBoss(nova, player, 1.2);
+  assert.equal(nova.attack.kind, "nova");
+  assert.equal(nova.attack.waves.length, 3);
+  assert.equal(nova.attack.waves[2].reverse, true, "the third ring runs back inward");
 });
