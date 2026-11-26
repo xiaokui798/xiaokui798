@@ -15,7 +15,13 @@ test("guardian counterplay changes from flanking to interrupting a cast to baiti
   const caster = createBossFight();
   caster.phase = 2;
   advanceBoss(caster, { ...player, vx: 5 }, caster.time);
-  assert.equal(caster.attack.marks[1].x, player.x + 2.75);
+  // Bar-2 flare marks a triangle (batch 61): the player's spot
+  // plus two escape points ±40° off the run direction.
+  assert.equal(caster.attack.marks.length, 3);
+  assert.deepEqual([caster.attack.marks[0].x, caster.attack.marks[0].z], [player.x, player.z]);
+  assert.ok(Math.abs(caster.attack.marks[1].x - (player.x + 3.3 * Math.cos(.7))) < 1e-9);
+  assert.ok(Math.abs(caster.attack.marks[1].z - (player.z + 3.3 * Math.sin(.7))) < 1e-9);
+  assert.ok(Math.abs(caster.attack.marks[2].z - (player.z - 3.3 * Math.sin(.7))) < 1e-9);
   assert.ok(interruptFurnace(caster));
   assert.equal(advanceBoss(caster, player, 2).damage, 0);
   assert.equal(strikeBoss(caster, 20), 18);
@@ -29,7 +35,19 @@ test("guardian counterplay changes from flanking to interrupting a cast to baiti
     const result = advanceBoss(ram, { ...player, x: player.x + (dodge ? 3 : 0) }, ram.time);
     assert.ok(ram.z > start);
     assert.equal(result.damage, dodge ? 0 : Math.round(BOSS_ATTACKS.ram.damage * GUARDIAN_WAVES[2].damageScale));
-    assert.equal(ram.time, dodge ? 3 : .85);
+    if (!dodge) {
+      assert.equal(ram.time, .85);
+    } else {
+      // A missed bar-3 charge returns for a second leg (batch
+      // 61); only the second miss earns the long stagger.
+      assert.equal(ram.state, "windup");
+      assert.equal(ram.attack.leg, 2);
+      advanceBoss(ram, { ...player, x: player.x + 3 }, ram.time);
+      const second = advanceBoss(ram, { ...player, x: player.x + 10 }, ram.time);
+      assert.equal(second.damage, 0);
+      assert.equal(ram.state, "recovery");
+      assert.equal(ram.time, 3);
+    }
   }
 });
 
@@ -390,7 +408,9 @@ test("insideHazard covers the guardian's sector, marks and wavefronts", () => {
   advanceBoss(flare, marked, 1.2);
   assert.equal(flare.attack.kind, "flare");
   assert.equal(insideHazard(flare, marked), true);
-  assert.equal(insideHazard(flare, { ...marked, x: marked.x + 4 }), false);
+  // Four units clear used to be outside the single mark; a flank
+  // mark covers that spot now (batch 61), so clear is seven out.
+  assert.equal(insideHazard(flare, { ...marked, x: marked.x + 7 }), false);
 
   // Shock: no wavefront exists during the windup; once the wave is
   // travelling, danger is the 1.2 band around its front, which
@@ -491,4 +511,128 @@ test("the bar tables carry the design values and windups respect the 0.65 floor"
   advanceBoss(fight, close, 1.2);
   assert.equal(fight.attack.kind, "repel");
   assert.equal(fight.attack.windup, .65);
+});
+
+test("bar-2 flare marks a triangle of three, moving or standing", () => {
+  const moving = createBossFight();
+  moving.phase = 2;
+  advanceBoss(moving, { ...player, vx: 5 }, moving.time);
+  assert.equal(moving.attack.kind, "flare");
+  assert.equal(moving.attack.marks.length, 3);
+  const still = createBossFight();
+  still.phase = 2;
+  const target = { ...player, z: ARENA.z + 6 };
+  advanceBoss(still, target, still.time);
+  assert.equal(still.attack.kind, "flare");
+  assert.equal(still.attack.marks.length, 3);
+  assert.deepEqual([still.attack.marks[0].x, still.attack.marks[0].z], [target.x, target.z]);
+});
+
+test("the bar-2 sweep declares its shock follow-up at windup and fires it after a 0.35s gap", () => {
+  const fight = createBossFight();
+  fight.phase = 2;
+  fight.hp = GUARDIAN_WAVES[1].hp;
+  fight.attacks = 1;
+  const target = { ...player, z: ARENA.z + 3 };
+  advanceBoss(fight, target, 1.2);
+  assert.equal(fight.attack.kind, "sweep");
+  // The follow-up is on the sweep from its first windup frame —
+  // this is what the renderer previews (design §3, rule 5).
+  assert.deepEqual(fight.attack.next, { kind: "shock", damage: 18 });
+  assert.ok(fight.attack.comboTotal > fight.attack.windup);
+  // Slip behind the guardian so the sweep misses; the shock ring
+  // is omnidirectional and still connects, for exactly its 18.
+  const behind = { x: fight.x, y: ARENA.floor, z: fight.z - 3 };
+  let gapTime = null, total = 0, guard = 0;
+  while (fight.state !== "recovery" && guard++ < 400) {
+    total += advanceBoss(fight, behind, .02).damage;
+    if (gapTime === null && fight.state === "windup" && fight.attack.kind === "shock") gapTime = fight.time;
+  }
+  assert.ok(gapTime !== null && gapTime <= .35 && gapTime > .3, `combo gap ${gapTime}`);
+  assert.equal(total, 18);
+  assert.equal(fight.state, "recovery");
+});
+
+test("the bar-3 ram returns at a corrected angle and only the second miss staggers", () => {
+  const fight = createBossFight();
+  fight.phase = 3;
+  fight.hp = GUARDIAN_WAVES[2].hp;
+  const target = { ...player, z: ARENA.z + 7 };
+  advanceBoss(fight, target, 1.2);
+  assert.equal(fight.attack.kind, "ram");
+  assert.equal(fight.attack.leg, 1);
+  const firstAngle = fight.attack.angle;
+  let guard = 0;
+  while (fight.state !== "attack" && guard++ < 200) advanceBoss(fight, target, .02);
+  const dodged = { ...target, x: target.x + 4 };
+  guard = 0;
+  while (fight.state === "attack" && guard++ < 200) advanceBoss(fight, dodged, .02);
+  assert.equal(fight.state, "windup");
+  assert.equal(fight.attack.kind, "ram");
+  assert.equal(fight.attack.leg, 2);
+  const reverse = firstAngle + Math.PI;
+  const correction = Math.atan2(Math.sin(fight.attack.angle - reverse), Math.cos(fight.attack.angle - reverse));
+  assert.ok(Math.abs(correction) <= .436 + 1e-9, `correction ${correction}`);
+  assert.ok(correction < 0, "the return corrects toward the dodging player");
+  guard = 0;
+  while (fight.state !== "recovery" && guard++ < 400) advanceBoss(fight, dodged, .02);
+  assert.equal(fight.state, "recovery");
+  assert.ok(fight.time > 1.2 && fight.time <= 3, `stagger ${fight.time}`);
+});
+
+test("the bar-3 nova fires three rings, slow slow fast; the colossus keeps two", () => {
+  const fight = createBossFight();
+  fight.phase = 3;
+  fight.hp = GUARDIAN_WAVES[2].hp;
+  fight.attacks = 1;
+  const target = { ...player, z: ARENA.z + 3 };
+  advanceBoss(fight, target, 1.2);
+  assert.equal(fight.attack.kind, "nova");
+  assert.deepEqual(fight.attack.waves.map(wave => Math.round(wave.delay * 100) / 100), [0, .82, 1.37]);
+  let total = 0, guard = 0;
+  while (fight.state !== "recovery" && guard++ < 600) total += advanceBoss(fight, target, .02).damage;
+  assert.equal(total, 3 * Math.round(BOSS_ATTACKS.nova.damage * GUARDIAN_WAVES[2].damageScale));
+  const giant = createBossFight(COLOSSUS);
+  giant.phase = 2;
+  giant.hp = COLOSSUS.bars[1].hp;
+  const mid = { x: SKY_COURT.x, y: SKY_COURT.floor, z: SKY_COURT.z + 7 };
+  guard = 0;
+  while (giant.state !== "windup" && guard++ < 400) advanceBoss(giant, mid, .02);
+  assert.equal(giant.attack.kind, "nova");
+  assert.equal(giant.attack.waves.length, 2);
+});
+
+test("bar-3 flare marks burn as fire zones for two seconds at 5 hp/s, on their own channel", () => {
+  const fight = createBossFight();
+  fight.phase = 3;
+  fight.hp = GUARDIAN_WAVES[2].hp;
+  fight.attacks = 2;
+  const target = { ...player, z: ARENA.z + 6 };
+  let guard = 0;
+  while (fight.state !== "recovery" && guard++ < 600) advanceBoss(fight, target, .02);
+  assert.equal(fight.fireZones.length, 3);
+  for (const zone of fight.fireZones) {
+    assert.equal(zone.radius, BOSS_ATTACKS.flare.reach);
+    assert.ok(zone.until - fight.elapsed > 1.8 && zone.until - fight.elapsed <= 2.05);
+  }
+  const standing = { x: fight.fireZones[0].x, y: ARENA.floor, z: fight.fireZones[0].z };
+  let fire = 0, damage = 0;
+  for (let i = 0; i < 50; i++) {
+    const result = advanceBoss(fight, standing, .02);
+    fire += result.fire ?? 0;
+    damage += result.damage;
+  }
+  assert.equal(fire, 5);
+  assert.equal(damage, 0);
+  const away = { ...player, z: ARENA.z - 10 };
+  guard = 0;
+  while (fight.fireZones.length && guard++ < 300) advanceBoss(fight, away, .02);
+  assert.equal(fight.fireZones.length, 0);
+  // Bar-2 flare leaves nothing behind.
+  const earlier = createBossFight();
+  earlier.phase = 2;
+  earlier.hp = GUARDIAN_WAVES[1].hp;
+  guard = 0;
+  while (earlier.state !== "recovery" && guard++ < 600) advanceBoss(earlier, target, .02);
+  assert.equal(earlier.fireZones.length, 0);
 });

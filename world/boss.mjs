@@ -23,7 +23,7 @@ const [BASALT, TILE, BRONZE, EMBER, ASH, INK, SLATE, SILVER, VIOLET, AURORA] = A
 export const GUARDIAN_WAVES = [
   { name: "起火", hp: 260, armor: 0, windup: 1, pursuit: 1.2, speed: 3.8, recovery: 1.9, damageScale: 1, attacks: ["shock", "sweep"], minions: ["walker"] },
   { name: "烈火", hp: 320, armor: .10, windup: .86, pursuit: 1, speed: 4.4, recovery: 1.8, damageScale: 1, attacks: ["flare", "sweep"], minions: ["runner", "walker"] },
-  { name: "过载", hp: 400, armor: .20, windup: .72, pursuit: .75, speed: 5.2, recovery: 1.45, damageScale: 1.15, attacks: ["ram", "nova"], minions: ["runner", "breaker"] }
+  { name: "过载", hp: 400, armor: .20, windup: .72, pursuit: .75, speed: 5.2, recovery: 1.45, damageScale: 1.15, attacks: ["ram", "nova", "flare"], minions: ["runner", "breaker"] }
 ];
 export const BOSS = Object.freeze({ id: "boss", name: "熔炉守卫", arena: ARENA, maxHp: GUARDIAN_WAVES[0].hp, radius: .86, height: 3.45 });
 export const COLOSSUS = Object.freeze({ id: "colossus", name: "断星巨像", arena: SKY_COURT, maxHp: 700, radius: 1.95, height: 8.3,
@@ -159,7 +159,8 @@ export function createBossFight(profile = BOSS) {
   const { x, floor, z } = profile.arena;
   return { profile, x, y: floor, z, angle: 0, hp: profile.maxHp, hurt: 0, elapsed: 0, lowered: 0,
     healReady: 0, dragonsReady: 0, dragons: [], dragonHits: 0, pushX: 0, pushZ: 0, stride: 0, gait: 0,
-    state: "ready", time: 1.2, phase: 1, phaseGlow: 0, phaseShift: 0, collapse: 0, attacks: 0, attack: null, hits: 0, orbit: -1, travel: null };
+    state: "ready", time: 1.2, phase: 1, phaseGlow: 0, phaseShift: 0, collapse: 0, attacks: 0, attack: null, hits: 0, orbit: -1, travel: null,
+    fireZones: [], fireDebt: 0 };
 }
 
 export function guardianBackOpen(fight, attacker) {
@@ -185,6 +186,7 @@ export function strikeBoss(fight, damage, exposedCore = false, attacker = null) 
     fight.phase++;
     const next = bossBar(fight);
     Object.assign(fight, { hp: next.maxHp, state: "ready", attack: null, attacks: 0, time: 2, phaseShift: 2, travel: null });
+    if (fight.fireZones) fight.fireZones.length = 0;
   } else if (!fight.hp) fight.state = "defeated";
   return landed;
 }
@@ -214,6 +216,13 @@ function chooseColossusAttack(fight, player, phase, fallback) {
   return fallback;
 }
 
+function ramLength(fight, angle, player) {
+  const dx = Math.sin(angle), dz = Math.cos(angle);
+  const ox = fight.x - ARENA.x, oz = fight.z - ARENA.z, along = ox * dx + oz * dz;
+  const wall = -along + Math.sqrt(Math.max(0, along * along + (ARENA.radius - 2) ** 2 - ox * ox - oz * oz));
+  return Math.min(BOSS_ATTACKS.ram.reach, wall, Math.hypot(player.x - fight.x, player.z - fight.z) + 3);
+}
+
 function windUp(fight, player) {
   const guardian = fight.profile === BOSS ? GUARDIAN_WAVES[fight.phase - 1] : null;
   const phase = fight.phase;
@@ -233,21 +242,55 @@ function windUp(fight, player) {
   fight.attack = { kind, x: targeted ? player.x : fight.x, z: targeted ? player.z : fight.z,
     angle: fight.angle, radius: 1.35, width, windup: fight.time, hit: false };
   if (guardian && kind === "flare") {
-    // Mark the current position and lead a running player by half a second.
-    const vx = (player.vx || 0) * .55, vz = (player.vz || 0) * .55;
-    fight.attack.marks = [{ x: player.x, z: player.z }];
-    if (Math.hypot(vx, vz) > 1) fight.attack.marks.push({ x: player.x + vx, z: player.z + vz });
+    if (fight.phase >= 2) {
+      // Three marks in a triangle (batch 61): the player's spot
+      // plus two predicted escape points ±40° off the escape
+      // direction — the velocity direction, or straight away from
+      // the guardian when standing still — far enough out that
+      // the three circles overlap into one covered patch.
+      const vx = player.vx || 0, vz = player.vz || 0;
+      const speed = Math.hypot(vx, vz);
+      let dx, dz;
+      if (speed > 1) { dx = vx / speed; dz = vz / speed; }
+      else {
+        const away = Math.hypot(player.x - fight.x, player.z - fight.z) || 1;
+        dx = (player.x - fight.x) / away; dz = (player.z - fight.z) / away;
+      }
+      const cos = Math.cos(.7), sin = Math.sin(.7);
+      fight.attack.marks = [{ x: player.x, z: player.z },
+        { x: player.x + (dx * cos - dz * sin) * 3.3, z: player.z + (dz * cos + dx * sin) * 3.3 },
+        { x: player.x + (dx * cos + dz * sin) * 3.3, z: player.z + (dz * cos - dx * sin) * 3.3 }];
+    } else {
+      // Mark the current position and lead a running player by half a second.
+      const vx = (player.vx || 0) * .55, vz = (player.vz || 0) * .55;
+      fight.attack.marks = [{ x: player.x, z: player.z }];
+      if (Math.hypot(vx, vz) > 1) fight.attack.marks.push({ x: player.x + vx, z: player.z + vz });
+    }
+  }
+  if (guardian && kind === "sweep" && fight.phase === 2) {
+    // The bar-2 combo (batch 61): a shock ring follows the sweep.
+    // The follow-up is declared on the sweep itself, at windup —
+    // the renderer lights its telegraph from this moment (design
+    // §3, rule 5: a combo's later stages are previewed, never
+    // sprung), and the state machine fires it 0.35s after the
+    // sweep ends.
+    fight.attack.next = { kind: "shock", damage: 18 };
+    fight.attack.comboStart = fight.elapsed;
+    fight.attack.comboTotal = fight.time + attack.duration + .35;
   }
   if (kind === "ram") {
-    const dx = Math.sin(fight.angle), dz = Math.cos(fight.angle);
-    const ox = fight.x - ARENA.x, oz = fight.z - ARENA.z, along = ox * dx + oz * dz;
-    const wall = -along + Math.sqrt(Math.max(0, along * along + (ARENA.radius - 2) ** 2 - ox * ox - oz * oz));
-    fight.attack.length = Math.min(attack.reach, wall, Math.hypot(player.x - fight.x, player.z - fight.z) + 3);
+    fight.attack.length = ramLength(fight, fight.angle, player);
     fight.attack.travelled = 0;
+    fight.attack.leg = 1;
   }
   if (kind === "nova") {
     fight.attack.elapsed = 0;
-    fight.attack.waves = [0, novaDelay].map(delay => ({ delay, radius: null, previous: novaStart, hit: false }));
+    // The guardian's bar-3 nova carries a third, faster ring
+    // (batch 61: delays 0 / 0.82 / 1.37 — slow, slow, fast); the
+    // colossus keeps its two rings for its own bars.
+    const delays = fight.profile === BOSS && phase === 3 ? [0, novaDelay, novaDelay + .55] : [0, novaDelay];
+    fight.attack.waves = delays.map(delay => ({ delay, radius: null, previous: novaStart, hit: false }));
+    if (delays.length > 2) fight.attack.duration = delays[delays.length - 1] + (attack.duration - novaDelay);
   }
   if (kind === "prism") fight.attack.crystalHp = attack.crystalHp;
   fight.state = "windup";
@@ -472,7 +515,7 @@ function strikePlayer(fight, player, dt) {
       : distance <= attack.reach && forward >= distance * Math.cos(attack.arc) && height < 1.22;
   if (!inRange) return 0;
   action.hit = true;
-  return attack.damage;
+  return action.damageOverride ?? attack.damage;
 }
 
 function stepGuardian(fight, player, dt) {
@@ -543,6 +586,24 @@ export function advanceBoss(fight, player, dt) {
       }
       if (echoPending && secondWave.radius !== null) result.cue = "boss-strike";
     }
+    // Fire zones (batch 61): standing in one drains 5 hp/s on
+    // the environmental channel — whole points accumulate on the
+    // fight and are reported as result.fire, separate from attack
+    // damage: no damage scale, and game.js applies them without
+    // the hurt stagger or invulnerability window.
+    if (fight.fireZones?.length) {
+      fight.fireZones = fight.fireZones.filter(zone => zone.until > fight.elapsed);
+      const inZone = fight.fireZones.some(zone => player.y - fight.y < 2
+        && Math.hypot(player.x - zone.x, player.z - zone.z) <= zone.radius);
+      if (inZone) {
+        fight.fireDebt = (fight.fireDebt ?? 0) + 5 * interval;
+        const due = Math.floor(fight.fireDebt);
+        if (due > 0) {
+          fight.fireDebt -= due;
+          result.fire = (result.fire ?? 0) + due;
+        }
+      }
+    }
     if (fight.state === "reposition") moveColossus(fight, player, interval);
     if (fight.state === "ready" && fight.profile === COLOSSUS) advanceIntro(fight, player, interval);
     remaining -= interval;
@@ -550,13 +611,52 @@ export function advanceBoss(fight, player, dt) {
     if (fight.time > 1e-8) break;
     if (fight.state === "windup") {
       fight.state = "attack";
-      fight.time = BOSS_ATTACKS[fight.attack.kind].duration;
+      fight.time = fight.attack.duration ?? BOSS_ATTACKS[fight.attack.kind].duration;
       result.cue = "boss-strike";
     } else if (fight.state === "attack") {
-      fight.state = "recovery";
-      fight.time = fight.profile === BOSS ? GUARDIAN_WAVES[fight.phase - 1].recovery : fight.profile.bars[fight.phase - 1].recovery;
-      if (fight.attack.kind === "ram") fight.time = fight.attack.hit ? .85 : 3;
-      result.cue = "boss-exposed";
+      // A bar-3 flare leaves its marks burning (batch 61, Kui's
+      // C): two seconds of fire zone per mark, on the
+      // environmental channel below.
+      if (fight.attack.kind === "flare" && fight.profile === BOSS && fight.phase === 3) {
+        for (const mark of fight.attack.marks) {
+          fight.fireZones.push({ x: mark.x, z: mark.z, radius: BOSS_ATTACKS.flare.reach, until: fight.elapsed + 2 });
+        }
+      }
+      if (fight.attack.kind === "ram" && fight.phase === 3 && !fight.attack.hit && fight.attack.leg !== 2) {
+        // The bar-3 ram returns (batch 61): a missed first leg is
+        // answered by a second charge back along the reverse line,
+        // corrected toward the player by at most ±25°. Only a
+        // missed second leg earns the long stagger below.
+        const reverse = fight.attack.angle + Math.PI;
+        const wanted = Math.atan2(player.x - fight.x, player.z - fight.z);
+        let correction = Math.atan2(Math.sin(wanted - reverse), Math.cos(wanted - reverse));
+        correction = Math.max(-.436, Math.min(.436, correction));
+        const angle = reverse + correction;
+        const width = fight.attack.width;
+        fight.angle = angle;
+        fight.attack = { kind: "ram", leg: 2, x: fight.x, z: fight.z, angle, radius: 1.35,
+          width, windup: 0, hit: false, travelled: 0, length: ramLength(fight, angle, player) };
+        fight.time = Math.max(.65, BOSS_ATTACKS.ram.windup * GUARDIAN_WAVES[2].windup);
+        fight.attack.windup = fight.time;
+        fight.state = "windup";
+        result.cue = "boss-charge";
+      } else if (fight.attack.next) {
+        // The combo's second stage (batch 61): the shock was
+        // declared and telegraphed at the sweep's windup; it fires
+        // after a 0.35s gap at its declared damage.
+        const combo = fight.attack;
+        fight.attack = { kind: combo.next.kind, x: fight.x, z: fight.z, angle: fight.angle, radius: 1.35,
+          windup: .35, hit: false, damageOverride: combo.next.damage,
+          comboStart: combo.comboStart, comboTotal: combo.comboTotal };
+        fight.time = .35;
+        fight.state = "windup";
+        result.cue = "boss-charge";
+      } else {
+        fight.state = "recovery";
+        fight.time = fight.profile === BOSS ? GUARDIAN_WAVES[fight.phase - 1].recovery : fight.profile.bars[fight.phase - 1].recovery;
+        if (fight.attack.kind === "ram") fight.time = fight.attack.hit ? .85 : 3;
+        result.cue = "boss-exposed";
+      }
     } else if (fight.state === "recovery" && fight.profile === COLOSSUS) {
       reposition(fight, player);
       result.cue = "boss-move";

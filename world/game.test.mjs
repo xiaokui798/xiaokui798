@@ -385,10 +385,12 @@ test("the boss arena can be won and replayed, paying its reward without touching
   const summonWaves = new Set();
   let jumpPrimed = false;
   const jumpQueue = [];
+  let prevHpBot = 100, fireStep = 0;
+  let ramParity = 0, wasRamWindup = false;
   for (let i = 0; i < 12000 && game.get("death-screen").hidden; i++) {
     frame();
     // Track the guardian's helmet as it circles between attacks.
-    let dx = 0, dz = 0, helmetVertices = 0;
+    let dx = 0, dz = 0, helmetVertices = 0, bossDistNow = 5;
     const vertices = game.actorVertices;
     for (let v = 0; v < vertices.length; v += 12) {
       if (vertices[v + 1] < 7.6) continue;
@@ -396,25 +398,78 @@ test("the boss arena can be won and replayed, paying its reward without touching
       dx += vertices[v] - game.camera[0];
       dz += vertices[v + 2] - game.camera[2];
     }
+    bossDistNow = helmetVertices ? Math.hypot(dx, dz) / helmetVertices : 5;
+    // In bars 2-3, aim at the guardian's minions when they are
+    // the right target: while it only approaches (the dodge
+    // branches all assume the robot faces the boss, so attack
+    // charges keep boss aim), and during its recovery when a
+    // minion stands adjacent — minions camp at the guardian
+    // and their chip damage over a long bar is lethal.
+    // Low-band vertices away from the guardian's own cluster
+    // are a zombie's model.
+    if ((dx || dz) && /烈火|过载/.test(game.get("boss-name").textContent)
+      && (game.get("boss-callout").textContent.includes("守卫靠近中")
+        || game.get("boss-callout").textContent.includes("现在打"))) {
+      const cx = dx / helmetVertices + game.camera[0], cz = dz / helmetVertices + game.camera[2];
+      let zx = 0, zz = 0, zn = 0;
+      for (let v = 0; v < vertices.length; v += 12) {
+        const y = vertices[v + 1];
+        if (y < 5.2 || y > 7.1) continue;
+        if (Math.hypot(vertices[v] - cx, vertices[v + 2] - cz) < 2.2) continue;
+        zx += vertices[v] - game.camera[0];
+        zz += vertices[v + 2] - game.camera[2];
+        zn++;
+      }
+      if (zn > 30) {
+        const minionDist = Math.hypot(zx, zz) / zn;
+        if (game.get("boss-callout").textContent.includes("守卫靠近中")
+          || (minionDist < 3.2 && minionDist <= bossDistNow + 0.5)) {
+          dx = zx; dz = zz; helmetVertices = zn;
+        }
+      }
+    }
     if (dx || dz) {
       const turn = Math.atan2(dx, -dz) - Math.atan2(game.direction[0], -game.direction[2]);
       game.document.emit("mousemove", { movementX: Math.max(-65, Math.min(65, Math.atan2(Math.sin(turn), Math.cos(turn)) / .0013)), movementY: 0 });
       if (Math.hypot(dx, dz) > 1.8 * helmetVertices) game.key("KeyW");
       else game.release("KeyW");
     }
+    const ramWindupNow = game.get("boss-callout").textContent.includes("守卫要冲过来了");
+    if (ramWindupNow && !wasRamWindup) ramParity ^= 1;
+    wasRamWindup = ramWindupNow;
     const exposed = game.get("boss-callout").textContent.includes("现在打");
     const summoned = /第 (\d) \/ 3 管/.exec(game.get("boss-name").textContent);
     if (summoned) summonWaves.add(Number(summoned[1]));
     overcharged ||= game.get("boss-name").textContent.includes("过载");
     const callout = game.get("boss-callout").textContent;
-    if (/冲过来了|火球要砸下来了|熔锤冲锋|炉火坠落|横扫来了|扇形横扫/.test(callout)) {
+    if (/火球要砸下来了|炉火坠落/.test(callout)) {
       game.release("KeyW");
+      game.release("KeyD");
+      game.key("KeyS");
+      game.key("ShiftLeft");
+    } else if (/冲过来了|熔锤冲锋/.test(callout)) {
+      // Back away while strafing: at point-blank the guardian's
+      // own body blocks a pure sideways escape from the strip.
+      game.release("KeyW");
+      game.key("KeyS");
+      game.key(ramParity ? "KeyA" : "KeyD");
+      game.release(ramParity ? "KeyD" : "KeyA");
+      game.key("ShiftLeft");
+    } else if (/横扫来了|扇形横扫/.test(callout)) {
+      game.release("KeyW");
+      game.release("KeyS");
+      game.release("KeyA");
       game.key("KeyD");
       game.key("ShiftLeft");
     } else if (exposed) {
+      game.release("KeyS");
+      game.release("KeyA");
       game.release("KeyD");
-      game.release("ShiftLeft");
+      if (Math.hypot(dx, dz) > 1.8 * helmetVertices) game.key("ShiftLeft");
+      else game.release("ShiftLeft");
     } else {
+      game.release("KeyS");
+      game.release("KeyA");
       game.key("KeyD");
       game.release("ShiftLeft");
     }
@@ -424,19 +479,32 @@ test("the boss arena can be won and replayed, paying its reward without touching
     // attack starts; jump 0.25s before that so the player is
     // rising through the safe height as the band crosses. The
     // nova's second ring follows 0.82s later (+42 frames).
-    const bossDist = helmetVertices ? Math.hypot(dx, dz) / helmetVertices : 5;
-    if ((callout.includes("守卫要砸地了") || callout.includes("两圈冲击波")) && !jumpPrimed) {
+    const bossDist = bossDistNow;
+    if ((callout.includes("守卫要砸地了") || callout.includes("两圈冲击波") || callout.includes("三圈冲击波")) && !jumpPrimed) {
       jumpPrimed = true;
-      const nova = callout.includes("两圈冲击波");
+      const nova = callout.includes("两圈冲击波") || callout.includes("三圈冲击波");
       const bar = game.get("boss-name").textContent.includes("过载") ? 3
         : game.get("boss-name").textContent.includes("烈火") ? 2 : 1;
-      const wind = (nova ? 1.35 : 1.04) * [1, .86, .72][bar - 1];
+      const wind = nova ? 1.35 * [1, .86, .72][bar - 1] : bar === 2 ? .35 : 1.04 * [1, .86, .72][bar - 1];
       const arrive = (bossDist - (nova ? 1.72 : 1.35)) / 10;
-      const first = i + Math.round((wind + arrive - 0.25) / 0.02);
-      jumpQueue.push(first);
-      if (nova) jumpQueue.push(first + 42);
+      // The combo shock (bar 2) is primed at its 0.35s gap, not a
+      // full windup: the helmet-distance estimate runs ~0.2s long
+      // there, so the jump lead grows to keep the takeoff centred
+      // in the ring's safe window.
+      const lead = bar === 2 && !nova ? .45 : .25;
+      const first = i + Math.round((wind + arrive - lead) / 0.02);
+      if (nova && bar === 3) {
+        jumpQueue.push(first - 2, first + 34, first + 72);
+      } else {
+        jumpQueue.push(first);
+        if (nova) jumpQueue.push(first + 42);
+      }
     }
     if (!callout.includes("砸地") && !callout.includes("冲击波") && !callout.includes("· 跳！")) jumpPrimed = false;
+    const hpBot = Number(game.get("health-value").textContent);
+    if (prevHpBot - hpBot === 1 || prevHpBot - hpBot === 2) fireStep = 25;
+    prevHpBot = hpBot;
+    if (fireStep > 0) { fireStep--; game.key("KeyA"); }
     if (jumpQueue.length && i >= jumpQueue[0]) {
       jumpQueue.shift();
       game.key("Space");
@@ -1074,9 +1142,11 @@ test("defeating the guardian records the boss in saved progress", t => {
   game.release("KeyW");
   let jumpPrimed = false;
   const jumpQueue = [];
+  let prevHpBot = 100, fireStep = 0;
+  let ramParity = 0, wasRamWindup = false;
   for (let i = 0; i < 12000 && game.get("death-screen").hidden; i++) {
     frame();
-    let dx = 0, dz = 0, helmetVertices = 0;
+    let dx = 0, dz = 0, helmetVertices = 0, bossDistNow = 5;
     const vertices = game.actorVertices;
     for (let v = 0; v < vertices.length; v += 12) {
       if (vertices[v + 1] < 7.6) continue;
@@ -1084,22 +1154,77 @@ test("defeating the guardian records the boss in saved progress", t => {
       dx += vertices[v] - game.camera[0];
       dz += vertices[v + 2] - game.camera[2];
     }
+    bossDistNow = helmetVertices ? Math.hypot(dx, dz) / helmetVertices : 5;
+    // In bars 2-3, aim at the guardian's minions when they are
+    // the right target: while it only approaches (the dodge
+    // branches all assume the robot faces the boss, so attack
+    // charges keep boss aim), and during its recovery when a
+    // minion stands adjacent — minions camp at the guardian
+    // and their chip damage over a long bar is lethal.
+    // Low-band vertices away from the guardian's own cluster
+    // are a zombie's model.
+    if ((dx || dz) && /烈火|过载/.test(game.get("boss-name").textContent)
+      && (game.get("boss-callout").textContent.includes("守卫靠近中")
+        || game.get("boss-callout").textContent.includes("现在打"))) {
+      const cx = dx / helmetVertices + game.camera[0], cz = dz / helmetVertices + game.camera[2];
+      let zx = 0, zz = 0, zn = 0;
+      for (let v = 0; v < vertices.length; v += 12) {
+        const y = vertices[v + 1];
+        if (y < 5.2 || y > 7.1) continue;
+        if (Math.hypot(vertices[v] - cx, vertices[v + 2] - cz) < 2.2) continue;
+        zx += vertices[v] - game.camera[0];
+        zz += vertices[v + 2] - game.camera[2];
+        zn++;
+      }
+      if (zn > 30) {
+        const minionDist = Math.hypot(zx, zz) / zn;
+        if (game.get("boss-callout").textContent.includes("守卫靠近中")
+          || (minionDist < 3.2 && minionDist <= bossDistNow + 0.5)) {
+          dx = zx; dz = zz; helmetVertices = zn;
+        }
+      }
+    }
     if (dx || dz) {
       const turn = Math.atan2(dx, -dz) - Math.atan2(game.direction[0], -game.direction[2]);
       game.document.emit("mousemove", { movementX: Math.max(-65, Math.min(65, Math.atan2(Math.sin(turn), Math.cos(turn)) / .0013)), movementY: 0 });
       if (Math.hypot(dx, dz) > 1.8 * helmetVertices) game.key("KeyW");
       else game.release("KeyW");
     }
+    const ramWindupNow = game.get("boss-callout").textContent.includes("守卫要冲过来了");
+    if (ramWindupNow && !wasRamWindup) ramParity ^= 1;
+    wasRamWindup = ramWindupNow;
     const exposed = game.get("boss-callout").textContent.includes("现在打");
     const callout = game.get("boss-callout").textContent;
-    if (/冲过来了|火球要砸下来了|熔锤冲锋|炉火坠落|横扫来了|扇形横扫/.test(callout)) {
+    if (/火球要砸下来了|炉火坠落/.test(callout)) {
       game.release("KeyW");
+      game.release("KeyD");
+      game.key("KeyS");
+      game.key("ShiftLeft");
+    } else if (/冲过来了|熔锤冲锋/.test(callout)) {
+      // Back away while strafing: at point-blank the guardian's
+      // own body blocks a pure sideways escape from the strip.
+      game.release("KeyW");
+      game.key("KeyS");
+      game.key(ramParity ? "KeyA" : "KeyD");
+      game.release(ramParity ? "KeyD" : "KeyA");
+      game.key("ShiftLeft");
+    } else if (/横扫来了|扇形横扫/.test(callout)) {
+      game.release("KeyW");
+      game.release("KeyS");
+      game.release("KeyA");
       game.key("KeyD");
       game.key("ShiftLeft");
     } else if (exposed) {
-      game.release("KeyD");
-      game.release("ShiftLeft");
+      game.release("KeyS");
+      game.release("KeyA");
+      // Orbit while swinging: in this fight the minions camp
+      // on the guardian and a standing robot eats every swing.
+      game.key("KeyD");
+      if (Math.hypot(dx, dz) > 1.8 * helmetVertices) game.key("ShiftLeft");
+      else game.release("ShiftLeft");
     } else {
+      game.release("KeyS");
+      game.release("KeyA");
       game.key("KeyD");
       game.release("ShiftLeft");
     }
@@ -1109,19 +1234,32 @@ test("defeating the guardian records the boss in saved progress", t => {
     // attack starts; jump 0.25s before that so the player is
     // rising through the safe height as the band crosses. The
     // nova's second ring follows 0.82s later (+42 frames).
-    const bossDist = helmetVertices ? Math.hypot(dx, dz) / helmetVertices : 5;
-    if ((callout.includes("守卫要砸地了") || callout.includes("两圈冲击波")) && !jumpPrimed) {
+    const bossDist = bossDistNow;
+    if ((callout.includes("守卫要砸地了") || callout.includes("两圈冲击波") || callout.includes("三圈冲击波")) && !jumpPrimed) {
       jumpPrimed = true;
-      const nova = callout.includes("两圈冲击波");
+      const nova = callout.includes("两圈冲击波") || callout.includes("三圈冲击波");
       const bar = game.get("boss-name").textContent.includes("过载") ? 3
         : game.get("boss-name").textContent.includes("烈火") ? 2 : 1;
-      const wind = (nova ? 1.35 : 1.04) * [1, .86, .72][bar - 1];
+      const wind = nova ? 1.35 * [1, .86, .72][bar - 1] : bar === 2 ? .35 : 1.04 * [1, .86, .72][bar - 1];
       const arrive = (bossDist - (nova ? 1.72 : 1.35)) / 10;
-      const first = i + Math.round((wind + arrive - 0.25) / 0.02);
-      jumpQueue.push(first);
-      if (nova) jumpQueue.push(first + 42);
+      // The combo shock (bar 2) is primed at its 0.35s gap, not a
+      // full windup: the helmet-distance estimate runs ~0.2s long
+      // there, so the jump lead grows to keep the takeoff centred
+      // in the ring's safe window.
+      const lead = bar === 2 && !nova ? .45 : .25;
+      const first = i + Math.round((wind + arrive - lead) / 0.02);
+      if (nova && bar === 3) {
+        jumpQueue.push(first - 2, first + 34, first + 72);
+      } else {
+        jumpQueue.push(first);
+        if (nova) jumpQueue.push(first + 42);
+      }
     }
     if (!callout.includes("砸地") && !callout.includes("冲击波") && !callout.includes("· 跳！")) jumpPrimed = false;
+    const hpBot = Number(game.get("health-value").textContent);
+    if (prevHpBot - hpBot === 1 || prevHpBot - hpBot === 2) fireStep = 25;
+    prevHpBot = hpBot;
+    if (fireStep > 0) { fireStep--; game.key("KeyA"); }
     if (jumpQueue.length && i >= jumpQueue[0]) {
       jumpQueue.shift();
       game.key("Space");
@@ -3543,10 +3681,12 @@ test("boss health bar: segments per bar, the current one drains, broken ones go 
   game.release("KeyW");
   let jumpPrimed = false;
   const jumpQueue = [];
+  let prevHpBot = 100, fireStep = 0;
+  let ramParity = 0, wasRamWindup = false;
   let fracChecked = false, advanced = false;
   for (let i = 0; i < 6000 && game.get("death-screen").hidden && !advanced; i++) {
     frame();
-    let dx = 0, dz = 0, helmetVertices = 0;
+    let dx = 0, dz = 0, helmetVertices = 0, bossDistNow = 5;
     const vertices = game.actorVertices;
     for (let v = 0; v < vertices.length; v += 12) {
       if (vertices[v + 1] < 7.6) continue;
@@ -3554,38 +3694,104 @@ test("boss health bar: segments per bar, the current one drains, broken ones go 
       dx += vertices[v] - game.camera[0];
       dz += vertices[v + 2] - game.camera[2];
     }
+    bossDistNow = helmetVertices ? Math.hypot(dx, dz) / helmetVertices : 5;
+    // In bars 2-3, aim at the guardian's minions when they are
+    // the right target: while it only approaches (the dodge
+    // branches all assume the robot faces the boss, so attack
+    // charges keep boss aim), and during its recovery when a
+    // minion stands adjacent — minions camp at the guardian
+    // and their chip damage over a long bar is lethal.
+    // Low-band vertices away from the guardian's own cluster
+    // are a zombie's model.
+    if ((dx || dz) && /烈火|过载/.test(game.get("boss-name").textContent)
+      && (game.get("boss-callout").textContent.includes("守卫靠近中")
+        || game.get("boss-callout").textContent.includes("现在打"))) {
+      const cx = dx / helmetVertices + game.camera[0], cz = dz / helmetVertices + game.camera[2];
+      let zx = 0, zz = 0, zn = 0;
+      for (let v = 0; v < vertices.length; v += 12) {
+        const y = vertices[v + 1];
+        if (y < 5.2 || y > 7.1) continue;
+        if (Math.hypot(vertices[v] - cx, vertices[v + 2] - cz) < 2.2) continue;
+        zx += vertices[v] - game.camera[0];
+        zz += vertices[v + 2] - game.camera[2];
+        zn++;
+      }
+      if (zn > 30) {
+        const minionDist = Math.hypot(zx, zz) / zn;
+        if (game.get("boss-callout").textContent.includes("守卫靠近中")
+          || (minionDist < 3.2 && minionDist <= bossDistNow + 0.5)) {
+          dx = zx; dz = zz; helmetVertices = zn;
+        }
+      }
+    }
     if (dx || dz) {
       const turn = Math.atan2(dx, -dz) - Math.atan2(game.direction[0], -game.direction[2]);
       game.document.emit("mousemove", { movementX: Math.max(-65, Math.min(65, Math.atan2(Math.sin(turn), Math.cos(turn)) / .0013)), movementY: 0 });
       if (Math.hypot(dx, dz) > 1.8 * helmetVertices) game.key("KeyW");
       else game.release("KeyW");
     }
+    const ramWindupNow = game.get("boss-callout").textContent.includes("守卫要冲过来了");
+    if (ramWindupNow && !wasRamWindup) ramParity ^= 1;
+    wasRamWindup = ramWindupNow;
     const exposed = game.get("boss-callout").textContent.includes("现在打");
     const callout = game.get("boss-callout").textContent;
-    if (/冲过来了|火球要砸下来了|熔锤冲锋|炉火坠落|横扫来了|扇形横扫/.test(callout)) {
+    if (/火球要砸下来了|炉火坠落/.test(callout)) {
       game.release("KeyW");
+      game.release("KeyD");
+      game.key("KeyS");
+      game.key("ShiftLeft");
+    } else if (/冲过来了|熔锤冲锋/.test(callout)) {
+      // Back away while strafing: at point-blank the guardian's
+      // own body blocks a pure sideways escape from the strip.
+      game.release("KeyW");
+      game.key("KeyS");
+      game.key(ramParity ? "KeyA" : "KeyD");
+      game.release(ramParity ? "KeyD" : "KeyA");
+      game.key("ShiftLeft");
+    } else if (/横扫来了|扇形横扫/.test(callout)) {
+      game.release("KeyW");
+      game.release("KeyS");
+      game.release("KeyA");
       game.key("KeyD");
       game.key("ShiftLeft");
     } else if (exposed) {
+      game.release("KeyS");
+      game.release("KeyA");
       game.release("KeyD");
-      game.release("ShiftLeft");
+      if (Math.hypot(dx, dz) > 1.8 * helmetVertices) game.key("ShiftLeft");
+      else game.release("ShiftLeft");
     } else {
+      game.release("KeyS");
+      game.release("KeyA");
       game.key("KeyD");
       game.release("ShiftLeft");
     }
-    const bossDist = helmetVertices ? Math.hypot(dx, dz) / helmetVertices : 5;
-    if ((callout.includes("守卫要砸地了") || callout.includes("两圈冲击波")) && !jumpPrimed) {
+    const bossDist = bossDistNow;
+    if ((callout.includes("守卫要砸地了") || callout.includes("两圈冲击波") || callout.includes("三圈冲击波")) && !jumpPrimed) {
       jumpPrimed = true;
-      const nova = callout.includes("两圈冲击波");
+      const nova = callout.includes("两圈冲击波") || callout.includes("三圈冲击波");
       const bar = game.get("boss-name").textContent.includes("过载") ? 3
         : game.get("boss-name").textContent.includes("烈火") ? 2 : 1;
-      const wind = (nova ? 1.35 : 1.04) * [1, .86, .72][bar - 1];
+      const wind = nova ? 1.35 * [1, .86, .72][bar - 1] : bar === 2 ? .35 : 1.04 * [1, .86, .72][bar - 1];
       const arrive = (bossDist - (nova ? 1.72 : 1.35)) / 10;
-      const first = i + Math.round((wind + arrive - 0.25) / 0.02);
-      jumpQueue.push(first);
-      if (nova) jumpQueue.push(first + 42);
+      // The combo shock (bar 2) is primed at its 0.35s gap, not a
+      // full windup: the helmet-distance estimate runs ~0.2s long
+      // there, so the jump lead grows to keep the takeoff centred
+      // in the ring's safe window.
+      const lead = bar === 2 && !nova ? .45 : .25;
+      const first = i + Math.round((wind + arrive - lead) / 0.02);
+      if (nova && bar === 3) {
+        jumpQueue.push(first - 2, first + 34, first + 72);
+      } else {
+        jumpQueue.push(first);
+        if (nova) jumpQueue.push(first + 42);
+      }
     }
     if (!callout.includes("砸地") && !callout.includes("冲击波") && !callout.includes("· 跳！")) jumpPrimed = false;
+    const hpBot = Number(game.get("health-value").textContent);
+    if (prevHpBot - hpBot === 1 || prevHpBot - hpBot === 2) fireStep = 25;
+    prevHpBot = hpBot;
+    if (fireStep > 0) { fireStep--; game.key("KeyA"); }
     if (jumpQueue.length && i >= jumpQueue[0]) {
       jumpQueue.shift();
       game.key("Space");

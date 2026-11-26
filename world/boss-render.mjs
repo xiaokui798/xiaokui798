@@ -525,6 +525,8 @@ export function createBossRender({ gl, createActorMesh, uploadActorMesh, appendM
         // The rim always draws the final shape from the first frame;
         // the fill growing to meet it is the clock.
         const progress = striking ? 1 : 1 - boss.time / action.windup;
+        const comboProgress = action.comboTotal
+          ? Math.min(1, Math.max(0, (boss.elapsed - action.comboStart) / action.comboTotal)) : null;
         const baseEdge = cold ? [1, .45, .64] : [.99, .29, .12];
         const fill = cold ? [.55, .26, .50] : [.62, .22, .13];
         const heat = striking ? (cold ? [.75, .28, .57] : [.93, .33, .10]) : fill;
@@ -618,6 +620,19 @@ export function createBossRender({ gl, createActorMesh, uploadActorMesh, appendM
           }
         } else if (action.kind === "ram") {
           telegraphStrip(action, -plan.width, plan.width, action.length, heat, edge);
+          if (boss.phase === 3 && action.leg !== 2) {
+            // The return line (batch 61): dashed and dim from the
+            // moment the first leg launches, running back from
+            // its stop point; when the second leg winds up, its
+            // own solid strip above replaces the preview.
+            const back = { x: action.x + Math.sin(action.angle) * action.length,
+              z: action.z + Math.cos(action.angle) * action.length, angle: action.angle + Math.PI };
+            const dim = edge.map(v => v * .45);
+            for (let d = .3; d + .55 <= action.length; d += 1.1) {
+              const dash = { ...back, x: back.x + Math.sin(back.angle) * d, z: back.z + Math.cos(back.angle) * d };
+              groundStrip(dash, -plan.width, plan.width, .55, y + .005, dim);
+            }
+          }
         } else if (action.marks) {
           for (const mark of action.marks) {
             const circle = { ...mark, angle: 0 };
@@ -631,7 +646,7 @@ export function createBossRender({ gl, createActorMesh, uploadActorMesh, appendM
         } else if (action.kind === "shock") {
           if (!striking) {
             groundArc(action, 0, 2.20 + underlay, full, y - .012, under);
-            groundArc(action, 0, 2.20 * progress, full, y, heat);
+            groundArc(action, 0, 2.20 * (comboProgress ?? progress), full, y, heat);
             groundArc(action, 2.05, 2.20, full, y + .017, edge);
           } else {
             const radius = action.radius;
@@ -658,6 +673,15 @@ export function createBossRender({ gl, createActorMesh, uploadActorMesh, appendM
             if (striking) {
               const sweepCenter = action.angle - plan.arc + 2 * plan.arc * (1 - boss.time / plan.duration);
               groundArc({ ...action, angle: sweepCenter }, plan.reach * .55, plan.reach * .55 + .5, .5, y + .05, [1, 1, 1]);
+            }
+            // The declared follow-up (batch 61): the combo shock's
+            // disc charges at the guardian's feet from the sweep's
+            // first frame, on the combo clock, so the second stage
+            // is lit before the first one lands (design §3 rule 5).
+            if (action.next && comboProgress !== null) {
+              groundArc(action, 0, 2.20 + underlay, full, y - .012, under);
+              groundArc(action, 0, Math.max(.05, 2.20 * comboProgress), full, y, heat);
+              groundArc(action, 2.05, 2.20, full, y + .017, edge);
             }
           } else {
             const circle = { ...action, angle: 0 };

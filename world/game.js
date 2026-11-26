@@ -1989,7 +1989,7 @@ export function initGame(window) {
       }
       const covered = bossHasCover();
       const lastFootfall = Math.floor(boss.stride / Math.PI);
-      const { cue, damage, push } = advanceBoss(boss, { ...player, covered }, dt);
+      const { cue, damage, push, fire } = advanceBoss(boss, { ...player, covered }, dt);
       // Ghost bookkeeping: a fresh drop (re)starts the 0.6s drain
       // from wherever the ghost currently sits; a heal or a new
       // phase (hp jumps up) snaps it straight to the real value.
@@ -2015,6 +2015,14 @@ export function initGame(window) {
         takeDamage(damage);
         if (boss.profile === BOSS) guardianFx.strike = Math.max(guardianFx.strike, .92);
         if (push) { player.vx = push.x; player.vz = push.z; }
+      }
+      if (fire && player.hp) {
+        // Fire zones burn on the environmental channel (batch
+        // 61): no armor reduction, no hurt stagger, no
+        // invulnerability window — a drain, not a hit.
+        player.hp = Math.max(0, player.hp - fire);
+        updateHealth();
+        if (!player.hp) finishBoss(false);
       }
       if (boss.profile !== BOSS || finished) return;
     }
@@ -3066,6 +3074,11 @@ export function initGame(window) {
         : `第 ${bar.index} / ${bar.count} 管 · ${bar.name}`;
       const bossNameText = wave ? `熔炉守卫 · 第 ${boss.phase} / ${GUARDIAN_WAVES.length} 管 · ${wave.name}` : null;
       const attack = boss.attack && BOSS_ATTACKS[boss.attack.kind];
+      // The bar-3 nova is a three-ring move (batch 61); its name
+      // and hint say so wherever the shared table would say two.
+      const tripleNova = boss.profile === BOSS && boss.phase === 3 && boss.attack?.kind === "nova";
+      const attackName = tripleNova ? "三环星震" : attack?.name;
+      const attackHint = tripleNova ? "三圈冲击波！前两圈慢、第三圈快，数着节奏跳三次" : attack?.hint;
       const covered = bossHasCover();
       const danger = !finished && insideHazard(boss, { ...player, covered });
       const phaseShiftHint = boss.profile === BOSS && boss.phaseShift > 0
@@ -3101,11 +3114,11 @@ export function initGame(window) {
         : boss.state === "ready" ? (boss.profile === COLOSSUS ? "巨像正在逼近，准备闪避" : "守卫靠近中，看它抬手就准备躲")
           : boss.state === "reposition" ? (boss.travel.pursuit ? "巨像追过来了，往侧面跑，别直着后退" : "巨像在换位置，下一招马上来")
           : boss.state === "recovery" ? (boss.profile === COLOSSUS ? "巨像下来了！打中间发青光的核心" : "核心张开了！现在打，伤害最高")
-            : boss.attack.kind === "prism" && covered ? `${attack.hint} · 掩体遮住折光，换侧瞄准晶体`
-            : boss.attack.kind === "prism" && boss.state === "windup" ? attack.hint
-            : danger ? `${attack.name} · ${dangerHint}`
-            : boss.state === "attack" && (boss.attack.kind === "shock" || boss.attack.kind === "nova") ? `${attack.name} · 跳！`
-            : attack.hint;
+            : boss.attack.kind === "prism" && covered ? `${attackHint} · 掩体遮住折光，换侧瞄准晶体`
+            : boss.attack.kind === "prism" && boss.state === "windup" ? attackHint
+            : danger ? `${attackName} · ${dangerHint}`
+            : boss.state === "attack" && (boss.attack.kind === "shock" || boss.attack.kind === "nova") ? `${attackName} · 跳！`
+            : attackHint;
       // The big central warning mirrors the callout for as long as
       // the attack is telegraphed or landing — the moment the
       // player most needs it — and clears with the recovery.
