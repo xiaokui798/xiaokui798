@@ -1,12 +1,21 @@
-import { BLOCK, RECIPES, SAVE_KEY, PREVIOUS_SAVE_KEY, LEGACY_KEY, createProgression } from "./progression.mjs";
+import { BLOCK, RECIPES, HEALING_KEYS, BOSS_DROPS, RARE_MATERIALS, SAVE_KEY, PREVIOUS_SAVE_KEY, LEGACY_KEY, createProgression, recordBossKill } from "./progression.mjs";
 import { WORLD, CHUNK_SIZE, FACES as faces, contains, voxelIndex, voxelPosition,
-  seeded, generateTerrain, createChunkGrid, distanceSquared, buildChunkMesh } from "./terrain.mjs";
-import { ENEMIES, DEFENSE_WAVES, BEACON, choosesBeacon, selectWaveSpawns, repairPlan, defenseResult,
+  seeded, generateTerrain, createChunkGrid, distanceSquared, buildChunkMesh,
+  ATLAS_TILES, atlasTileFor, faceUV,
+  crackStage, crackPolylines, faceCorners, createBurst, stepParticles,
+  POP_DURATION, popScale, dayCycle, fogDensityForRange } from "./terrain.mjs";
+import { ENEMIES, DEFENSE_WAVES, DEFENSE_TOTAL_WAVES, BEACON, choosesBeacon, defenseWaveRoster, selectWaveSpawns, repairPlan, defenseResult, defenseCleared,
   actorRay, findMeleeTarget, zombieParts, beaconParts } from "./defense.mjs";
+import { survivalRoster, scaledHp } from "./difficulty.mjs";
+import { WEAPONS, weaponBase } from "./weapons.mjs";
+import { armorReduction } from "./armor.mjs";
+import { miningInterval } from "./tools.mjs";
+import { TECH, TECH_EFFECTS, canUnlockTech, techConditions, techDisplayOrder, techForRecipe, techLockReason } from "./tech.mjs";
+import { durabilityMax, repairCost } from "./durability.mjs";
 import { createMouseLook } from "./controls.mjs";
 import { PHYSICS_STEP, LANDING_SAMPLE_TIME, createSpeedReadout, overlapsPlayerBlock, stepPlayer } from "./movement.mjs";
 import { ARENA_PALETTE, BOSS, GUARDIAN_WAVES, COLOSSUS, BOSS_ATTACKS, buildBossTerrain, createBossFight, advanceBoss, strikeBoss, guardianBackOpen, interruptFurnace, damagePrism,
-  bossParts, posedGuardian, forgeStageParts, posedColossus, insideColossusHazard, modelFaces, modelHit, pulseViewModel, dragonImpact } from "./boss.mjs";
+  bossParts, posedGuardian, forgeStageParts, posedColossus, insideColossusHazard, modelFaces, modelHit, pulseViewModel, meleeViewModel, dragonImpact } from "./boss.mjs";
 
 import { renderForgeCue } from "./forge-audio.mjs";
 
@@ -27,6 +36,7 @@ export function initGame(window) {
   const buildButton = document.querySelector("#build-button");
   const soundButton = document.querySelector("#sound-button");
   const pauseSoundButton = document.querySelector("#pause-sound-button");
+  const speedToggleButton = document.querySelector("#speed-toggle-button");
   const hud = document.querySelector("#hud");
   const pause = document.querySelector("#pause");
   const resumeButton = document.querySelector("#resume-button");
@@ -78,11 +88,274 @@ export function initGame(window) {
   const inventoryDressings = document.querySelector("#inventory-dressings");
   const hudDressings = document.querySelector("#hud-dressings");
   const survivalSupplies = document.querySelector("#survival-supplies");
-  const craftAxeButton = document.querySelector("#craft-axe");
   const craftDressingButton = document.querySelector("#craft-dressing");
   const useDressingButton = document.querySelector("#use-dressing");
-  const axeCost = document.querySelector("#axe-cost");
   const dressingCost = document.querySelector("#dressing-cost");
+
+  // One backpack row per healing recipe. The dressing row already exists
+  // in the markup; the rest are built here from RECIPES, so adding a
+  // healing recipe needs no markup change. Each row reuses recipeCost()
+  // for its cost line and craftItem() / healWithDressing() for its
+  // buttons; the dressing entry reuses the static elements above.
+  const healingList = document.querySelector("#healing-recipes") ?? (() => {
+    const list = document.createElement("div");
+    list.id = "healing-recipes";
+    inventoryDressings.parentElement?.before?.(list);
+    return list;
+  })();
+  healingList.innerHTML = HEALING_KEYS.filter(key => key !== "dressing").map(key => `
+    <div class="recipe">
+      <div><h3>${RECIPES[key].name}</h3><p id="${key}-cost"></p></div>
+      <button id="craft-${key}" type="button">制作${RECIPES[key].name}</button>
+      <button id="use-${key}" class="secondary-button" type="button">使用${RECIPES[key].name}</button>
+    </div>`).join("");
+  const healingControls = HEALING_KEYS.map(key => {
+    const controls = key === "dressing"
+      ? { cost: dressingCost, craft: craftDressingButton, use: useDressingButton }
+      : {
+        cost: document.querySelector(`#${key}-cost`),
+        craft: document.querySelector(`#craft-${key}`),
+        use: document.querySelector(`#use-${key}`)
+      };
+    controls.craft.addEventListener("click", () => craftItem(key));
+    controls.use.addEventListener("click", () => healWithDressing(key));
+    return { key, ...controls };
+  });
+
+  // Backpack tabs (打造-UI设计.md §③⑧): 背包 | 工作台 | 装备 | 科技树.
+  // Built here from RECIPES like the healing rows, so index.html needs
+  // no markup change. The static backpack rows (materials, dressing,
+  // healing, foot) move into the backpack panel; the workbench, equipment
+  // and tech panels are built below. One tab is visible at a time; the
+  // workbench and tech panels widen the panel to 46rem, the others keep
+  // 38rem. The workbench list groups equipment recipes by tier, with the
+  // build row on top and the stone axe — a weapon recipe, not an
+  // equipment recipe — in the stone group; rows keep the R3 ids
+  // (#craft-<key>, #<key>-cost) so existing wiring keeps working.
+  const INVENTORY_TABS = ["backpack", "workbench", "equipment", "tech"];
+  const TAB_TITLES = { backpack: "背包", workbench: "工作台", equipment: "装备", tech: "科技树" };
+  const EQUIPMENT_KEYS = Object.keys(RECIPES).filter(key => RECIPES[key].equipment);
+  const TIER_TITLES = { stone: "石阶", ember: "熔火阶", star: "断星阶" };
+  const TIER_DOT = { stone: "#c5d3bd", ember: "#f0d285", star: "#edf2e7" };
+  const RARE_SOURCE = { emberCore: "熔炉守卫", starShard: "断星巨像" };
+  const inventoryPanel = document.querySelector("#inventory-screen .inventory-panel");
+  // Query-first like the healing rows: in the harness querySelector
+  // creates the element the tests later read, so the tabs' innerHTML
+  // must live on that element, not on a detached createElement node.
+  const inventoryTabs = document.querySelector("#inventory-tabs") ?? (() => {
+    const tabs = document.createElement("div");
+    tabs.id = "inventory-tabs";
+    return tabs;
+  })();
+  inventoryTabs.innerHTML = `
+    <div id="inventory-tab-row" role="tablist">
+      ${INVENTORY_TABS.map(tab => `<button id="tab-btn-${tab}" type="button" role="tab"${tab === "backpack" ? "" : " class=\"secondary-button\""}>${TAB_TITLES[tab]}</button>`).join("")}
+    </div>
+    <div id="tab-backpack" role="tabpanel"></div>
+    <div id="tab-workbench" role="tabpanel" hidden>
+      <dl id="workbench-materials" class="inventory-materials" aria-label="工作台材料数量"></dl>
+      <div class="workbench-columns">
+        <div id="workbench-list"></div>
+        <div id="workbench-detail" class="recipe">
+          <div><h3 id="detail-name"></h3><p id="detail-tier"></p><div id="detail-materials"></div><p id="detail-lock"></p></div>
+          <button id="detail-craft" type="button"></button>
+        </div>
+      </div>
+      <div style="margin-top: .75rem;">
+        <h3 style="margin: 0 0 .25rem;">修理装备</h3>
+        <div id="repair-list"></div>
+        <p id="repair-empty" style="margin: 0;"></p>
+      </div>
+    </div>
+    <div id="tab-equipment" role="tabpanel" hidden>
+      <div class="recipe" id="equip-weapon-card">
+        <div><h3 id="equip-weapon-name"></h3><p id="equip-weapon-info"></p></div>
+        <div><div style="width: 6rem; height: 6px; background: #273526;"><span id="equip-weapon-durability" style="display: block; width: 100%; height: 6px; background: #f0d285;"></span></div><p id="equip-weapon-durability-text"></p></div>
+        <button id="equip-weapon-state" type="button" disabled></button>
+      </div>
+      <div class="recipe" id="equip-armor-card">
+        <div><h3 id="equip-armor-name"></h3><p id="equip-armor-info"></p></div>
+        <div><div style="width: 6rem; height: 6px; background: #273526;"><span id="equip-armor-durability" style="display: block; width: 100%; height: 6px; background: #f0d285;"></span></div><p id="equip-armor-durability-text"></p></div>
+        <button id="equip-armor-state" type="button" disabled></button>
+      </div>
+      <div class="recipe" id="equip-tool-card">
+        <div><h3 id="equip-tool-name"></h3><p id="equip-tool-info"></p></div>
+        <div><div style="width: 6rem; height: 6px; background: #273526;"><span id="equip-tool-durability" style="display: block; width: 100%; height: 6px; background: #f0d285;"></span></div><p id="equip-tool-durability-text"></p></div>
+        <button id="equip-tool-state" type="button" disabled></button>
+      </div>
+    </div>
+    <div id="tab-tech" role="tabpanel" hidden>
+      <p>解锁科技强化生存能力；条件满足后点解锁，立即生效</p>
+      <p id="tech-empty">完成主干解锁更多分支</p>
+      <div id="tech-list" style="border-left: 2px solid rgba(235,244,220,.18); padding-left: .75rem;"></div>
+    </div>`;
+  inventoryMaterials.before?.(inventoryTabs);
+  // The static backpack rows move into the backpack panel, so hiding the
+  // panel hides them all at once. (In the test harness append is a
+  // no-op, so the rows stay queryable by id there either way.)
+  const backpackPanel = document.querySelector("#tab-backpack");
+  const dressingRow = dressingCost.parentElement?.parentElement;
+  const inventoryFoot = inventoryDressings.parentElement;
+  backpackPanel.append(...[inventoryMaterials, dressingRow, healingList, inventoryFoot].filter(Boolean));
+  const workbenchList = document.querySelector("#workbench-list");
+  workbenchList.innerHTML = `
+    <div class="recipe" id="wb-row-workbench">
+      <div><h3>${RECIPES.workbench.name}</h3><p id="workbench-cost"></p></div>
+      <button id="craft-workbench" type="button">建造${RECIPES.workbench.name}</button>
+    </div>
+    ${["stone", "ember", "star"].map(tier => `
+    <div class="workbench-group">
+      <h3><span style="display: inline-block; width: .6rem; height: .6rem; background: ${TIER_DOT[tier]}; margin-right: .4rem;"></span>${TIER_TITLES[tier]}</h3>
+      ${tier === "stone" ? `
+      <div class="recipe" id="wb-row-axe">
+        <div><h3>${RECIPES.axe.name}</h3><p id="axe-cost"></p></div>
+        <button id="craft-axe" type="button">制作${RECIPES.axe.name}</button>
+      </div>` : ""}
+      ${EQUIPMENT_KEYS.filter(key => RECIPES[key].tier === tier).map(key => `
+      <div class="recipe" id="wb-row-${key}">
+        <div><h3>${RECIPES[key].name}</h3><p id="${key}-cost"></p></div>
+        <button id="craft-${key}" type="button">打造${RECIPES[key].name}</button>
+      </div>`).join("")}
+    </div>`).join("")}`;
+  const workbenchCost = document.querySelector("#workbench-cost");
+  const craftWorkbenchButton = document.querySelector("#craft-workbench");
+  const axeCost = document.querySelector("#axe-cost");
+  const craftAxeButton = document.querySelector("#craft-axe");
+  const workbenchMaterials = document.querySelector("#workbench-materials");
+  const detailName = document.querySelector("#detail-name");
+  const detailTier = document.querySelector("#detail-tier");
+  const detailMaterials = document.querySelector("#detail-materials");
+  const detailLock = document.querySelector("#detail-lock");
+  const detailCraft = document.querySelector("#detail-craft");
+  craftWorkbenchButton.addEventListener("click", () => craftItem("workbench"));
+  const equipmentControls = EQUIPMENT_KEYS.map(key => {
+    const controls = { cost: document.querySelector(`#${key}-cost`), craft: document.querySelector(`#craft-${key}`) };
+    controls.craft.addEventListener("click", () => craftItem(key));
+    return { key, ...controls };
+  });
+  // The selected workbench recipe drives the detail card on the right;
+  // clicking a list row selects it, the row's own button crafts it.
+  let selectedRecipe = "workbench";
+  let activeTab = "backpack";
+  function selectRecipe(key) {
+    selectedRecipe = key;
+    updateInventory();
+  }
+  for (const key of ["workbench", "axe", ...EQUIPMENT_KEYS]) {
+    document.querySelector(`#wb-row-${key}`).addEventListener("click", () => selectRecipe(key));
+  }
+  detailCraft.addEventListener("click", () => craftItem(selectedRecipe));
+  function selectInventoryTab(tab) {
+    if (!INVENTORY_TABS.includes(tab)) return;
+    activeTab = tab;
+    for (const name of INVENTORY_TABS) {
+      document.querySelector(`#tab-${name}`).hidden = name !== tab;
+      document.querySelector(`#tab-btn-${name}`).classList.toggle("secondary-button", name !== tab);
+    }
+    inventoryPanel?.classList.toggle("wide", tab === "workbench" || tab === "tech");
+  }
+  for (const tab of INVENTORY_TABS) {
+    document.querySelector(`#tab-btn-${tab}`).addEventListener("click", () => selectInventoryTab(tab));
+  }
+  // The tech tree tab: one card per node, trunk nodes in order with
+  // their branches hanging right after them (the mount is visual
+  // grouping only — the prerequisite is requires.tech). Listeners
+  // attach querySelector-first like the workbench rows, so they work
+  // in the harness too.
+  const techList = document.querySelector("#tech-list");
+  const techEmpty = document.querySelector("#tech-empty");
+  techList.innerHTML = techDisplayOrder().map(id => {
+    const node = TECH[id];
+    return `<div class="recipe tech-node${node.mount ? " tech-branch" : ""}" id="tech-node-${id}"${node.mount ? " style=\"margin-left: 1.5rem;\"" : ""}>
+      <div><h3>${node.name}</h3><p>${node.desc}</p><p id="tech-cond-${id}"></p></div>
+      <button id="tech-unlock-${id}" type="button">解锁</button>
+    </div>`;
+  }).join("");
+  for (const id of Object.keys(TECH)) {
+    document.querySelector(`#tech-unlock-${id}`).addEventListener("click", () => unlockTech(id));
+  }
+  // One repair row per slot, built once and refreshed by
+  // updateRepairList; a broken card's state button jumps to the
+  // workbench tab, where the repair itself lives.
+  document.querySelector("#repair-list").innerHTML = ["weapon", "armor", "tool"].map(slot => `
+    <div class="recipe" id="repair-row-${slot}">
+      <div><h3 id="repair-${slot}-name"></h3><p id="repair-${slot}-cost"></p></div>
+      <button id="repair-${slot}" type="button">修理</button>
+    </div>`).join("");
+  for (const slot of ["weapon", "armor", "tool"]) {
+    document.querySelector(`#repair-${slot}`).addEventListener("click", () => repairEquipment(slot));
+    document.querySelector(`#equip-${slot}-state`).addEventListener("click", () => {
+      const piece = campaign.equipment[slot];
+      if (piece && piece.durability <= 0) selectInventoryTab("workbench");
+    });
+  }
+  // Establish the initial tab state explicitly (the panels' hidden flags
+  // in the markup are the browser default; the harness reads the flags
+  // this call sets, so both agree the backpack tab is open).
+  selectInventoryTab("backpack");
+
+  // Save export/import lives in the pause menu, built here because
+  // index.html is not touched by this change: a second menu-actions row
+  // with an export button, an import button, the hidden file input the
+  // import reads, the hidden anchor the export downloads through, and a
+  // status line for the import result.
+  const saveActions = document.querySelector("#save-actions") ?? (() => {
+    const actions = document.createElement("div");
+    actions.id = "save-actions";
+    actions.className = "menu-actions";
+    resumeButton.parentElement?.after?.(actions);
+    return actions;
+  })();
+  saveActions.innerHTML = `
+    <button id="export-save-button" class="secondary-button" type="button">导出存档</button>
+    <button id="import-save-button" class="secondary-button" type="button">导入存档</button>
+    <input id="import-save-file" type="file" accept="application/json,.json" hidden>
+    <a id="export-save-link" hidden download="block-world-save.json"></a>
+    <p id="save-io-note" class="menu-note" role="status"></p>`;
+  const exportSaveButton = document.querySelector("#export-save-button");
+  const importSaveButton = document.querySelector("#import-save-button");
+  const importSaveFile = document.querySelector("#import-save-file");
+  const exportSaveLink = document.querySelector("#export-save-link");
+  const saveIoNote = document.querySelector("#save-io-note");
+
+  function exportSaveFile() {
+    // Pause already flushed (setMouseMode), so the download matches the
+    // save on disk; flush again so an export right after building does
+    // too. The link carries the save as a data URL, so the download
+    // needs no Blob or object URL.
+    campaign.flush?.();
+    exportSaveLink.href = `data:application/json;charset=utf-8,${encodeURIComponent(campaign.exportSave())}`;
+    exportSaveLink.download = "block-world-save.json";
+    exportSaveLink.click?.();
+    setText(saveIoNote, "存档已导出");
+  }
+  exportSaveButton.addEventListener("click", exportSaveFile);
+
+  importSaveButton.addEventListener("click", () => importSaveFile.click?.());
+  importSaveFile.addEventListener("change", async () => {
+    const file = importSaveFile.files?.[0];
+    if (!file) return;
+    let text;
+    try { text = await file.text(); } catch {
+      setText(saveIoNote, "导入失败：读取文件失败");
+      importSaveFile.value = "";
+      return;
+    }
+    const result = campaign.importSave(text);
+    if (!result.imported) {
+      const reason = { "invalid-json": "文件不是有效的 JSON", "unknown-version": "无法识别的存档版本",
+        "invalid-save": "存档内容损坏", quota: "存储空间不足", conflict: "另一标签页更新了存档", error: "保存失败" }[result.reason];
+      setText(saveIoNote, `导入失败：${reason ?? "未知原因"}`);
+      importSaveFile.value = "";
+      return;
+    }
+    importSaveFile.value = "";
+    // Rebuild the world from the imported save (the next start would
+    // pick it up anyway, but the menu backdrop should not keep showing
+    // the old blocks), then go back to the menu.
+    loadLatestSave(true);
+    returnToMenu();
+  });
   const gl = canvas.getContext("webgl2", { antialias: true });
 
   if (!gl) {
@@ -99,7 +372,6 @@ export function initGame(window) {
   const chunkGrid = createChunkGrid(WORLD);
   const chunkMeshes = new Map();
   let nearbyChunks = [], chunkAnchorX, chunkAnchorZ;
-  const maxZombies = 7;
   const maxRenderPixels = 2300000;
   const firstWaveDelay = 14;
   const spawnView = { yaw: -.52, pitch: -.14 };
@@ -110,16 +382,21 @@ export function initGame(window) {
     [0.43, 0.46, 0.43], [0.48, 0.29, 0.12], [0.22, 0.47, 0.18], ...ARENA_PALETTE
   ];
   const palette = [GRASS, DIRT, STONE, WOOD, LEAF];
-  const pulseWeapon = { name: "星脉枪", style: "pulse", damage: 24, reach: 18, cooldown: .31, capacity: 6, recharge: 1.2 };
-  const pulseBurst = { damage: 62, reach: 24, cooldown: .59, cost: 2, windup: .58 };
+  // Every weapon number lives in weapons.mjs: the hotbar slots hold
+  // registry references, never literals. Slots 6/7 are the sword and
+  // axe; refreshWeapons() swaps in a crafted weapon for its base slot
+  // (a crafted sword replaces the stone sword, a crafted axe the stone
+  // axe), so the slot count and the boss guns never move.
+  const pulseWeapon = WEAPONS.pulseWeapon;
+  const pulseBurst = WEAPONS.pulseBurst;
   const weapons = [
-    { name: "石剑", style: "sword", damage: 27, reach: 2.75, cooldown: .38 },
-    { name: "石斧", style: "axe", damage: 44, reach: 2.3, cooldown: .74 },
+    WEAPONS.stoneSword,
+    WEAPONS.stoneAxe,
     pulseWeapon,
-    { name: "蜂鸣速射枪", style: "rapid", damage: 14, reach: 15, cooldown: .13 },
-    { name: "裂晶重炮", style: "cannon", damage: 52, reach: 24, cooldown: .78, cost: 2 }
+    WEAPONS.rapid,
+    WEAPONS.cannon
   ];
-  const punch = { damage: 14, reach: 2.05, cooldown: .46 };
+  const punch = WEAPONS.punch;
   const interactionReach = 7;
   const slotCount = palette.length + weapons.length;
   const isGun = weapon => weapon && ["pulse", "rapid", "cannon"].includes(weapon.style);
@@ -130,6 +407,11 @@ export function initGame(window) {
     { name: "降雨", sky: [.30, .39, .45], fog: [8, 22], light: .68, rain: 1, seconds: 27 }
   ];
   const weather = { index: 0, elapsed: 0, sky: [...weatherTypes[0].sky], fog: [...weatherTypes[0].fog], light: 1, rain: 0, phase: 0 };
+  // Day clock, seconds into the 240s cycle.  The game starts mid-morning
+  // (30s in) so the first impression is the familiar bright day; dusk
+  // arrives about a minute and a half later.  Boss arenas ignore it — they
+  // keep their own fixed sky and light.
+  let dayTime = 30;
   const homeWorld = generateTerrain(WORLD, BLOCK);
   const arenaWorlds = new Map();
   let world = homeWorld, boss = null;
@@ -144,12 +426,28 @@ export function initGame(window) {
   const keys = new Set();
   let selected = 0;
   const pulse = { rounds: pulseWeapon.capacity, recharge: 0, charge: null, chargeStarted: 0, shot: null };
-  let actorMesh, viewModelMesh, flameMesh, guardianFlameMesh, forgeAtmosphereMesh, forgeFloorMesh, forgeStageMesh;
+  let actorMesh, viewModelMesh, flameMesh, guardianFlameMesh, forgeAtmosphereMesh, forgeFloorMesh, forgeStageMesh, skyMesh, rainMesh;
   let started = false, lastTime = null;
   let finished = false;
   let mouseMode = "paused";
   let lockAttempt = null;
   let saveConflict = false;
+  // Progress v1 record (S4): the last progress this tab loaded or merged.
+  // Loaded at startWorld, merged at finishRun, and shown in the wave
+  // status between waves. Null until the first startWorld.
+  let savedProgress = null;
+  // The boss this run defeated, if any; merged into savedProgress at
+  // finishRun. Cleared at every startWorld.
+  let runBossDefeated = null;
+  // The merged record for the run that just finished. Cached so a stale
+  // choice at the death screen can force-save the same merge instead of
+  // merging the run's kills twice. Cleared at every startWorld.
+  let mergedProgress = null;
+  // { title, summary, action } while the death screen is asking whether
+  // to keep this run's progress or adopt the other tab's. The two death
+  // screen buttons answer it (respawn = keep, menu = adopt); both are
+  // intercepted while this is set.
+  let pendingProgressChoice = null;
   let inventoryFromPlay = false;
   let graphicsLost = false;
   let drag = null;
@@ -161,6 +459,36 @@ export function initGame(window) {
   let sceneDirty = true;
   const speedReadout = createSpeedReadout();
   let stepDistance = 0;
+  let landDip = 0;
+  let fovBoost = 0;
+  // Floating damage numbers and block-break debris, both in world space.
+  const damageNumbers = [];
+  const debris = [];
+  // 3D particle cubes (death debris, landing dust), also in world space.
+  // They share one array and one mesh; the helpers in terrain.mjs own the
+  // spawn/step maths, this file only decides when a burst happens.
+  const particles3D = [];
+  let particleMesh;
+  let burstCounter = 0;
+  // Placement pops: one entry per freshly placed block, aged out after
+  // 0.12s.  The chunk already holds the block at full size, so the pop is
+  // a scaled overlay box drawn on top of it (see drawPops).
+  const pops = [];
+  let popMesh;
+
+  function floorUnder(x, y, z) {
+    const cx = Math.floor(x), cz = Math.floor(z);
+    for (let yy = Math.min(H - 1, Math.floor(y)); yy >= 0; yy--) {
+      if (get(cx, yy, cz)) return yy + 1;
+    }
+    return 0;
+  }
+
+  function spawnBurst3D(x, y, z, count, options) {
+    particles3D.push(...createBurst(x, y, z, count, { ...options, seed: ++burstCounter * 7919 }));
+    if (particles3D.length > 160) particles3D.splice(0, particles3D.length - 160);
+  }
+  let mouseHeld = false, mouseHeldRepeat = 0;
   let effectsVisible = false;
   // These are presentation-only impulses.  Keeping them out of the fight
   // state means the timing and hit rules stay deterministic while the boss
@@ -169,8 +497,9 @@ export function initGame(window) {
   const blockSprites = new Map();
   const blockActionTime = .18;
   const player = { x: 16.5, y: 10, z: 16.5, vx: 0, vy: 0, vz: 0, grounded: false, hp: 100, hurt: 0,
-    cooldown: 0, recoveryTime: 1, hitConfirm: 0, swing: 0, handAction: 0 };
-  const survival = { enabled: false, wave: 0, kills: 0, countdown: firstWaveDelay, zombies: [], routes: new Int32Array(world.length), recalc: 0, goal: -1, routesDirty: true };
+    cooldown: 0, recoveryTime: 1, hitConfirm: 0, swing: 0, handAction: 0, invulnerable: 0, attackBuffered: false };
+  const survival = { enabled: false, wave: 0, kills: 0, countdown: firstWaveDelay, zombies: [], projectiles: [],
+    routes: new Int32Array(world.length), recalc: 0, goal: -1, routesDirty: true };
   const defense = { beacon: null, routes: null, seconds: 0, elapsed: 0, victory: false };
 
   function createWorldAudio() {
@@ -483,12 +812,14 @@ export function initGame(window) {
     in vec3 aPosition;
     in vec3 aColor;
     in vec4 aFace;
+    in vec2 aUV;
     uniform mat4 uViewProjection;
     uniform vec3 uCamera;
     out vec3 vColor;
     out float vDistance;
     out vec3 vPosition;
     out vec2 flameUV;
+    out vec2 vUV;
     out vec3 metalNormal;
     flat out vec4 vFace;
     void main() {
@@ -497,6 +828,7 @@ export function initGame(window) {
       vPosition = aPosition;
       vFace = aFace;
       flameUV = aFace.xy;
+      vUV = aUV;
       metalNormal = aFace.xyz;
       gl_Position = uViewProjection * vec4(aPosition, 1.0);
     }`;
@@ -506,16 +838,63 @@ export function initGame(window) {
     in float vDistance;
     in vec3 vPosition;
     in vec2 flameUV;
+    in vec2 vUV;
     in vec3 metalNormal;
     flat in vec4 vFace;
     uniform vec3 uTarget;
     uniform vec3 uSky;
-    uniform vec2 uFog;
+    uniform vec3 uCamera;
+    uniform float uFogDensity;
+    uniform vec3 uSun;
+    uniform float uDay;
     uniform float uLight;
     uniform vec4 uFurnace;
     uniform float uTime;
+    uniform sampler2D uAtlas;
+    uniform float uUseAtlas;
     out vec4 outColor;
+    float hash21(vec2 p) {
+      p = fract(p * vec2(123.34, 456.21));
+      p += dot(p, p + 45.32);
+      return fract(p.x * p.y);
+    }
+    float vnoise(vec2 p) {
+      vec2 i = floor(p), f = fract(p);
+      f = f * f * (3.0 - 2.0 * f);
+      float a = hash21(i), b = hash21(i + vec2(1.0, 0.0));
+      float c = hash21(i + vec2(0.0, 1.0)), d = hash21(i + vec2(1.0, 1.0));
+      return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+    }
     void main() {
+      if (vFace.w == -13.0) {
+        // 3D rain streak: a translucent pale quad, blended over the scene.
+        outColor = vec4(vColor, 0.45);
+        return;
+      }
+      if (vFace.w == -12.0) {
+        // Sky dome: gradient by view direction (warm horizon, cool zenith),
+        // a sun disc with a soft glow, and slow value-noise clouds that
+        // drift with uTime.  The dome is a cube around the camera, so
+        // vPosition - uCamera is the view direction for every sky pixel.
+        vec3 dir = normalize(vPosition - uCamera);
+        float h = clamp(dir.y, -1.0, 1.0);
+        vec3 horizon = mix(uSky, vec3(1.0, 0.80, 0.52), 0.30 * uDay);
+        vec3 zenith = mix(uSky * 0.82, vec3(0.16, 0.40, 0.78), 0.55 * uDay);
+        vec3 skyCol = mix(horizon, zenith, smoothstep(0.0, 0.55, h));
+        skyCol = mix(skyCol, uSky * 0.55, smoothstep(0.0, -0.25, h));
+        vec3 sunDir = uSun;
+        float sunAmt = max(dot(dir, sunDir), 0.0);
+        skyCol += vec3(1.0, 0.85, 0.55) * pow(sunAmt, 350.0) * 1.4;
+        skyCol += vec3(1.0, 0.75, 0.40) * pow(sunAmt, 8.0) * 0.18;
+        if (h > 0.03) {
+          vec2 cuv = dir.xz / (h + 0.18) * 0.55 + vec2(uTime * 0.008, uTime * 0.003);
+          float cl = vnoise(cuv) * 0.6 + vnoise(cuv * 2.13) * 0.28 + vnoise(cuv * 4.31) * 0.12;
+          float cover = smoothstep(0.52, 0.72, cl) * smoothstep(0.03, 0.12, h) * 0.55;
+          skyCol = mix(skyCol, vec3(0.96, 0.97, 1.0) * (0.25 + 0.75 * uDay), cover);
+        }
+        outColor = vec4(skyCol, 1.0);
+        return;
+      }
       if (vFace.w == -8.0 || vFace.w == -9.0) {
         float radius = dot(flameUV, flameUV);
         float glow = max(0.0, 1.0-radius);
@@ -539,6 +918,20 @@ export function initGame(window) {
       vec3 pixel = floor(interior * 16.0);
       float grain = fract(sin(dot(pixel, vec3(37.17, 23.53, 17.91))) * 4271.75);
       vec3 color = vColor;
+      // Terrain faces (w >= 0) get the procedural atlas: the tiles are
+      // detail modulation around white, so they speckle the vertex colour
+      // instead of replacing it.  Grass side faces keep their dirt band,
+      // now driven by the tile's v instead of world height, so the fringe
+      // lines up with the painted tile.  When no atlas could be built
+      // (uUseAtlas == 0) the old flat-colour path below runs unchanged.
+      if (vFace.w >= 0.0 && uUseAtlas > 0.5) {
+        vec3 tex = texture(uAtlas, vUV).rgb;
+        color *= tex * 1.15;
+        if (vFace.w > 0.0) {
+          float dirtBand = smoothstep(0.28, 0.38, vUV.y);
+          color = mix(color, vec3(0.49, 0.30, 0.16) * vFace.w * tex * 1.6, dirtBand);
+        }
+      }
       if (vFace.w == -6.0 || vFace.w == -7.0) {
         vec3 n = normalize(metalNormal);
         if (vFace.w == -7.0) color *= .55 + .44*max(dot(n,vec3(-.38,.79,.48)),0.0);
@@ -556,15 +949,23 @@ export function initGame(window) {
       float furnacePulse = .86 + .14 * sin(uTime * 7.0 + vPosition.x * 1.7 + vPosition.z * 1.2);
       float furnaceGlow = min(.88, uFurnace.w * furnacePulse / (1.0 + furnaceDistance * .19));
       color += vec3(.34, .035, .004) * furnaceGlow;
-      if (vFace.w > 0.0 && fract(vPosition.y) < 0.75 + 0.10 * grain) {
+      if (vFace.w > 0.0 && uUseAtlas < 0.5 && fract(vPosition.y) < 0.75 + 0.10 * grain) {
         color = vec3(0.49, 0.30, 0.16) * vFace.w;
       }
       if (vFace.w >= 0.0) color *= 0.89 + 0.21 * grain;
-      float amount = smoothstep(uFog.x, uFog.y, vDistance);
+      // Squared-distance fog: 1 - exp(-(density * distance)^2).  Fog used
+      // to be a linear smoothstep between two ranges; the squared falloff
+      // keeps nearby blocks crisp and thickens faster far away, the way
+      // real haze does.  Fog fades to uSky, so it takes the sky's colour.
+      float amount = 1.0 - exp(-uFogDensity * uFogDensity * vDistance * vDistance);
       vec3 uv = fract(vPosition);
       vec3 edges = min(uv, 1.0 - uv) + abs(vFace.xyz);
-      if (all(equal(floor(interior), uTarget)) && min(edges.x, min(edges.y, edges.z)) < 0.025) {
-        color *= 0.37;
+      // Target block outline: a bright frame on every visible face of the
+      // aimed block, so the faces together read as one complete box.  The
+      // old version only darkened the same pixels, which was easy to miss
+      // against dark stone.
+      if (all(equal(floor(interior), uTarget)) && min(edges.x, min(edges.y, edges.z)) < 0.045) {
+        color = mix(color, vec3(1.0, 0.85, 0.35), 0.85);
       }
       outColor = vec4(mix(color * uLight, uSky, amount), 1.0);
     }`;
@@ -575,8 +976,94 @@ export function initGame(window) {
     if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw Error(gl.getShaderInfoLog(s));
     return s;
   }
-  let program, positionLocation, colorLocation, faceLocation, viewProjectionLocation, cameraLocation,
-    targetLocation, skyLocation, fogLocation, lightLocation, furnaceLocation, timeLocation;
+  let program, positionLocation, colorLocation, faceLocation, uvLocation, viewProjectionLocation, cameraLocation,
+    targetLocation, skyLocation, fogDensityLocation, sunLocation, dayLocation, lightLocation, furnaceLocation, timeLocation, atlasLocation, useAtlasLocation;
+  let atlasTexture = null, atlasDetailed = false;
+
+  // Procedural 16x16-per-tile atlas, nine tiles in a row: grass top, grass
+  // side, dirt, stone, wood, leaf, mossy stone, cracked stone, flower.
+  // Every tile is detail modulation around white (see terrain.mjs): the
+  // shader multiplies it onto the vertex colour, so a tile must never carry
+  // the block colour itself.  Any failure — no 2D context, no texture, a
+  // thrown GL call — returns { texture: null, detailed: false } and the
+  // caller falls back to a 1x1 white texture with uUseAtlas off, i.e. the
+  // previous flat rendering.  The noise is deterministic (seeded) so the
+  // atlas is identical every run.
+  function createBlockAtlas() {
+    const paint = (ctx, tile, draw) => {
+      const x0 = tile * 16;
+      for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+        const [r, g, b] = draw(x, y);
+        ctx.fillStyle = `rgb(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)})`;
+        ctx.fillRect(x0 + x, y, 1, 1);
+      }
+    };
+    const speckle = (x, y, salt, base, dark) => {
+      const n = seeded(x * 3 + salt, y * 5 + salt * 7);
+      return n > .93 ? dark : base.map(v => v * (.86 + n * .22));
+    };
+    try {
+      const atlas = document.createElement("canvas");
+      atlas.width = 144; atlas.height = 16;
+      const ctx = atlas.getContext("2d");
+      if (!ctx) return { texture: null, detailed: false };
+      paint(ctx, 0, (x, y) => speckle(x, y, 11, [.80, .98, .78], [.52, .74, .52])); // grass top
+      paint(ctx, 1, (x, y) => y < 4 + Math.floor(seeded(x, 3) * 2)
+        ? speckle(x, y, 11, [.80, .98, .78], [.52, .74, .52])
+        : speckle(x, y, 23, [.95, .85, .70], [.68, .58, .46])); // grass side
+      paint(ctx, 2, (x, y) => speckle(x, y, 23, [.95, .85, .70], [.66, .55, .42])); // dirt
+      paint(ctx, 3, (x, y) => { // stone: grey speckle plus dark cracks
+        const crack = seeded(x, y * 3 + 5) > .965 || seeded(x * 2 + 9, y) > .975;
+        return crack ? [.52, .54, .56] : speckle(x, y, 31, [.84, .86, .88], [.60, .62, .64]);
+      });
+      paint(ctx, 4, (x, y) => { // wood: vertical bark stripes
+        const stripe = seeded(x, 77) > .72 ? [.62, .48, .32] : speckle(x, y, 41, [.96, .80, .58], [.70, .55, .38]);
+        return stripe;
+      });
+      paint(ctx, 5, (x, y) => speckle(x, y, 53, [.74, .96, .68], [.42, .64, .38])); // leaf
+      paint(ctx, 6, (x, y) => { // mossy stone: grey stone with green moss patches
+        const moss = seeded(x * 2 + 7, y * 3 + 13) > .78;
+        return moss ? [.58, .82, .55] : speckle(x, y, 31, [.84, .86, .88], [.60, .62, .64]);
+      });
+      paint(ctx, 7, (x, y) => { // cracked stone: grey speckle plus heavier dark cracks
+        const crack = seeded(x * 3 + 5, y + 7) > .93 || seeded(x + 11, y * 2 + 3) > .94;
+        return crack ? [.42, .44, .46] : speckle(x, y, 31, [.84, .86, .88], [.60, .62, .64]);
+      });
+      paint(ctx, 8, (x, y) => { // flower: pale leaf with bright petal dots
+        const n = seeded(x * 5 + 3, y * 7 + 1);
+        if (n > .9) return [.99, .93, .72]; // pale yellow blossom
+        if (n > .82) return [.98, .98, .95]; // white blossom
+        return speckle(x, y, 53, [.82, .97, .76], [.55, .72, .48]);
+      });
+      const texture = gl.createTexture();
+      if (!texture) return { texture: null, detailed: false };
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, atlas);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      return { texture, detailed: true };
+    } catch {
+      return { texture: null, detailed: false };
+    }
+  }
+
+  function createWhiteTexture() {
+    try {
+      const texture = gl.createTexture();
+      if (!texture) return null;
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      return texture;
+    } catch {
+      return null;
+    }
+  }
 
   function initRenderer() {
     program = gl.createProgram();
@@ -590,30 +1077,52 @@ export function initGame(window) {
     positionLocation = gl.getAttribLocation(program, "aPosition");
     colorLocation = gl.getAttribLocation(program, "aColor");
     faceLocation = gl.getAttribLocation(program, "aFace");
+    uvLocation = gl.getAttribLocation(program, "aUV");
     viewProjectionLocation = gl.getUniformLocation(program, "uViewProjection");
     cameraLocation = gl.getUniformLocation(program, "uCamera");
     targetLocation = gl.getUniformLocation(program, "uTarget");
     skyLocation = gl.getUniformLocation(program, "uSky");
-    fogLocation = gl.getUniformLocation(program, "uFog");
+    fogDensityLocation = gl.getUniformLocation(program, "uFogDensity");
+    sunLocation = gl.getUniformLocation(program, "uSun");
+    dayLocation = gl.getUniformLocation(program, "uDay");
     lightLocation = gl.getUniformLocation(program, "uLight");
     furnaceLocation = gl.getUniformLocation(program, "uFurnace");
     timeLocation = gl.getUniformLocation(program, "uTime");
+    atlasLocation = gl.getUniformLocation(program, "uAtlas");
+    useAtlasLocation = gl.getUniformLocation(program, "uUseAtlas");
+    // Rebuilt on context restore too, so a lost context never leaves the
+    // terrain sampling a texture from the old context.
+    const atlas = createBlockAtlas();
+    atlasTexture = atlas.texture ?? createWhiteTexture();
+    atlasDetailed = atlas.detailed;
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
     gl.viewport(0, 0, canvas.width, canvas.height);
     chunkMeshes.clear();
-    actorMesh = viewModelMesh = flameMesh = guardianFlameMesh = forgeAtmosphereMesh = forgeFloorMesh = forgeStageMesh = undefined;
+    actorMesh = viewModelMesh = flameMesh = guardianFlameMesh = forgeAtmosphereMesh = forgeFloorMesh = forgeStageMesh = skyMesh = rainMesh = particleMesh = popMesh = undefined;
     sceneDirty = true;
   }
 
   function index(x, y, z) { return voxelIndex(WORLD, x, y, z); }
   function inside(x, y, z) { return contains(WORLD, x, y, z); }
   function get(x, y, z) { return inside(x, y, z) ? world[index(x, y, z)] : STONE; }
-  function set(x, y, z, type) { if (inside(x, y, z)) world[index(x, y, z)] = type; }
+  function set(x, y, z, type) {
+    if (!inside(x, y, z)) return;
+    const i = index(x, y, z);
+    world[i] = type;
+    // A mined or replaced cell loses its generation variant, so a block
+    // placed where a flower or ruin stone stood renders with its own tile.
+    if (world.variants) world.variants[i] = 0;
+  }
 
   function loadEdits() {
-    for (const [cell, type] of campaign.blockEdits()) homeWorld[cell] = type;
+    // Saved player edits overwrite generated blocks, and their variants
+    // with them: a block placed where a flower stood renders plain.
+    for (const [cell, type] of campaign.blockEdits()) {
+      homeWorld[cell] = type;
+      if (homeWorld.variants) homeWorld.variants[cell] = 0;
+    }
   }
 
   function selectTerrain() {
@@ -661,7 +1170,12 @@ export function initGame(window) {
   }
 
   function uploadChunk(chunk) {
-    const { vertices, indices } = buildChunkMesh(WORLD, chunk, get, blockColors, { grass: GRASS, leaf: LEAF });
+    // The chunk mesh reads the generation variants off the active world, so
+    // ruin stones and flowers get their tiles; arena worlds carry no
+    // variants record and fall back to the plain tile for the block type.
+    const { vertices, indices } = buildChunkMesh(WORLD, chunk, get, blockColors,
+      { grass: GRASS, leaf: LEAF, dirt: DIRT, stone: STONE, wood: WOOD },
+      (x, y, z) => world.variants ? world.variants[voxelIndex(WORLD, x, y, z)] : 0);
     let mesh = chunkMeshes.get(chunk.id);
     if (!mesh) {
       mesh = { chunk, vao: gl.createVertexArray(), vertices: gl.createBuffer(), indices: gl.createBuffer(), count: 0, dirty: true };
@@ -709,6 +1223,146 @@ export function initGame(window) {
     return false;
   }
 
+  // Sky dome: a cube around the camera, drawn first so nearer terrain
+  // overwrites it.  Its faces carry marker -12, so the shader shades them
+  // by view direction (gradient + sun + clouds) instead of as blocks.
+  // Boss arenas keep their flat sky: a sun and drifting clouds would read
+  // wrong inside the furnace and the sky court.
+  // Rain as world-space streaks: thin vertical quads billboarded around
+  // Y, in a field centred on the player, so they stay with the player as
+  // they move and vanish where the terrain occludes them.  Drawn after the
+  // actors with blending on and depth writes off, so a streak never hides
+  // a zombie behind it and never z-fights the ground.
+  // 3D particle cubes: one small box per particle, built into a shared
+  // mesh each frame like the forge floor.  UVs point at the middle of the
+  // stone atlas tile, whose detail is near-grey, so a cube keeps its own
+  // colour instead of picking up a grass tint from tile 0.  Cubes shrink
+  // and dim slightly as they age, then stepParticles removes them at 0.6s.
+  function drawParticles3D() {
+    if (!particles3D.length) return;
+    particleMesh ??= createActorMesh(256);
+    const { vertices } = particleMesh;
+    let used = 0;
+    for (const p of particles3D) {
+      if (used + 288 > vertices.length) break;
+      const fade = 1 - 0.55 * (p.age / p.life);
+      for (const { d, v, light } of faces) {
+        for (const corner of v) {
+          vertices[used++] = p.x + (corner[0] - 0.5) * p.size;
+          vertices[used++] = p.y + (corner[1] - 0.5) * p.size;
+          vertices[used++] = p.z + (corner[2] - 0.5) * p.size;
+          vertices[used++] = p.color[0] * light * fade;
+          vertices[used++] = p.color[1] * light * fade;
+          vertices[used++] = p.color[2] * light * fade;
+          vertices[used++] = d[0];
+          vertices[used++] = d[1];
+          vertices[used++] = d[2];
+          vertices[used++] = 0;
+          vertices[used++] = 7 / 12;
+          vertices[used++] = 0.5;
+        }
+      }
+    }
+    uploadActorMesh(particleMesh, used);
+  }
+
+  // Placement pop: a box at the placed cell, scaled 0.9 -> 1 over 0.12s,
+  // using the same per-face colours, light and atlas UVs as the chunk mesh
+  // so it looks like the block itself growing, not a coloured ghost.  The
+  // chunk already drew this block at full size, so a smaller pop box would
+  // be hidden inside it with the depth test on; the pop is drawn on top
+  // instead (no depth test, no depth writes).  At 0.12s the only cost is
+  // that a pop can show through a wall for a blink, and at scale 1 it
+  // coincides with the real block, so removing it is invisible.
+  function drawPops() {
+    if (!pops.length) return;
+    popMesh ??= createActorMesh(96);
+    const { vertices } = popMesh;
+    let used = 0;
+    for (const pop of pops) {
+      if (used + 288 > vertices.length) break;
+      const scale = popScale(pop.age);
+      const color = blockColors[pop.type];
+      const cx = pop.x + 0.5, cy = pop.y + 0.5, cz = pop.z + 0.5;
+      for (const { d, v, light } of faces) {
+        const tile = atlasTileFor(pop.type, d, { grass: GRASS, leaf: LEAF, dirt: DIRT, stone: STONE, wood: WOOD });
+        const grassSide = pop.type === GRASS && d[1] === 0 ? light : 0;
+        const shade = light * (pop.type === LEAF ? .92 : 1);
+        for (const corner of v) {
+          const [fu, fv] = faceUV(d, corner);
+          vertices[used++] = cx + (corner[0] - 0.5) * scale;
+          vertices[used++] = cy + (corner[1] - 0.5) * scale;
+          vertices[used++] = cz + (corner[2] - 0.5) * scale;
+          vertices[used++] = color[0] * shade;
+          vertices[used++] = color[1] * shade;
+          vertices[used++] = color[2] * shade;
+          vertices[used++] = d[0];
+          vertices[used++] = d[1];
+          vertices[used++] = d[2];
+          vertices[used++] = grassSide;
+          vertices[used++] = (tile + fu) / ATLAS_TILES;
+          vertices[used++] = fv;
+        }
+      }
+    }
+    gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(false);
+    uploadActorMesh(popMesh, used);
+    gl.depthMask(true);
+    gl.enable(gl.DEPTH_TEST);
+  }
+
+  function drawRain3D(rain) {
+    if (rain <= .02) return;
+    rainMesh ??= createActorMesh(200);
+    const { vertices } = rainMesh;
+    const rightX = Math.cos(yaw), rightZ = Math.sin(yaw);
+    const count = Math.floor(rainDrops.length * rain);
+    const fallHeight = 11;
+    let used = 0;
+    for (let i = 0; i < count; i++) {
+      const drop = rainDrops[i];
+      const cycle = (weather.phase * drop.speed + drop.phase) % 1;
+      const top = player.y + 7 - cycle * fallHeight;
+      const x = player.x + drop.x, z = player.z + drop.z;
+      const hw = .02, len = drop.length;
+      for (const [side, y] of [[-1, top], [1, top], [1, top - len], [-1, top - len]]) {
+        vertices.set([x + rightX * hw * side, y, z + rightZ * hw * side,
+          .78, .88, .93, rightX, 0, rightZ, -13, 0, 0], used);
+        used += 12;
+      }
+    }
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.depthMask(false);
+    uploadActorMesh(rainMesh, used);
+    gl.depthMask(true);
+    gl.disable(gl.BLEND);
+  }
+
+  function drawSkyDome(eye, sky) {
+    if (boss) return;
+    skyMesh ??= createActorMesh(6);
+    const { vertices } = skyMesh;
+    const R = 70, [ex, ey, ez] = eye;
+    let used = 0;
+    const quad = (a, b, c, d) => {
+      for (const [x, y, z] of [a, b, c, d]) {
+        vertices.set([ex + x * R, ey + y * R, ez + z * R, ...sky, 0, 0, 0, -12, 0, 0], used);
+        used += 12;
+      }
+    };
+    quad([1, -1, -1], [1, -1, 1], [1, 1, 1], [1, 1, -1]);
+    quad([-1, -1, 1], [-1, -1, -1], [-1, 1, -1], [-1, 1, 1]);
+    quad([-1, 1, -1], [1, 1, -1], [1, 1, 1], [-1, 1, 1]);
+    quad([-1, -1, 1], [1, -1, 1], [1, -1, -1], [-1, -1, -1]);
+    quad([-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]);
+    quad([1, -1, -1], [-1, -1, -1], [-1, 1, -1], [1, 1, -1]);
+    gl.disable(gl.CULL_FACE); // the camera sits inside the cube
+    uploadActorMesh(skyMesh, used);
+    gl.enable(gl.CULL_FACE);
+  }
+
   function drawTerrain() {
     sceneDirty = prepareTerrain(3);
     for (const chunk of nearbyChunks) {
@@ -740,10 +1394,11 @@ export function initGame(window) {
   }
 
   function movePlayer(dt) {
-    if (keys.has("ArrowLeft")) yaw -= 1.9 * dt;
-    if (keys.has("ArrowRight")) yaw += 1.9 * dt;
-    if (keys.has("ArrowUp")) adjustPitch(1.6 * dt);
-    if (keys.has("ArrowDown")) adjustPitch(-1.6 * dt);
+    const lookRate = mouseLook.sensitivity / 40;
+    if (keys.has("ArrowLeft")) yaw -= 1.9 * lookRate * dt;
+    if (keys.has("ArrowRight")) yaw += 1.9 * lookRate * dt;
+    if (keys.has("ArrowUp")) adjustPitch(1.6 * lookRate * dt);
+    if (keys.has("ArrowDown")) adjustPitch(-1.6 * lookRate * dt);
     const sprinting = keys.has("ShiftLeft") || keys.has("ShiftRight");
     const oldX = player.x, oldZ = player.z;
     const wasGrounded = player.grounded;
@@ -763,7 +1418,17 @@ export function initGame(window) {
       jumpBuffer = 0;
     }
     jumpBuffer = Math.max(0, jumpBuffer - dt);
-    if (player.grounded && !wasGrounded && landingSpeed > 2.6) sound.play("land", materialUnderfoot());
+    if (player.grounded && !wasGrounded && landingSpeed > 2.6) {
+      sound.play("land", materialUnderfoot());
+      landDip = Math.min(.09, landingSpeed * .012);
+      // Landing dust: a few small tan cubes kicked out at the feet, more
+      // of them the harder the landing.  They rest on the ground the
+      // player just landed on.
+      const dustCount = Math.max(3, Math.min(10, Math.floor(landingSpeed * 1.2)));
+      spawnBurst3D(player.x, player.y + 0.06, player.z, dustCount,
+        { colors: [[.62, .57, .48], [.55, .50, .42], [.70, .65, .55]],
+          speed: 1.4, up: 1.1, size: 0.06, life: 0.45, gravity: 6, floor: player.y });
+    }
     if (!player.grounded || !wasGrounded) {
       stepDistance = 0;
       return;
@@ -792,11 +1457,15 @@ export function initGame(window) {
     });
     let previous = null;
     let distance = 0;
+    let face = null;
     while (distance <= reach && inside(...cell)) {
-      if (get(...cell)) return { hit: cell, place: previous, distance };
+      if (get(...cell)) return { hit: cell, place: previous, distance, face };
       previous = [...cell];
       const axis = crossing.indexOf(Math.min(...crossing));
       distance = crossing[axis];
+      // The face the ray entered through: opposite the step just taken.
+      face = [0, 0, 0];
+      face[axis] = -step[axis];
       cell[axis] += step[axis];
       crossing[axis] += interval[axis];
     }
@@ -932,8 +1601,16 @@ export function initGame(window) {
     const center = defense.beacon ?? player;
     const nextWave = survival.wave + 1;
     const wave = defense.beacon ? DEFENSE_WAVES[nextWave - 1] : null;
-    const roster = wave?.enemies ?? Array(Math.min(nextWave + 1, maxZombies)).fill("walker");
-    const alternate = Boolean(wave && nextWave >= 4);
+    // Survival difficulty (which kinds join when, +5% HP per wave) lives
+    // in difficulty.mjs; defense rosters come from defenseWaveRoster,
+    // which adds spitters from wave 4 on — one on waves 4-5, two from
+    // wave 6 — and the configured roster in waves.mjs stays verbatim.
+    // Past the configured waves the final wave repeats: the roster comes
+    // from defenseWaveRoster (which repeats the last wave with two
+    // spitters) and the timer repeats the last wave's seconds, so wave 6
+    // does not time out the moment it starts.
+    const roster = defense.beacon ? defenseWaveRoster(nextWave - 1) : survivalRoster(nextWave);
+    const alternate = Boolean(defense.beacon && nextWave >= 4);
     let spawns = selectWaveSpawns(roster, waveCandidates(center, 12), alternate);
     if (!spawns.length) spawns = selectWaveSpawns(roster, waveCandidates(center, 24), alternate);
     if (!spawns.length) {
@@ -941,26 +1618,29 @@ export function initGame(window) {
       showMessage(defense.beacon ? "没有足够的刷怪空间，试着打通信标周围的通路" : "没有足够的刷怪空间，请移到开阔处");
       return;
     }
-    addEnemies(spawns);
+    addEnemies(spawns, nextWave);
     survival.wave = nextWave;
-    survival.countdown = wave ? 17 : 8;
-    defense.seconds = wave?.seconds ?? 0;
+    survival.countdown = defense.beacon ? 17 : 8;
+    defense.seconds = defense.beacon
+      ? (wave?.seconds ?? DEFENSE_WAVES[DEFENSE_WAVES.length - 1].seconds)
+      : 0;
     showMessage(wave ? wave.name : `第 ${nextWave} 波来了`);
   }
 
-  function addEnemies(spawns) {
+  function addEnemies(spawns, wave = 1) {
     for (const { kind, cell, x, z } of spawns) {
       survival.zombies.push({ kind, cell, next: -1, travel: 0, x: x + .5, y: cellPosition(cell)[1], z: z + .5,
-        hp: ENEMIES[kind].hp, angle: 0, cooldown: .65, windup: 0, hurt: 0, walk: 0 });
+        hp: scaledHp(ENEMIES[kind].hp, wave), angle: 0, cooldown: .65, windup: 0, hurt: 0, walk: 0 });
     }
   }
 
   function resetSurvival() {
     Object.assign(survival, { wave: 0, kills: 0, countdown: firstWaveDelay, recalc: 0, goal: -1, routesDirty: true });
     survival.zombies.length = 0;
+    survival.projectiles.length = 0;
     survival.routes.fill(-1);
     Object.assign(pulse, { rounds: pulseWeapon.capacity, recharge: 0, charge: null, shot: null });
-    Object.assign(player, { hp: 100, hurt: 0, cooldown: 0, recoveryTime: 1, hitConfirm: 0, swing: 0, handAction: 0 });
+    Object.assign(player, { hp: 100, hurt: 0, cooldown: 0, recoveryTime: 1, hitConfirm: 0, swing: 0, handAction: 0, invulnerable: 0, attackBuffered: false });
     updateHealth();
   }
 
@@ -969,10 +1649,62 @@ export function initGame(window) {
     healthValue.textContent = String(player.hp);
   }
 
+  // Total damage reduction: the armor registry rate plus the 坚韧 tech
+  // bonus when unlocked. The floor/min-1 shape mirrors reducedDamage
+  // (armor.mjs); the bonus enters here because it adds to the rate,
+  // not to the amount.
+  function damageAfterArmor(amount) {
+    const armor = campaign.equipment.armor;
+    const rate = (armor && armor.durability > 0 ? armorReduction(armor.tier) : 0)
+      + (campaign.techUnlocked.includes("toughness") ? TECH_EFFECTS.toughnessReduction : 0);
+    return Math.max(1, Math.floor(amount * (1 - rate)));
+  }
+
+  // The weapon's low-durability warning, pending until the frame ends:
+  // attack() shows its hit message after the wear, and showMessage
+  // replaces the text, so a warning shown during the hit would be
+  // overwritten before anyone reads it. The frame loop shows it once,
+  // after every hit message, and clears it.
+  let pendingDurabilityWarning = null;
+
+  // Wear one equipped piece by 1 (floor 0). The campaign owns the save;
+  // this wrapper only adds the weapon's low-durability warning — which
+  // fires once when the weapon crosses below 25% — and refreshes the
+  // hotbar, so a weapon that just broke falls back to the fist at once.
+  // A failed write rolls the -1 back in memory, so after still equals
+  // before and no warning fires for a wear that did not stick.
+  function wearEquipped(slot) {
+    const before = campaign.equipment[slot]?.durability;
+    if (before === undefined || before <= 0) return;
+    campaign.wearEquipment(slot);
+    const after = campaign.equipment[slot]?.durability ?? 0;
+    if (slot === "weapon") {
+      updateHotbar();
+      const max = durabilityMax(campaign.equipment.weapon.tier);
+      if (before / max >= .25 && after / max < .25) {
+        pendingDurabilityWarning = `${WEAPONS[campaign.equipment.weapon.key].name}耐久不足（${Math.floor(after / max * 100)}%），按 C 在工作台修理`;
+      }
+    }
+  }
+
+  // A landed hit wears the equipped weapon by 1 — but only the crafted
+  // weapon itself. The default stone sword and the fist have no
+  // durability to wear, and the boss-only guns are not equipment.
+  function wearWeaponOnHit(weapon) {
+    const equipped = campaign.equipment.weapon;
+    if (!equipped || !weapon || weapon !== WEAPONS[equipped.key]) return;
+    wearEquipped("weapon");
+  }
+
   function takeDamage(amount) {
-    if (!player.hp) return;
-    player.hp = Math.max(0, player.hp - amount);
+    if (!player.hp || player.invulnerable > 0) return;
+    // Armor reduces the hit before it lands: amount * (1 - rate),
+    // rounded down, at least 1. The beacon and the boss never go through
+    // here, so their numbers are untouched.
+    player.hp = Math.max(0, player.hp - damageAfterArmor(amount));
+    wearEquipped("armor");
     player.hurt = .42;
+    player.invulnerable = .5;
     sound.play("hurt", DIRT);
     updateHealth();
     if (player.hp > 0) return;
@@ -981,8 +1713,63 @@ export function initGame(window) {
     finishRun("你倒下了", `撑到第 ${survival.wave} 波，击退 ${survival.kills} 只僵尸。建筑和背包会保留。`, "重生");
   }
 
-  function finishRun(title, summary, action) {
-    finished = true;
+  // Merge this run into the progress record: best wave is a max, kills
+  // accumulate, a boss win adds its id, and a defense run updates the
+  // defense record. Cached per run so finishRun and the stale choice
+  // that may follow it merge the run's kills exactly once.
+  function mergeRunProgress() {
+    if (mergedProgress) return mergedProgress;
+    const base = savedProgress ?? campaign.loadProgress();
+    mergedProgress = {
+      version: 2,
+      wave: Math.max(base.wave, survival.wave),
+      kills: base.kills + survival.kills,
+      bossesDefeated: { ...base.bossesDefeated, ...(runBossDefeated ? { [runBossDefeated]: true } : {}) },
+      // Carry the base's kill counts forward: without this spread a run
+      // that kills no boss would wipe the counts on save, and a boss win
+      // would count from zero instead of from the stored total.
+      bossKills: { ...base.bossKills },
+      bestWave: Math.max(base.bestWave ?? base.wave, survival.wave),
+      defense: defense.beacon ? {
+        wave: Math.max(base.defense.wave, survival.wave),
+        cleared: base.defense.cleared || defense.victory,
+        bestWave: Math.max(base.defense.bestWave, survival.wave)
+      } : base.defense
+    };
+    // A boss win counts as a kill, not just a defeat: the kill count for
+    // that boss goes up by one (recordBossKill also marks it defeated).
+    // The merge is cached, so a stale choice that re-merges after the
+    // first merge was discarded counts the same win exactly once.
+    if (runBossDefeated) mergedProgress = recordBossKill(mergedProgress, runBossDefeated);
+    savedProgress = mergedProgress;
+    return mergedProgress;
+  }
+
+  // Write the merged record. A refused (stale) write still leaves the
+  // merged record in savedProgress, so the next run merges from it even
+  // though the disk is behind.
+  function saveRunProgress(force = false) {
+    return campaign.saveProgress(mergeRunProgress(), force ? { force: true } : undefined);
+  }
+
+  function resolveProgressChoice(keepLocal) {
+    const pending = pendingProgressChoice;
+    pendingProgressChoice = null;
+    deathMenuButton.textContent = "返回主菜单";
+    if (keepLocal) {
+      // Explicit player choice: this run's record overwrites the other
+      // tab's newer progress.
+      campaign.saveProgress(mergedProgress, { force: true });
+    } else {
+      // Re-read the other tab's progress and merge this run into it.
+      savedProgress = null;
+      mergedProgress = null;
+      saveRunProgress();
+    }
+    showDeathScreen(pending.title, pending.summary, pending.action);
+  }
+
+  function showDeathScreen(title, summary, action) {
     deathTitle.textContent = title;
     deathSummary.textContent = summary;
     respawnButton.textContent = action;
@@ -991,10 +1778,56 @@ export function initGame(window) {
     respawnButton.focus({ preventScroll: true });
   }
 
+  function finishRun(title, summary, action) {
+    finished = true;
+    const result = saveRunProgress();
+    if (result?.saved === false && result.reason === "stale") {
+      // Another tab saved progress since this run started. Do not drop
+      // the run silently: let the player choose on the death screen.
+      pendingProgressChoice = { title, summary, action };
+      deathTitle.textContent = "进度有更新";
+      deathSummary.textContent = `${summary} 另一标签页已更新了进度：点“保留本局进度”用本局覆盖对方，或点“采用最新进度”重新读取再合并。`;
+      respawnButton.textContent = "保留本局进度";
+      deathMenuButton.textContent = "采用最新进度";
+      deathScreen.hidden = false;
+      suspendGame();
+      respawnButton.focus({ preventScroll: true });
+      return;
+    }
+    showDeathScreen(title, `${summary}${result?.saved === false ? "（进度未保存）" : ""}`, action);
+  }
+
   function finishBoss(won) {
-    if (won) sound.play(boss.profile === BOSS ? "forge-collapse" : "defeat", STONE);
+    if (won) runBossDefeated = boss.profile.id;
+    // The drop line on the end screen, e.g. " · 熔火核心 +2": only when
+    // the win actually paid, so a failed save never advertises a reward
+    // the player does not own.
+    let bossDropText = "";
+    if (won) {
+      // A boss win pays its rare material — 2 for a first kill, 1 for a
+      // repeat. The record used here is the one from before this win
+      // (mergeRunProgress has not run yet), so a first kill reads as
+      // first. The drop goes through change(), so a failed save rolls it
+      // back like any other reward instead of vanishing on reload.
+      const bossId = boss.profile.id;
+      const first = !(savedProgress ?? campaign.loadProgress()).bossesDefeated?.[bossId];
+      const count = first ? 2 : 1;
+      const dropResult = campaign.grantBossLoot(bossId, count);
+      if (dropResult?.saved) bossDropText = ` · 获得：${RARE_MATERIALS[BOSS_DROPS[bossId]]} ×${count}`;
+    }
+    if (won) {
+      sound.play(boss.profile === BOSS ? "forge-collapse" : "defeat", STONE);
+      // Boss death debris: a bigger burst from the core as it goes down —
+      // furnace-hot for the guardian, cold crystal for the colossus.  The
+      // colossus collapse keeps rendering for 0.86s, so its burst plays out
+      // in full; the guardian's is caught in the end-screen frame.
+      const hot = boss.profile === BOSS;
+      spawnBurst3D(boss.x, boss.y + 1.8, boss.z, 18,
+        { colors: hot ? [[1, .32, .06], [.55, .58, .62], [.2, .16, .14]] : [[.75, .85, 1], [.45, .62, .95], [.3, .34, .44]],
+          speed: 3.6, up: 4, size: 0.13, life: 0.6, gravity: 14, floor: boss.profile.arena.floor });
+    }
     finishRun(won ? `${boss.profile.name}已击败` : "挑战失败",
-      `${Math.floor(boss.elapsed)} 秒 · 命中 ${boss.hits} 次 · ${won ? `剩余生命 ${player.hp}` : `${boss.profile.name}剩余 ${boss.hp} 点生命`}`,
+      `${Math.floor(boss.elapsed)} 秒 · 命中 ${boss.hits} 次 · ${won ? `剩余生命 ${player.hp}` : `${boss.profile.name}剩余 ${boss.hp} 点生命`}${bossDropText}`,
       "再挑战");
   }
 
@@ -1006,7 +1839,7 @@ export function initGame(window) {
       "player-down": "守卫倒下了",
       "timeout": "防守超时"
     }[result];
-    const progress = result === "cleared" ? `撑过全部 ${DEFENSE_WAVES.length} 波` : `进行到第 ${survival.wave || 1} 波`;
+    const progress = result === "cleared" ? `撑过全部 ${DEFENSE_TOTAL_WAVES} 波` : `进行到第 ${survival.wave || 1} 波`;
     defense.victory = result === "cleared";
     finishRun(title, `${progress}，击退 ${survival.kills} 只敌人，信标剩余 ${defense.beacon.hp} 点。建筑与物资保留。`, "再挑战");
   }
@@ -1018,6 +1851,48 @@ export function initGame(window) {
     sound.play("hit", STONE);
     showMessage(`信标受损 −${amount}`);
     if (!defense.beacon.hp) finishDefense("beacon-destroyed");
+  }
+
+  // A ranged zombie lobs one glob at the point its goal stood when the
+  // throw was released: the glob flies straight at profile.projectileSpeed
+  // and is dodged by moving, not by outrunning the throw itself.
+  function throwProjectile(zombie, profile, atBeacon) {
+    const goal = atBeacon ? defense.beacon : player;
+    const origin = [zombie.x, zombie.y + 1.26 * profile.height, zombie.z];
+    const aim = [goal.x, goal.y + 1.2, goal.z];
+    const delta = aim.map((value, i) => value - origin[i]);
+    const distance = Math.hypot(...delta) || 1;
+    const speed = profile.projectileSpeed ?? 6;
+    survival.projectiles.push({ x: origin[0], y: origin[1], z: origin[2], hurt: 0,
+      vx: delta[0] / distance * speed, vy: delta[1] / distance * speed, vz: delta[2] / distance * speed,
+      target: atBeacon ? "beacon" : "player", damage: profile.damage, traveled: 0, maxTravel: distance + 2 });
+  }
+
+  // Thrown globs fly straight: one hits when it reaches its target's
+  // current position, a solid block stops it, and it fizzles past its
+  // range instead of flying on. Damage is skipped once the run is over.
+  function stepProjectiles(dt) {
+    for (const shot of survival.projectiles) {
+      shot.x += shot.vx * dt;
+      shot.y += shot.vy * dt;
+      shot.z += shot.vz * dt;
+      shot.traveled += Math.hypot(shot.vx, shot.vy, shot.vz) * dt;
+    }
+    const live = [];
+    for (const shot of survival.projectiles) {
+      const target = shot.target === "beacon" ? defense.beacon : player;
+      const center = target ? [target.x, target.y + 1, target.z] : null;
+      if (center && Math.hypot(shot.x - center[0], shot.y - center[1], shot.z - center[2]) <= .7) {
+        if (!finished) {
+          if (shot.target === "beacon") damageBeacon(shot.damage);
+          else takeDamage(shot.damage);
+        }
+        continue;
+      }
+      if (get(Math.floor(shot.x), Math.floor(shot.y), Math.floor(shot.z)) !== 0 || shot.traveled >= shot.maxTravel) continue;
+      live.push(shot);
+    }
+    survival.projectiles.splice(0, survival.projectiles.length, ...live);
   }
 
   function walkZombie(zombie, dt, routes, profile) {
@@ -1040,13 +1915,31 @@ export function initGame(window) {
     }
     const pace = profile.speed + Math.min(survival.wave, 7) * .035;
     const t = zombie.travel = Math.min(1, zombie.travel + dt * pace);
-    zombie.x = from[0] + .5 + (to[0] - from[0]) * t;
-    zombie.z = from[2] + .5 + (to[2] - from[2]) * t;
+    // Ease in-out so the zombie accelerates out of a cell and decelerates
+    // into the next instead of sliding at constant speed.
+    const eased = t * t * (3 - 2 * t);
+    zombie.x = from[0] + .5 + (to[0] - from[0]) * eased;
+    zombie.z = from[2] + .5 + (to[2] - from[2]) * eased;
+    // Knockback velocity (set on hit, decayed in updateCombat) pushes the
+    // zombie off its path for a fraction of a second.
+    zombie.x += (zombie.kx ?? 0) * dt;
+    zombie.z += (zombie.kz ?? 0) * dt;
     const rise = to[1] - from[1];
     const heightBlend = rise > 0 ? Math.min(t * 3, 1) : Math.max(0, t * 3 - 2);
     zombie.y = from[1] + rise * heightBlend;
     zombie.walk += dt * 7 * pace;
     if (t === 1) { zombie.cell = zombie.next; zombie.next = -1; }
+  }
+
+  // Effective mining interval: the equipped tool's registry interval,
+  // minus the 快手 tech bonus when unlocked. The tick and the crosshair
+  // ring both read this, so they stay in sync; the equipment card shows
+  // the tool's own registry interval instead.
+  function currentMiningInterval() {
+    const tool = campaign.equipment.tool;
+    const base = tool && tool.durability > 0 ? miningInterval(tool.tier) : 0.28;
+    return Math.max(.05, base
+      - (campaign.techUnlocked.includes("swiftHands") ? TECH_EFFECTS.swiftHandsSeconds : 0));
   }
 
   function updateCombat(dt) {
@@ -1055,6 +1948,32 @@ export function initGame(window) {
     guardianFx.exposed = Math.max(0, guardianFx.exposed - dt / .74);
     guardianFx.hit = Math.max(0, guardianFx.hit - dt / .22);
     player.cooldown = Math.max(0, player.cooldown - dt);
+    // Floating damage numbers rise and fade over 0.9s; debris flies out
+    // with gravity and is gone in 0.6s.
+    for (const number of damageNumbers) number.age += dt;
+    if (damageNumbers.some(number => number.age > .9)) {
+      damageNumbers.splice(0, damageNumbers.length, ...damageNumbers.filter(number => number.age <= .9));
+    }
+    for (const piece of debris) {
+      piece.age += dt;
+      piece.x += piece.vx * dt; piece.y += piece.vy * dt; piece.z += piece.vz * dt;
+      piece.vy -= 12 * dt;
+    }
+    if (debris.some(piece => piece.age > .6)) {
+      debris.splice(0, debris.length, ...debris.filter(piece => piece.age <= .6));
+    }
+    stepParticles(particles3D, dt);
+    for (const pop of pops) pop.age += dt;
+    if (pops.some(pop => pop.age >= POP_DURATION)) {
+      pops.splice(0, pops.length, ...pops.filter(pop => pop.age < POP_DURATION));
+    }
+    // Fire a buffered attack the moment the cooldown ends.
+    if (player.cooldown <= 0 && player.attackBuffered) {
+      player.attackBuffered = false;
+      interact(false);
+      if (finished) return;
+    }
+    player.invulnerable = Math.max(0, player.invulnerable - dt);
     player.hitConfirm = Math.max(0, player.hitConfirm - dt);
     player.swing = Math.max(0, player.swing - dt);
     player.handAction = Math.max(0, player.handAction - dt);
@@ -1080,6 +1999,20 @@ export function initGame(window) {
     if (firing && !finished && player.hp && isGun(weapons[selected - palette.length])) {
       firePulse(false);
       if (finished) return;
+    }
+    // Hold left mouse to keep mining / attacking instead of clicking per block.
+    // Only repeat when there is actually something to hit or mine: repeating
+    // an air swing would put the weapon on cooldown and waste a real damage
+    // window (e.g. a boss's exposed core).
+    if (mouseHeld && !finished && player.hp && !isGun(weapons[selected - palette.length])) {
+      mouseHeldRepeat += dt;
+      if (mouseHeldRepeat >= currentMiningInterval()) {
+        mouseHeldRepeat = 0;
+        const { origin, direction } = renderedView ?? { origin: eye(), direction: viewDirection() };
+        const target = raycast(origin, direction, interactionReach);
+        if (target || aimEnemy(origin, direction, target, interactionReach)) interact(false);
+        if (finished) return;
+      }
     }
     if (boss) {
       for (const dragon of boss.dragons.slice()) {
@@ -1176,7 +2109,21 @@ export function initGame(window) {
     for (const zombie of survival.zombies) {
       zombie.hurt = Math.max(0, zombie.hurt - dt);
       zombie.cooldown -= dt;
+      // Knockback velocity decays exponentially.
+      zombie.kx = (zombie.kx ?? 0) * Math.exp(-dt * 4);
+      zombie.kz = (zombie.kz ?? 0) * Math.exp(-dt * 4);
+      // Dying zombies sink for 0.5s instead of vanishing instantly.
+      if (zombie.dying !== undefined) {
+        zombie.dying -= dt;
+        zombie.y -= dt * 1.2;
+        continue;
+      }
       const profile = ENEMIES[zombie.kind] ?? ENEMIES.walker;
+      // Ranged kinds (attack: "ranged") throw from profile.range instead
+      // of closing to melee reach; kinds without an attack field stay
+      // melee — a missing field is never read as ranged.
+      const ranged = profile.attack === "ranged";
+      const attackRange = ranged ? profile.range : profile.reach;
       const playerDistance = Math.hypot(player.x - zombie.x, player.z - zombie.z);
       const atBeacon = choosesBeacon(zombie.kind, Boolean(defense.beacon), playerDistance,
         survival.routes[zombie.cell] >= 0, defense.routes?.[zombie.cell] >= 0);
@@ -1184,19 +2131,27 @@ export function initGame(window) {
       if (zombie.windup && zombie.attackingBeacon !== atBeacon) zombie.windup = 0;
       const dx = goal.x - zombie.x, dz = goal.z - zombie.z;
       const distance = Math.hypot(dx, dz);
-      zombie.angle = Math.atan2(dx, dz);
+      // Turn toward the goal at most 2.6 rad/s instead of snapping instantly.
+      const targetAngle = Math.atan2(dx, dz);
+      const angleDelta = Math.atan2(Math.sin(targetAngle - zombie.angle), Math.cos(targetAngle - zombie.angle));
+      zombie.angle += Math.max(-2.6 * dt, Math.min(2.6 * dt, angleDelta));
       const origin = [zombie.x, zombie.y + 1.26 * profile.height, zombie.z];
       const delta = [dx, goal.y + 1.2 - origin[1], dz];
       const reach = Math.hypot(...delta);
-      if (distance <= profile.reach && Math.abs(goal.y - zombie.y) <= 1.06 && reach > .01
+      // The height window is a melee rule: a thrown glob flies in 3D, so
+      // ranged attacks only need the line of sight to be clear.
+      if (distance <= attackRange && (ranged || Math.abs(goal.y - zombie.y) <= 1.06) && reach > .01
         && !raycast(origin, delta.map(value => value / reach), reach)) {
         if (zombie.windup > 0) {
           zombie.windup = Math.max(0, zombie.windup - dt);
           if (zombie.windup > 0) continue;
           zombie.cooldown = profile.cooldown;
-          if (atBeacon) damageBeacon(profile.damage);
-          else takeDamage(profile.damage);
-          if (finished) break;
+          if (ranged) throwProjectile(zombie, profile, atBeacon);
+          else {
+            if (atBeacon) damageBeacon(profile.damage);
+            else takeDamage(profile.damage);
+            if (finished) break;
+          }
         } else if (zombie.cooldown <= 0) {
           zombie.windup = profile.strikeDelay;
           zombie.attackingBeacon = atBeacon;
@@ -1206,6 +2161,11 @@ export function initGame(window) {
         walkZombie(zombie, dt, atBeacon ? defense.routes : survival.routes, profile);
       }
     }
+    // Remove zombies whose death sink finished.
+    if (survival.zombies.some(zombie => zombie.dying !== undefined && zombie.dying <= 0)) {
+      survival.zombies = survival.zombies.filter(zombie => !(zombie.dying !== undefined && zombie.dying <= 0));
+    }
+    stepProjectiles(dt);
   }
 
   function aimEnemy(origin, direction, blockHit, range) {
@@ -1258,7 +2218,10 @@ export function initGame(window) {
   }
 
   function attack(weapon, aim, profile = weapon ?? punch) {
-    if (player.cooldown > 0) return;
+    // Cooldown no longer silently eats the click: buffer one attack and fire
+    // it from updateCombat the moment the cooldown ends.
+    if (player.cooldown > 0) { player.attackBuffered = true; return; }
+    player.attackBuffered = false;
     const pulseShot = isGun(weapon);
     player.cooldown = profile.cooldown;
     player.recoveryTime = profile.cooldown;
@@ -1274,6 +2237,7 @@ export function initGame(window) {
       if (aim.crystal) {
         const remaining = damagePrism(boss, profile.damage);
         if (remaining !== null) {
+          wearWeaponOnHit(weapon);
           player.hitConfirm = .25;
           sound.play(remaining ? "hit" : "pulse-crystal", STONE);
           showMessage(remaining ? `命中晶体 · 剩余 ${remaining}` : "晶体破碎 · 三轨折光中断");
@@ -1285,6 +2249,7 @@ export function initGame(window) {
       const hitSound = boss.profile === BOSS ? "core-hit" : "hit";
       const blockedSound = boss.profile === BOSS ? "forge-armor" : "place";
       sound.play(damage ? hitSound : blockedSound, STONE);
+      if (damage) wearWeaponOnHit(weapon);
       if (!damage) {
         showMessage(boss.state === "recovery" ? "瞄准青色核心"
           : boss.profile === COLOSSUS && boss.state === "ready" ? "巨像正在逼近，留意第一击" : "护甲挡住了攻击，等核心暴露");
@@ -1295,6 +2260,7 @@ export function initGame(window) {
         guardianFx.hit = Math.min(1, guardianFx.hit + (profile === pulseBurst ? 1 : .72));
         if (boss.state === "recovery") guardianFx.exposed = Math.max(guardianFx.exposed, .72);
       }
+      damageNumbers.push({ x: boss.x, y: boss.y + 3.2, z: boss.z, text: `-${damage}`, age: 0 });
       if (boss.phase !== oldPhase) {
         survival.zombies.length = 0;
         const healed = Math.min(30, 100 - player.hp);
@@ -1310,8 +2276,14 @@ export function initGame(window) {
     const zombie = aim.zombie;
     const damage = Math.min(zombie.hp, profile.damage);
     zombie.hp -= damage;
+    wearWeaponOnHit(weapon);
     player.hitConfirm = .25;
     zombie.hurt = .23;
+    damageNumbers.push({ x: zombie.x, y: zombie.y + 1.9 * (ENEMIES[zombie.kind]?.height ?? 1), z: zombie.z,
+      text: `-${damage}`, age: 0 });
+    // Knockback: away from the player, ~2.2 u/s decaying over ~0.25s.
+    const kx = zombie.x - player.x, kz = zombie.z - player.z, kl = Math.hypot(kx, kz) || 1;
+    zombie.kx = kx / kl * 2.2; zombie.kz = kz / kl * 2.2;
     if (!ENEMIES[zombie.kind]?.armor) {
       zombie.cooldown = Math.max(zombie.cooldown, .38);
       zombie.windup = 0;
@@ -1321,8 +2293,19 @@ export function initGame(window) {
       showMessage(`命中${(ENEMIES[zombie.kind] ?? ENEMIES.walker).name} · 伤害 ${damage}`);
       return;
     }
-    survival.zombies.splice(survival.zombies.indexOf(zombie), 1);
+    // Death is a 0.5s sink instead of an instant splice; the zombie stays in
+    // the array with `dying` set until updateCombat removes it, so the wave
+    // is only "cleared" when nothing is left alive.
+    zombie.dying = .5;
+    zombie.kx = 0; zombie.kz = 0;
+    // Death debris: coat- and skin-coloured cubes burst out of the body as
+    // it starts to sink, and land on the ground under it.
+    const style = ENEMIES[zombie.kind] ?? ENEMIES.walker;
+    spawnBurst3D(zombie.x, zombie.y + 1.1 * (style.height ?? 1), zombie.z, 12,
+      { colors: [style.coat, style.skin, [.16, .14, .12]], speed: 2.6, up: 3.2,
+        size: 0.10, life: 0.6, gravity: 14, floor: floorUnder(zombie.x, zombie.y, zombie.z) });
     survival.kills++;
+    const alive = survival.zombies.filter(other => other.dying === undefined).length;
     if (boss) {
       sound.play("defeat", DIRT);
       if (interruptFurnace(boss)) {
@@ -1331,16 +2314,20 @@ export function initGame(window) {
         showMessage("供火中断 · 守卫熄火，趁现在近身");
         return;
       }
-      showMessage(`击退${ENEMIES[zombie.kind].name} · 剩余随从 ${survival.zombies.length}`);
+      showMessage(`击退${ENEMIES[zombie.kind].name} · 剩余随从 ${alive}`);
       return;
     }
-    const lootResult = campaign.grantLoot();
+    const lootResult = campaign.grantLoot(zombie.kind);
     if (checkSaveConflict(lootResult)) return;
     updateHotbar();
     sound.play("defeat", DIRT);
-    const loot = `石头 +1 · 树叶 +1${lootResult.saved ? "" : " · 未保存"}`;
-    if (!survival.zombies.length) {
-      if (defense.beacon && survival.wave === DEFENSE_WAVES.length) { finishDefense("cleared"); return; }
+    // The message lists what this kind actually dropped, from the same
+    // registry table grantLoot just paid — a breaker pays 2 stone and a
+    // runner pays a wood, so the old fixed "石头 +1 · 树叶 +1" would lie.
+    const drops = ENEMIES[zombie.kind]?.drops ?? [[STONE, 1], [LEAF, 1]];
+    const loot = `${drops.map(([id, amount]) => `${blockNames[id]} +${amount}`).join(" · ")}${lootResult.saved ? "" : " · 未保存"}`;
+    if (!alive) {
+      if (defense.beacon && defenseCleared(survival.wave, alive)) { finishDefense("cleared"); return; }
       const healed = Math.min(24, 100 - player.hp);
       player.hp += healed;
       updateHealth();
@@ -1351,7 +2338,7 @@ export function initGame(window) {
   }
 
   function createActorMesh(quadCount) {
-    const vertices = new Float32Array(quadCount * 4 * 10);
+    const vertices = new Float32Array(quadCount * 4 * 12);
     const indices = new Uint16Array(quadCount * 6);
     for (let quad = 0; quad < quadCount; quad++) {
       const base = quad * 4;
@@ -1388,6 +2375,11 @@ export function initGame(window) {
         vertices[used++] = n[1];
         vertices[used++] = n[2];
         vertices[used++] = surface;
+        // Models and glow quads are not terrain: their face code is
+        // negative, so the shader never samples the atlas for them.  The
+        // UV slot still has to exist — the layout is shared with terrain.
+        vertices[used++] = 0;
+        vertices[used++] = 0;
       }
     });
     return used;
@@ -1398,7 +2390,7 @@ export function initGame(window) {
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, mesh.vertices.subarray(0, used));
     bindVertexLayout();
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.indexBuffer);
-    gl.drawElements(gl.TRIANGLES, used / 40 * 6, gl.UNSIGNED_SHORT, 0);
+    gl.drawElements(gl.TRIANGLES, used / 48 * 6, gl.UNSIGNED_SHORT, 0);
   }
 
   function drawDragonFire() {
@@ -1410,8 +2402,8 @@ export function initGame(window) {
     function glow(x, y, z, size, r, g, b) {
       for (const [u,v] of [[-1,-1],[1,-1],[1,1],[-1,1]]) {
         flameMesh.vertices.set([x + size*(rightX*u + upX*v), y + size*upY*v,
-          z + size*(rightZ*u + upZ*v), r,g,b,u,v,0,-8], used);
-        used += 10;
+          z + size*(rightZ*u + upZ*v), r,g,b,u,v,0,-8,0,0], used);
+        used += 12;
       }
     }
     for (const d of boss.dragons) {
@@ -1456,10 +2448,10 @@ export function initGame(window) {
     const { x: cx, z: cz, floor } = boss.profile.arena;
     let used = 0;
     const quad = (a, b, c, d) => {
-      if (used + 40 > vertices.length) return;
+      if (used + 48 > vertices.length) return;
       for (const [x, z] of [a, b, c, d]) {
-        vertices.set([x, floor + .036, z, 1, .07, .006, 0, 1, 0, -11], used);
-        used += 10;
+        vertices.set([x, floor + .036, z, 1, .07, .006, 0, 1, 0, -11, 0, 0], used);
+        used += 12;
       }
     };
     const seam = (x1, z1, x2, z2, width) => {
@@ -1516,11 +2508,11 @@ export function initGame(window) {
     const upX = -rightZ * Math.sin(pitch), upZ = rightX * Math.sin(pitch), upY = Math.cos(pitch);
     const hot = boss.phase === 1 ? [1, .13, .012] : boss.phase === 2 ? [1, .28, .018] : [1, .49, .05];
     const glow = (x, y, z, size, r, g, b) => {
-      if (used + 40 > forgeAtmosphereMesh.vertices.length) return;
+      if (used + 48 > forgeAtmosphereMesh.vertices.length) return;
       for (const [u, v] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
         forgeAtmosphereMesh.vertices.set([x + size * (rightX * u + upX * v), y + size * upY * v,
-          z + size * (rightZ * u + upZ * v), r, g, b, u, v, 0, -8], used);
-        used += 10;
+          z + size * (rightZ * u + upZ * v), r, g, b, u, v, 0, -8, 0, 0], used);
+        used += 12;
       }
     };
     // Sparse rising embers are anchored in 3D; their speed and height vary so
@@ -1610,12 +2602,12 @@ export function initGame(window) {
     const cool = vulnerable ? [0.22, 1, .84] : phase === 1 ? [1, .24, .035]
       : phase === 2 ? [1, .39, .045] : [1, .58, .10];
     const glow = (x, y, z, size, alpha = 1, lift = 0) => {
-      if (used + 40 > guardianFlameMesh.vertices.length) return;
+      if (used + 48 > guardianFlameMesh.vertices.length) return;
       const r = cool[0] * alpha, g = cool[1] * alpha, b = cool[2] * alpha;
       for (const [u, v] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
         guardianFlameMesh.vertices.set([x + size * (rightX * u + upX * v), y + lift + size * upY * v,
-          z + size * (rightZ * u + upZ * v), r, g, b, u, v, 0, -9], used);
-        used += 10;
+          z + size * (rightZ * u + upZ * v), r, g, b, u, v, 0, -9, 0, 0], used);
+        used += 12;
       }
     };
     const emberCount = vulnerable ? 17 : 10 + phase * 4;
@@ -1738,9 +2730,10 @@ export function initGame(window) {
       const body = ENEMIES[actor.kind];
       const horizontal = body?.width ?? 1, vertical = body?.height ?? 1;
       for (const { d, v, light } of faces) {
+        // Hit flash: red plus a white wash so the hit reads even on dark coats.
         const shadeR = Math.min(1, red * light + actor.hurt * 2);
-        const shadeG = Math.min(1, green * light);
-        const shadeB = Math.min(1, blue * light);
+        const shadeG = Math.min(1, green * light + actor.hurt * 1.2);
+        const shadeB = Math.min(1, blue * light + actor.hurt * 1.2);
         const nx = d[0] * c + d[2] * s;
         const nz = -d[0] * s + d[2] * c;
         for (const [vx, vy, vz] of v) {
@@ -1755,6 +2748,8 @@ export function initGame(window) {
           vertices[used++] = d[1];
           vertices[used++] = nz;
           vertices[used++] = 0;
+          vertices[used++] = 0;
+          vertices[used++] = 0;
         }
       }
     }
@@ -1763,8 +2758,8 @@ export function initGame(window) {
       const pieces = Math.ceil(64 * span / (2 * Math.PI));
       function vertex(angle, radius) {
         vertices.set([action.x + Math.sin(angle) * radius, y, action.z + Math.cos(angle) * radius,
-          ...color, 0, 1, 0, 0], used);
-        used += 10;
+          ...color, 0, 1, 0, 0, 0, 0], used);
+        used += 12;
       }
       for (let i = 0; i < pieces; i++) {
         const a = start + span * i / pieces, b = start + span * (i + 1) / pieces;
@@ -1778,8 +2773,8 @@ export function initGame(window) {
       const s = Math.sin(action.angle), c = Math.cos(action.angle);
       for (const [side, forward] of [[left, 0], [right, 0], [right, length], [left, length]]) {
         vertices.set([action.x + c * side + s * forward, y, action.z - s * side + c * forward,
-          ...color, 0, 1, 0, 0], used);
-        used += 10;
+          ...color, 0, 1, 0, 0, 0, 0], used);
+        used += 12;
       }
     }
     if (boss) {
@@ -1864,6 +2859,11 @@ export function initGame(window) {
       const s = Math.sin(zombie.angle), c = Math.cos(zombie.angle);
       zombieParts(zombie, style, (...part) => box(zombie, s, c, ...part));
     }
+    // Thrown globs are small bright-green cubes, so the player can see
+    // the throw coming and dodge it.
+    for (const shot of survival.projectiles) {
+      box(shot, 0, 1, -.12, -.12, -.12, .24, .24, .24, .45, .85, .30);
+    }
     const beacon = defense.beacon;
     if (beacon) {
       const s = Math.sin(defense.elapsed * .82), c = Math.cos(defense.elapsed * .82);
@@ -1881,6 +2881,7 @@ export function initGame(window) {
   function updateWeather(dt) {
     const target = weatherTypes[weather.index];
     weather.elapsed += dt;
+    dayTime += dt;
     if (weather.elapsed >= target.seconds) cycleWeather();
     const blend = 1 - Math.exp(-2.1 * dt);
     weather.sky = weather.sky.map((v, i) => v + (target.sky[i] - v) * blend);
@@ -1899,9 +2900,14 @@ export function initGame(window) {
     return false;
   }
 
-  const rainPattern = Array.from({ length: 110 }, (_, i) => ({
-    phase: seeded(i, 21), speed: .63 + seeded(i, 7) * .55,
-    x: seeded(i, 15), length: .022 + .022 * seeded(i, 43)
+  // 3D rain: one seeded streak per drop, in a 14x14 field that follows
+  // the player.  `phase`/`speed` drive the fall cycle against
+  // weather.phase, so a drop falls, vanishes below the ground (the terrain
+  // occludes it), and restarts at the top.
+  const rainDrops = Array.from({ length: 180 }, (_, i) => ({
+    phase: seeded(i, 21), speed: .5 + seeded(i, 7) * .5,
+    x: (seeded(i, 15) - .5) * 14, z: (seeded(i, 29) - .5) * 14,
+    length: .35 + .3 * seeded(i, 43)
   }));
 
   function heldSprite(type) {
@@ -2209,10 +3215,28 @@ export function initGame(window) {
     gl.clear(gl.DEPTH_BUFFER_BIT);
     gl.uniform3f(cameraLocation, 0, 0, 0);
     gl.uniformMatrix4fv(viewProjectionLocation, false, projection);
-    gl.uniform2f(fogLocation, 100, 120);
+    gl.uniform1f(fogDensityLocation, 0);
     const used = appendModel(viewModelMesh.vertices, 0, gun.parts, 0, true);
     uploadActorMesh(viewModelMesh, used);
     return projectEffect(projection, gun.muzzle, width, height);
+  }
+
+  function drawMeleeWeapon(projection) {
+    const gait = Math.min(1, Math.hypot(player.vx, player.vz) / 4.2);
+    const weapon = weapons[selected - palette.length];
+    const model = meleeViewModel({
+      style: weapon?.style ?? "sword",
+      swing: player.swing,
+      bob: [Math.sin(stepDistance * 3) * gait * .012, Math.cos(stepDistance * 6) * gait * .010]
+    });
+    viewModelMesh ??= createActorMesh(2600);
+    gl.clear(gl.DEPTH_BUFFER_BIT);
+    gl.uniform3f(cameraLocation, 0, 0, 0);
+    gl.uniformMatrix4fv(viewProjectionLocation, false, projection);
+    gl.uniform1f(fogDensityLocation, 0);
+    const used = appendModel(viewModelMesh.vertices, 0, model.parts, 0, true);
+    uploadActorMesh(viewModelMesh, used);
+    return null;
   }
 
   function drawPulseMuzzle(muzzle, vp, width, height) {
@@ -2254,6 +3278,44 @@ export function initGame(window) {
       fx.scale(1.15 + .65 * Math.sin(shot.seed + i * 2.4), .13 + .08 * (i % 2));
       fx.fillRect(0, -radius, radius, radius * 2);
       fx.restore();
+    }
+    fx.restore();
+  }
+
+  // Mining cracks: jagged seeded lines on the hit face of the block being
+  // mined, clipped to that face's projected quad so they never spill onto
+  // neighbouring blocks.  The lines are deterministic per block and each
+  // stage only adds lines, so cracks grow while the player holds the
+  // button instead of jumping around.
+  function drawMiningCracks(hit, progress, vp, width, height) {
+    const stage = crackStage(progress);
+    if (!stage || !hit.face) return;
+    const projected = faceCorners(hit.hit, hit.face)
+      .map(corner => projectEffect(vp, corner, width, height));
+    if (projected.some(point => !point)) return;
+    const at = ([u, v]) => {
+      const top = [projected[0][0] + (projected[1][0] - projected[0][0]) * u,
+        projected[0][1] + (projected[1][1] - projected[0][1]) * u];
+      const bottom = [projected[3][0] + (projected[2][0] - projected[3][0]) * u,
+        projected[3][1] + (projected[2][1] - projected[3][1]) * u];
+      return [top[0] + (bottom[0] - top[0]) * v, top[1] + (bottom[1] - top[1]) * v];
+    };
+    fx.save();
+    fx.beginPath();
+    fx.moveTo(projected[0][0], projected[0][1]);
+    for (const point of projected.slice(1)) fx.lineTo(point[0], point[1]);
+    fx.closePath();
+    fx.clip();
+    fx.strokeStyle = "rgba(22, 15, 10, 0.85)";
+    fx.lineWidth = Math.max(1.5, height / 360);
+    fx.lineJoin = "round";
+    for (const line of crackPolylines(hit.hit[0], hit.hit[1], hit.hit[2], stage)) {
+      fx.beginPath();
+      line.forEach(([u, v], i) => {
+        const [sx, sy] = at([u, v]);
+        if (i) fx.lineTo(sx, sy); else fx.moveTo(sx, sy);
+      });
+      fx.stroke();
     }
     fx.restore();
   }
@@ -2305,22 +3367,6 @@ export function initGame(window) {
       fx.globalAlpha = 1;
       fx.globalCompositeOperation = "source-over";
     }
-    if (rain > .02) {
-      fx.beginPath();
-      fx.lineWidth = Math.max(1, width / 880);
-      fx.strokeStyle = `rgba(196, 222, 233, ${.45 * rain})`;
-      const drops = Math.floor(rainPattern.length * rain);
-      for (let i = 0; i < drops; i++) {
-        const drop = rainPattern[i];
-        const phase = (drop.phase + weather.phase * drop.speed) % 1;
-        const x = ((drop.x + phase * .12 + 1 - yaw * .023 % 1) % 1) * width;
-        const y = (phase * 1.13 - .07) * height;
-        const length = drop.length * height;
-        fx.moveTo(x, y);
-        fx.lineTo(x + length * .32, y + length);
-      }
-      fx.stroke();
-    }
     if (player.hurt > 0) {
       const vignette = fx.createRadialGradient(width * .5, height * .5, height * .24, width * .5, height * .5, Math.hypot(width, height) * .52);
       vignette.addColorStop(0, "rgba(151,34,26,0)");
@@ -2328,34 +3374,99 @@ export function initGame(window) {
       fx.fillStyle = vignette;
       fx.fillRect(0, 0, width, height);
     }
+    // Damage numbers float up from the hit point; debris flies out of a
+    // broken block; the ring around the crosshair shows hold-to-mine
+    // progress toward the next block break.
+    for (const number of damageNumbers) {
+      const screen = projectEffect(vp, [number.x, number.y + number.age * 1.4, number.z], width, height);
+      if (!screen) continue;
+      fx.globalAlpha = Math.max(0, 1 - number.age / .9);
+      fx.font = `700 ${Math.max(14, Math.floor(height / 40))}px sans-serif`;
+      fx.textAlign = "center";
+      fx.fillStyle = "#ffd166";
+      fx.fillText(number.text, screen[0], screen[1]);
+    }
+    for (const piece of debris) {
+      const screen = projectEffect(vp, [piece.x, piece.y, piece.z], width, height);
+      if (!screen) continue;
+      const size = Math.max(2, Math.min(8, 60 / screen[2]));
+      fx.globalAlpha = Math.max(0, 1 - piece.age / .6);
+      fx.fillStyle = piece.color;
+      fx.fillRect(screen[0] - size / 2, screen[1] - size / 2, size, size);
+    }
+    fx.globalAlpha = 1;
+    if (mouseHeld && player.hp && !isGun(weapon)) {
+      const { origin, direction } = renderedView ?? { origin: eye(), direction: viewDirection() };
+      const hit = raycast(origin, direction, interactionReach);
+      if (hit) {
+        const progress = Math.min(1, mouseHeldRepeat / currentMiningInterval());
+        drawMiningCracks(hit, progress, vp, width, height);
+        fx.beginPath();
+        fx.arc(width / 2, height / 2, Math.max(10, height / 45), -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2);
+        fx.strokeStyle = "#ffd166";
+        fx.lineWidth = Math.max(2, height / 240);
+        fx.stroke();
+      }
+    }
     if (!player.hp) return;
     if (!weapon) { drawHeldBlock(block, width, height); return; }
     if (isGun(weapon)) { drawPulseMuzzle(muzzle, vp, width, height); return; }
-    const unit = Math.max(3, Math.min(height, width) / 123);
-    const swing = Math.sin(Math.PI * (1 - player.swing / .27));
-    fx.save();
-    fx.translate(width * .82 - swing * width * .19, height * .96 + swing * height * .05);
-    fx.rotate(.45 - swing * 1.18);
-    fx.scale(unit, unit);
-    const rect = (color, x, y, w, h) => { fx.fillStyle = color; fx.fillRect(x, y, w, h); };
-    rect("#382b22", -2, -9, 5, 19);
-    rect("#795942", -1, -9, 2, 15);
-    if (weapon.style === "sword") {
-      rect("#414c4b", -4, -33, 9, 26);
-      rect("#a6b3ae", -3, -37, 7, 27);
-      rect("#d2d9d4", -3, -35, 2, 24);
-      rect("#56635c", -7, -11, 15, 4);
-    } else {
-      rect("#624732", -2, -33, 5, 25);
-      rect("#465352", -12, -36, 18, 16);
-      rect("#b5c2bb", -15, -34, 10, 13);
-      rect("#d6ddd7", -15, -34, 3, 13);
-    }
-    fx.restore();
+    // Melee weapons are 3D view models now (drawMeleeWeapon); nothing to
+    // draw on the 2D overlay for them.
   }
 
   function setText(element, text) {
     if (element.textContent !== text) element.textContent = text;
+  }
+
+  // The progress record shown after the wave line, between waves: best
+  // wave and total kills, plus each boss's kill count. A part is shown
+  // only when it is nonzero, so a record with no boss kills reads
+  // exactly as before; a boss kill with no wave yet still shows
+  // ("熔炉守卫 1 次"), the same rule menuRecordText uses.
+  function recordSuffix(bestWave) {
+    if (!savedProgress) return "";
+    const parts = [];
+    if (bestWave > 0) parts.push(`最佳第 ${bestWave} 波`, `累计击退 ${savedProgress.kills} 只`);
+    for (const [id, count] of Object.entries(savedProgress.bossKills ?? {})) {
+      if (count > 0) parts.push(`${bossDisplayName(id)} ${count} 次`);
+    }
+    return parts.length ? ` · ${parts.join(" · ")}` : "";
+  }
+
+  // The display name for a boss id, falling back to the id itself so a
+  // future boss still shows.
+  function bossDisplayName(id) {
+    return id === BOSS.id ? BOSS.name : id === COLOSSUS.id ? COLOSSUS.name : id;
+  }
+
+  // The progress record on the main menu: furthest wave, total kills,
+  // and per-boss kill counts. A part is shown only when it is nonzero,
+  // so a fresh record renders as an empty line (hidden); a boss kill
+  // with no wave yet still shows ("熔炉守卫 1 次").
+  function menuRecordText(record) {
+    if (!record) return "";
+    const parts = [];
+    const bestWave = record.bestWave ?? record.wave;
+    if (bestWave > 0) parts.push(`最佳第 ${bestWave} 波`);
+    if (record.kills > 0) parts.push(`累计击退 ${record.kills} 只`);
+    for (const [id, count] of Object.entries(record.bossKills ?? {})) {
+      if (count > 0) parts.push(`${bossDisplayName(id)} ${count} 次`);
+    }
+    return parts.join(" · ");
+  }
+
+  // Show the saved progress record on the main menu. Errors write their
+  // own text into the same line and win: while the graphics are lost the
+  // notice stays on the line, and any error set afterwards overwrites it.
+  function showMenuRecord() {
+    if (graphicsLost) {
+      menuStatus.hidden = false;
+      return;
+    }
+    const text = menuRecordText(campaign.loadProgress());
+    menuStatus.hidden = text === "";
+    setText(menuStatus, text);
   }
 
   function updateStatus(aim, weapon) {
@@ -2405,9 +3516,9 @@ export function initGame(window) {
       bossHud.classList.toggle("vulnerable", boss.state === "recovery");
       bossHud.classList.toggle("in-danger", danger);
     } else if (beacon) {
-      const wave = Math.min(DEFENSE_WAVES.length, enemiesLeft || finished ? survival.wave : survival.wave + 1);
-      const plan = DEFENSE_WAVES[Math.max(0, wave - 1)];
-      setText(waveStatus, `第 ${wave || 1} / ${DEFENSE_WAVES.length} 波 · ${plan.name}`);
+      const wave = Math.min(DEFENSE_TOTAL_WAVES, enemiesLeft || finished ? survival.wave : survival.wave + 1);
+      const plan = DEFENSE_WAVES[Math.min(Math.max(0, wave - 1), DEFENSE_WAVES.length - 1)];
+      setText(waveStatus, `第 ${wave || 1} / ${DEFENSE_TOTAL_WAVES} 波 · ${plan.name}${recordSuffix(savedProgress?.defense.bestWave)}`);
       setText(stageTime, finished ? "防守结束" : enemiesLeft
         ? `剩余 ${enemiesLeft} 只 · 限时 ${Math.ceil(defense.seconds)} 秒`
         : `准备 ${Math.ceil(survival.countdown)} 秒 · 按 B 提前迎敌`);
@@ -2422,7 +3533,7 @@ export function initGame(window) {
     } else {
       setText(waveStatus, !survival.enabled ? "自由建造" : enemiesLeft
         ? `第 ${survival.wave} 波 · 剩余 ${enemiesLeft} 只`
-        : `第 ${survival.wave + 1} 波 · ${Math.max(1, Math.ceil(survival.countdown))} 秒后`);
+        : `第 ${survival.wave + 1} 波 · ${Math.max(1, Math.ceil(survival.countdown))} 秒后${recordSuffix(savedProgress?.wave)}`);
     }
     setText(coordinates, `X ${player.x.toFixed(1)} · Y ${player.y.toFixed(1)} · Z ${player.z.toFixed(1)}`);
     const charging = weapon === pulseWeapon && pulse.charge !== null;
@@ -2445,7 +3556,16 @@ export function initGame(window) {
     if (showRecovery) {
       const availability = recharging ? "充能中" : charging ? (pulse.charge === pulseBurst.windup ? "松开右键发射" : "爆发蓄力中")
         : hasPulseEquipped && !pulse.rounds ? "能量耗尽" : player.cooldown > 0 ? "收招中" : "可攻击";
-      setText(weaponLabel, `${weapon?.name ?? "徒手"} · ${availability}`);
+      const equipped = campaign.equipment.weapon;
+      if (equipped && equipped.durability <= 0 && weapon === punch) {
+        setText(weaponLabel, `${WEAPONS[equipped.key].name}已损坏（按 C 修理）`);
+        weaponLabel.style.setProperty("color", "#f0d285");
+      } else {
+        const durabilityText = equipped && weapon === WEAPONS[equipped.key]
+          ? ` · 耐久 ${Math.floor(equipped.durability / durabilityMax(equipped.tier) * 100)}%` : "";
+        setText(weaponLabel, `${weapon?.name ?? "徒手"} · ${availability}${durabilityText}`);
+        weaponLabel.style.setProperty("color", "");
+      }
       const remaining = recharging ? pulse.recharge / pulseWeapon.recharge
         : charging ? 1 - pulse.charge / pulseBurst.windup : player.cooldown / player.recoveryTime;
       const recovery = Math.round(100 * (1 - remaining));
@@ -2480,7 +3600,25 @@ export function initGame(window) {
     updateSoundButton();
     if (started) showMessage(soundButton.textContent);
   }
-  function axeAvailable() { return !survival.enabled || campaign.axeUnlocked; }
+  // Point the sword/axe hotbar slots at the equipped weapon: a crafted
+  // sword replaces the stone sword in slot 6, a crafted axe replaces the
+  // stone axe in slot 7, and no crafted weapon leaves both slots on
+  // their stone defaults. Runs from updateHotbar, so every craft, load
+  // and import re-resolves the slots.
+  function refreshWeapons() {
+    const equipped = campaign.equipment.weapon;
+    const stats = equipped ? WEAPONS[equipped.key] : null;
+    const broken = equipped && equipped.durability <= 0;
+    const sword = stats && weaponBase(equipped.key) === "stoneSword" ? (broken ? punch : stats) : WEAPONS.stoneSword;
+    const axe = stats && weaponBase(equipped.key) === "stoneAxe" ? (broken ? punch : stats) : WEAPONS.stoneAxe;
+    if (weapons[0] !== sword) weapons[0] = sword;
+    if (weapons[1] !== axe) weapons[1] = axe;
+  }
+  function axeAvailable() {
+    if (!survival.enabled || campaign.axeUnlocked) return true;
+    const equipped = campaign.equipment.weapon;
+    return equipped ? weaponBase(equipped.key) === "stoneAxe" : false;
+  }
   function encounterSlots() { return boss?.profile === COLOSSUS ? slotCount : palette.length + 2; }
 
   function selectSlot(slot) {
@@ -2498,6 +3636,7 @@ export function initGame(window) {
   }
 
   function updateHotbar() {
+    refreshWeapons();
     const first = boss ? palette.length : 0;
     hotbar.replaceChildren(...Array.from({ length: encounterSlots() - first }, (_, offset) => {
       const i = first + offset;
@@ -2510,7 +3649,10 @@ export function initGame(window) {
           slot.title = "石斧待制作";
           slot.setAttribute("aria-label", "7 石斧，待制作");
         }
-        slot.innerHTML = `<b>${(i + 1) % 10}</b><span class="weapon-swatch ${isGun(weapon) ? "pulse" : weapon.style}-swatch" aria-hidden="true"></span>${weapon.name}`;
+        const equipped = campaign.equipment.weapon;
+        const durabilityBar = equipped && weapon === WEAPONS[equipped.key]
+          ? `<span style="display: block; height: 3px; background: ${equipped.durability / durabilityMax(equipped.tier) < .25 ? "#e4725c" : "#f0d285"}; width: ${Math.floor(equipped.durability / durabilityMax(equipped.tier) * 100)}%;"></span>` : "";
+        slot.innerHTML = `<b>${(i + 1) % 10}</b><span class="weapon-swatch ${isGun(weapon) ? "pulse" : weapon.style}-swatch" aria-hidden="true"></span>${weapon.name}${durabilityBar}`;
         return slot;
       }
       const type = palette[i];
@@ -2520,28 +3662,264 @@ export function initGame(window) {
       slot.innerHTML = `<b>${i + 1}</b>${quantity}<span class="swatch" aria-hidden="true"></span>${blockNames[type]}`;
       return slot;
     }));
-    setText(hudDressings, String(campaign.dressings));
+    setText(hudDressings, healingCountsLabel());
+  }
+
+  // Counts of every healing recipe, from the campaign: the HUD label
+  // already says 敷料, so the dressing count stands bare and the other
+  // recipes are named.
+  function healingCountsLabel() {
+    const counts = campaign.dressingsByRecipe;
+    return HEALING_KEYS.map(key => key === "dressing" ? String(counts[key]) : `${RECIPES[key].name} ${counts[key]}`).join(" · ");
   }
 
   function recipeCost(key) {
-    return RECIPES[key].cost.map(([block, count]) => `${blockNames[block]} ${campaign.count(block)}/${count}`).join(" · ");
+    return RECIPES[key].cost.map(([id, count]) => {
+      const name = typeof id === "string" ? RARE_MATERIALS[id] : blockNames[id];
+      return `${name} ${campaign.count(id)}/${count}`;
+    }).join(" · ");
   }
 
-  function updateInventory() {
-    inventoryMaterials.replaceChildren(...palette.map(block => {
+  // One material cell per block plus one per rare material; the backpack
+  // tab and the workbench strip render the same seven cells.
+  function renderMaterials(list) {
+    list.replaceChildren(...palette.map(block => {
       const entry = document.createElement("div");
       const label = document.createElement("dt"), value = document.createElement("dd");
       label.textContent = blockNames[block];
       value.textContent = String(campaign.count(block));
       entry.append(label, value);
       return entry;
+    }), ...Object.entries(campaign.rareMaterials).map(([id, count]) => {
+      const entry = document.createElement("div");
+      const label = document.createElement("dt"), value = document.createElement("dd");
+      label.textContent = RARE_MATERIALS[id];
+      value.textContent = String(count);
+      entry.append(label, value);
+      return entry;
     }));
+  }
+
+  // The lock line for one equipment recipe: no workbench yet, or the
+  // tier's boss kill (from weapons.mjs); null when it is open.
+  function recipeLockReason(key, state) {
+    if (!campaign.workbenchBuilt) return "需先建造工作台";
+    const node = techForRecipe(key);
+    if (!node) return null;
+    return techLockReason(state, node);
+  }
+
+  // Unlock one tech node from its card. A null result means the node
+  // was already unlocked or its requirements are not met (the button
+  // is disabled then); a conflict pauses the run like a craft does.
+  function unlockTech(id) {
+    const result = campaign.unlockTech(id);
+    if (!result || checkSaveConflict(result)) return;
+    updateInventory();
+    setText(inventoryNotice, `已解锁${TECH[id].name}${result.saved ? "" : " · 未保存"}`);
+  }
+
+  // The tech tree tab: each node's condition line (have/need per
+  // requirement, unmet in gold) and button state (unlocked / unlockable
+  // / locked), all from the same techConditions/canUnlockTech the
+  // campaign uses — the tree and the workbench tab cannot disagree.
+  // The empty-state line shows only while nothing is unlocked at all.
+  function updateTechTree(state) {
+    techEmpty.hidden = state.techUnlocked.length > 0;
+    for (const id of Object.keys(TECH)) {
+      const conditions = techConditions(state, id);
+      const cond = document.querySelector(`#tech-cond-${id}`);
+      cond.innerHTML = conditions.map(condition => `<span${condition.met ? "" : " style=\"color: #f0d285;\""}>${condition.text}</span>`).join(" · ");
+      const button = document.querySelector(`#tech-unlock-${id}`);
+      const unlocked = state.techUnlocked.includes(id);
+      button.disabled = unlocked || !canUnlockTech(state, id);
+      setText(button, unlocked ? "已解锁" : "解锁");
+      document.querySelector(`#tech-node-${id}`).style.setProperty("border-left", unlocked ? "3px solid #d9e5c6" : "");
+    }
+  }
+
+  // The workbench detail card (right column): the selected recipe's
+  // name, tier, material list with have/need (shortfalls in gold, rare
+  // materials with their boss source), lock line and craft button.
+  function updateWorkbenchDetail(state) {
+    if (selectedRecipe === "workbench" && campaign.workbenchBuilt) selectedRecipe = EQUIPMENT_KEYS[0];
+    const key = selectedRecipe;
+    const recipe = RECIPES[key];
+    if (!recipe) return;
+    const owned = recipe.equipment ? campaign.equipment[recipe.equipment] : null;
+    setText(detailName, recipe.name);
+    setText(detailTier, recipe.tier ? TIER_TITLES[recipe.tier] : key === "workbench" ? "一次性，永久解锁" : "");
+    // Built as innerHTML like the healing rows, so the list is readable
+    // in tests too (replaceChildren is a no-op in the harness).
+    detailMaterials.innerHTML = recipe.cost.map(([id, amount]) => {
+      const name = typeof id === "string" ? RARE_MATERIALS[id] : blockNames[id];
+      const source = typeof id === "string" ? `（${RARE_SOURCE[id]}掉落）` : "";
+      const have = campaign.count(id);
+      const short = have < amount ? " style=\"color: #f0d285;\"" : "";
+      return `<p${short}>${name}${source} ${have}/${amount}</p>`;
+    }).join("");
+    const reason = recipe.equipment ? recipeLockReason(key, state) : null;
+    setText(detailLock, reason ?? "");
+    detailCraft.disabled = !campaign.canCraft(key);
+    setText(detailCraft, owned ? "已拥有" : key === "workbench" ? "建造工作台" : key === "axe" ? "制作石斧" : `打造${recipe.name}`);
+  }
+
+  // The equipment tab's three slot cards. The weapon card always shows
+  // the current weapon — the crafted one, or the stone sword by default.
+  // The durability bars are live: width and text follow the piece, gold
+  // above 25%, the health bar's red below it. A broken piece greys its
+  // card, gains "（已损坏，无法使用）", and its state button becomes a
+  // jump to the workbench tab ("在工作台修理（石头 5）") — the repair
+  // itself only lives on the workbench tab.
+  function updateEquipmentCards() {
+    const weapon = campaign.equipment.weapon;
+    const current = weapon ? WEAPONS[weapon.key] : WEAPONS.stoneSword;
+    const weaponBroken = weapon && weapon.durability <= 0;
+    setText(document.querySelector("#equip-weapon-name"), current.name + (weaponBroken ? "（已损坏，无法使用）" : ""));
+    setText(document.querySelector("#equip-weapon-info"), weaponBroken ? "失效，回退到石阶 / 拳头 / 0.28 秒"
+      : `${TIER_TITLES[current.tier] ?? "石阶"} · 伤害 ${current.damage}`);
+    setDurabilityBar("weapon", weapon);
+    setText(document.querySelector("#equip-weapon-state"), weaponBroken ? repairHint(weapon) : weapon ? "已装备" : "默认武器");
+    document.querySelector("#equip-weapon-state").disabled = !weaponBroken;
+    document.querySelector("#equip-weapon-card").style.setProperty("opacity", weaponBroken ? ".58" : "");
+    const armor = campaign.equipment.armor;
+    const armorBroken = armor && armor.durability <= 0;
+    setText(document.querySelector("#equip-armor-name"), (armor ? RECIPES[armor.key].name : "防具") + (armorBroken ? "（已损坏，无法使用）" : ""));
+    setText(document.querySelector("#equip-armor-info"), armorBroken ? "失效，回退到石阶 / 拳头 / 0.28 秒"
+      : armor ? `${TIER_TITLES[armor.tier]} · 减伤 ${Math.round(armorReduction(armor.tier) * 100)}%` : "未获得——在工作台制作");
+    setDurabilityBar("armor", armor);
+    setText(document.querySelector("#equip-armor-state"), armorBroken ? repairHint(armor) : armor ? "已装备" : "未获得");
+    document.querySelector("#equip-armor-state").disabled = !armorBroken;
+    document.querySelector("#equip-armor-card").style.setProperty("opacity", armorBroken ? ".58" : "");
+    const tool = campaign.equipment.tool;
+    const toolBroken = tool && tool.durability <= 0;
+    setText(document.querySelector("#equip-tool-name"), (tool ? RECIPES[tool.key].name : "工具") + (toolBroken ? "（已损坏，无法使用）" : ""));
+    setText(document.querySelector("#equip-tool-info"), toolBroken ? "失效，回退到石阶 / 拳头 / 0.28 秒"
+      : tool ? `${TIER_TITLES[tool.tier]} · 挖掘 ${miningInterval(tool.tier).toFixed(2)} 秒/块` : "未获得——在工作台制作");
+    setDurabilityBar("tool", tool);
+    setText(document.querySelector("#equip-tool-state"), toolBroken ? repairHint(tool) : tool ? "已装备" : "未获得");
+    document.querySelector("#equip-tool-state").disabled = !toolBroken;
+    document.querySelector("#equip-tool-card").style.setProperty("opacity", toolBroken ? ".58" : "");
+  }
+
+  // One slot's durability bar and its "耐久 X%" text. No piece means no
+  // bar (width 0, "耐久 —"), so an empty slot never pretends to be full.
+  function setDurabilityBar(slot, piece) {
+    const bar = document.querySelector(`#equip-${slot}-durability`);
+    const text = document.querySelector(`#equip-${slot}-durability-text`);
+    if (!piece) {
+      bar.style.setProperty("width", "0%");
+      setText(text, "耐久 —");
+      return;
+    }
+    const pct = Math.floor(piece.durability / durabilityMax(piece.tier) * 100);
+    bar.style.setProperty("width", `${pct}%`);
+    bar.style.setProperty("background", pct < 25 ? "#e4725c" : "#f0d285");
+    setText(text, `耐久 ${pct}%`);
+  }
+
+  // A tier's repair cost as amounts only ("石头 5", "石头 5 + 熔火核心 1").
+  function repairCostText(tier) {
+    return repairCost(tier).map(([id, amount]) => {
+      const name = typeof id === "string" ? RARE_MATERIALS[id] : blockNames[id];
+      return `${name} ${amount}`;
+    }).join(" + ");
+  }
+
+  // A tier's repair cost with what the player holds ("石头 14/5").
+  function repairCostWithCounts(tier) {
+    return repairCost(tier).map(([id, amount]) => {
+      const name = typeof id === "string" ? RARE_MATERIALS[id] : blockNames[id];
+      return `${name} ${campaign.count(id)}/${amount}`;
+    }).join(" · ");
+  }
+
+  function repairAffordable(tier) {
+    return repairCost(tier).every(([id, amount]) => campaign.count(id) >= amount);
+  }
+
+  // The broken card's jump line: "在工作台修理（石头 5）".
+  function repairHint(piece) {
+    return `在工作台修理（${repairCostText(piece.tier)}）`;
+  }
+
+  // A piece's display name, by slot (weapons come from the weapon
+  // registry, armor and tools from the recipe table).
+  function equipmentPieceName(piece, slot) {
+    return slot === "weapon" ? WEAPONS[piece.key].name : RECIPES[piece.key].name;
+  }
+
+  // Repair one equipped piece to full, from the workbench tab's repair
+  // rows. The campaign refuses when the piece is full, the materials
+  // are short, or there is no workbench yet; a failed write is reported
+  // by the save-conflict flow like any other inventory action.
+  function repairEquipment(slot) {
+    const piece = campaign.equipment[slot];
+    if (!piece) return;
+    const result = campaign.repairEquipment(slot);
+    if (!result) {
+      setText(inventoryNotice, piece.durability >= durabilityMax(piece.tier) ? "已满耐久" : "材料不足，无法修理");
+      return;
+    }
+    if (checkSaveConflict(result)) return;
+    updateInventory();
+    setText(inventoryNotice, `已修理${equipmentPieceName(piece, slot)}，耐久回满`);
+  }
+
+  // The workbench tab's repair rows: one per damaged piece, hidden
+  // otherwise. The empty line reads "没有损坏的装备" (or "需先建造工作台"
+  // before the workbench exists, when nothing can be repaired at all).
+  function updateRepairList() {
+    let anyDamaged = false;
+    for (const slot of ["weapon", "armor", "tool"]) {
+      const piece = campaign.equipment[slot];
+      const row = document.querySelector(`#repair-row-${slot}`);
+      if (!piece || piece.durability >= durabilityMax(piece.tier)) { row.hidden = true; continue; }
+      anyDamaged = true;
+      row.hidden = false;
+      setText(document.querySelector(`#repair-${slot}-name`),
+        `${equipmentPieceName(piece, slot)} · 耐久 ${Math.floor(piece.durability / durabilityMax(piece.tier) * 100)}%`);
+      setText(document.querySelector(`#repair-${slot}-cost`), repairCostWithCounts(piece.tier));
+      const button = document.querySelector(`#repair-${slot}`);
+      button.disabled = !campaign.workbenchBuilt || !repairAffordable(piece.tier);
+      setText(button, "修理");
+    }
+    const empty = document.querySelector("#repair-empty");
+    empty.hidden = anyDamaged;
+    setText(empty, campaign.workbenchBuilt ? "没有损坏的装备" : "需先建造工作台");
+  }
+
+  function updateInventory() {
+    renderMaterials(inventoryMaterials);
+    renderMaterials(workbenchMaterials);
     setText(axeCost, campaign.axeUnlocked ? "已解锁，按 7 装备" : recipeCost("axe"));
-    setText(dressingCost, `${recipeCost("dressing")} · 恢复 ${RECIPES.dressing.healing} 点生命`);
-    setText(inventoryDressings, `敷料 ${campaign.dressings} 件 · 当前生命 ${player.hp}/100`);
+    const counts = campaign.dressingsByRecipe;
+    // The dressing row shows the heal a use actually gives: the recipe
+    // amount plus the 急救 bonus when unlocked, so the line never lies
+    // about the +10.
+    const firstAid = campaign.techUnlocked.includes("firstAid") ? TECH_EFFECTS.firstAidHealing : 0;
+    for (const { key, cost, craft, use } of healingControls) {
+      setText(cost, `${recipeCost(key)} · 恢复 ${RECIPES[key].healing + firstAid} 点生命`);
+      craft.disabled = !campaign.canCraft(key);
+      use.disabled = !counts[key] || player.hp >= 100;
+    }
+    setText(inventoryDressings, `${HEALING_KEYS.map(key => `${RECIPES[key].name} ${counts[key]} 件`).join(" · ")} · 当前生命 ${player.hp}/100`);
     craftAxeButton.disabled = !campaign.canCraft("axe");
-    craftDressingButton.disabled = !campaign.canCraft("dressing");
-    useDressingButton.disabled = !campaign.dressings || player.hp >= 100;
+    setText(workbenchCost, campaign.workbenchBuilt ? "已建造" : recipeCost("workbench"));
+    craftWorkbenchButton.disabled = !campaign.canCraft("workbench");
+    updateRepairList();
+    const progress = campaign.loadProgress();
+    const state = campaign.techState(progress);
+    for (const { key, cost, craft } of equipmentControls) {
+      const owned = campaign.equipment[RECIPES[key].equipment];
+      const reason = recipeLockReason(key, state);
+      setText(cost, owned ? `已装备${RECIPES[owned.key].name}`
+        : reason ? `${reason} · ${recipeCost(key)}` : recipeCost(key));
+      craft.disabled = !campaign.canCraft(key);
+    }
+    updateWorkbenchDetail(state);
+    updateEquipmentCards();
+    updateTechTree(state);
   }
 
   function craftItem(key) {
@@ -2554,20 +3932,25 @@ export function initGame(window) {
     if (key === "axe") inventoryResume.focus({ preventScroll: true });
   }
 
-  function healWithDressing() {
+  function healWithDressing(key = "dressing") {
     if (!survival.enabled || !player.hp) return;
     let notice;
     if (player.hp >= 100) notice = "生命已满";
     else {
-      const result = campaign.useDressing();
+      const result = campaign.useDressing(key);
       if (checkSaveConflict(result)) return;
-      if (!result) notice = "背包里没有敷料，按 C 制作";
+      if (!result) notice = `背包里没有${RECIPES[key]?.name ?? "治疗品"}，按 C 制作`;
+      else if (!result.saved) notice = `使用${RECIPES[key]?.name ?? "治疗品"}失败 · 未保存`;
       else {
-        const healed = Math.min(100 - player.hp, RECIPES.dressing.healing);
+        // The healed amount comes back from the campaign per recipe — it
+        // is only present when the use actually saved. A failed save
+        // rolls the count back, so there is nothing to heal for: healing
+        // anyway would spend a dressing the player still owns.
+        const healed = Math.min(100 - player.hp, result.healed);
         player.hp += healed;
         updateHealth();
         updateHotbar();
-        notice = `生命 +${healed}${result.saved ? "" : " · 未保存"}`;
+        notice = `生命 +${healed}`;
       }
     }
     if (inventoryScreen.hidden) showMessage(notice);
@@ -2577,12 +3960,13 @@ export function initGame(window) {
     }
   }
 
-  function openInventory() {
+  function openInventory(tab) {
     if (!started || finished || !player.hp) return;
     if (!survival.enabled) {
       showMessage(boss ? (boss.profile === COLOSSUS ? "6 石剑 · 7 石斧 · 8 星脉枪" : "挑战武器可用 6、7 或滚轮切换") : "自由建造的方块不限量");
       return;
     }
+    if (tab) selectInventoryTab(tab);
     inventoryFromPlay = mouseMode !== "paused";
     inventoryScreen.hidden = false;
     suspendGame();
@@ -2596,6 +3980,18 @@ export function initGame(window) {
     setMouseMode("paused");
     if (resume) requestMouse();
     else pauseInventoryButton.focus({ preventScroll: true });
+  }
+  function spawnDebris(cell, block) {
+    const color = blockColors[block] ?? [.5, .5, .5];
+    const css = `rgb(${color.map(value => Math.round(value * 255)).join(",")})`;
+    for (let i = 0; i < 8; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 1.2 + Math.random() * 1.8;
+      debris.push({ x: cell[0] + .5, y: cell[1] + .5, z: cell[2] + .5,
+        vx: Math.cos(angle) * speed, vy: 2 + Math.random() * 2.5, vz: Math.sin(angle) * speed,
+        age: 0, color: css });
+    }
+    if (debris.length > 48) debris.splice(0, debris.length - 48);
   }
   function interact(place) {
     const weapon = weapons[selected - palette.length];
@@ -2645,7 +4041,13 @@ export function initGame(window) {
     const result = campaign.editBlock(index(x, y, z), before, type, survival.enabled);
     if (!result || checkSaveConflict(result)) return;
     set(...cell, type);
+    if (!place && survival.enabled) wearEquipped("tool");
+    if (place) {
+      pops.push({ x, y, z, type, age: 0 });
+      if (pops.length > 16) pops.shift();
+    }
     player.handAction = blockActionTime;
+    if (!place) spawnDebris(cell, before);
     survival.recalc = 0;
     survival.routesDirty = true;
     sound.play(place ? "place" : "break", effectMaterial);
@@ -2665,9 +4067,11 @@ export function initGame(window) {
   }
 
   function bindVertexLayout() {
-    gl.enableVertexAttribArray(positionLocation); gl.vertexAttribPointer(positionLocation, 3, gl.FLOAT, false, 40, 0);
-    gl.enableVertexAttribArray(colorLocation); gl.vertexAttribPointer(colorLocation, 3, gl.FLOAT, false, 40, 12);
-    gl.enableVertexAttribArray(faceLocation); gl.vertexAttribPointer(faceLocation, 4, gl.FLOAT, false, 40, 24);
+    // 12 floats per vertex: position 3, colour 3, face 4, atlas UV 2.
+    gl.enableVertexAttribArray(positionLocation); gl.vertexAttribPointer(positionLocation, 3, gl.FLOAT, false, 48, 0);
+    gl.enableVertexAttribArray(colorLocation); gl.vertexAttribPointer(colorLocation, 3, gl.FLOAT, false, 48, 12);
+    gl.enableVertexAttribArray(faceLocation); gl.vertexAttribPointer(faceLocation, 4, gl.FLOAT, false, 48, 24);
+    gl.enableVertexAttribArray(uvLocation); gl.vertexAttribPointer(uvLocation, 2, gl.FLOAT, false, 48, 40);
   }
   function advanceWorld(dt) {
     const [lookX, lookY] = mouseLook.advance(dt);
@@ -2713,6 +4117,20 @@ export function initGame(window) {
       viewOrigin[1] += Math.cos((boss.elapsed + .4) * 93) * kick * .7;
       viewOrigin[2] += Math.sin((boss.elapsed + 2.3) * 61) * kick;
     }
+    // Camera feel: head bob while walking, a dip on landing, and a shake on hurt.
+    const speed2d = Math.hypot(player.vx, player.vz);
+    const bobAmount = player.grounded ? Math.min(1, speed2d / 4.15) : 0;
+    viewOrigin[1] += Math.sin(stepDistance * 3.6) * .028 * bobAmount;
+    viewOrigin[0] += Math.cos(stepDistance * 3.6) * .014 * bobAmount;
+    landDip *= Math.exp(-dt * 7);
+    viewOrigin[1] -= landDip;
+    if (player.hurt > 0) {
+      const kick = player.hurt * player.hurt * .06;
+      viewOrigin[0] += Math.sin(time * .11) * kick;
+      viewOrigin[1] += Math.cos(time * .13) * kick * .6;
+    }
+    const sprinting = (keys.has("ShiftLeft") || keys.has("ShiftRight")) && player.grounded && speed2d > 4.5;
+    fovBoost += ((sprinting ? 1 : 0) - fovBoost) * Math.min(1, dt * 5);
     const [ex, ey, ez] = viewOrigin;
     const bossModel = !boss ? null : boss.profile === COLOSSUS ? posedColossus(boss) : posedGuardian(boss);
     renderedView = { origin, direction: d, bossModel };
@@ -2720,7 +4138,7 @@ export function initGame(window) {
     // Boss attacks ask the player to read silhouettes and ground space at the
     // same time.  A slightly wider arena lens keeps the raised weapon and its
     // incoming hazard in frame without changing aiming or collision rules.
-    const fov = boss ? Math.PI * .4 : Math.PI / 3;
+    const fov = boss ? Math.PI * .4 : Math.PI / 3 + fovBoost * .10;
     const vp = multiply(perspective(fov, aspect, .06, 90), lookAt(ex, ey, ez, ex + d[0], ey + d[1], ez + d[2]));
     const night = Boolean(defense.beacon) && !defense.victory;
     const arena = boss?.profile.arena;
@@ -2728,10 +4146,20 @@ export function initGame(window) {
     if (arena?.fractureSky && boss.phaseGlow > 0) {
       sky = sky.map((channel, i) => channel + (arena.fractureSky[i] - channel) * boss.phaseGlow);
     } else if (night) sky = [sky[0] * .36, sky[1] * .42, sky[2] * .51];
+    // Day/night only touches the open world: the sky tint, fog density and
+    // ambient light all follow the sun, while boss arenas keep the fixed
+    // look their fights were tuned for.
+    const cycle = boss ? null : dayCycle(dayTime);
+    if (cycle) sky = sky.map((channel, i) => channel * cycle.skyTint[i]);
     gl.clearColor(...sky, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.useProgram(program); gl.uniform3f(cameraLocation, ex, ey, ez); gl.uniformMatrix4fv(viewProjectionLocation, false, vp);
-    gl.uniform3f(skyLocation, ...sky); gl.uniform2f(fogLocation, ...(boss ? boss.profile.arena.fog : weather.fog));
-    gl.uniform1f(lightLocation, boss ? .94 : weather.light * (night ? .75 : 1));
+    if (atlasTexture) { gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, atlasTexture); }
+    gl.uniform1i(atlasLocation, 0); gl.uniform1f(useAtlasLocation, atlasDetailed ? 1 : 0);
+    gl.uniform3f(skyLocation, ...sky);
+    gl.uniform1f(fogDensityLocation, boss ? fogDensityForRange(arena.fog[1]) : cycle.fogDensity * (25 / weather.fog[1]));
+    gl.uniform1f(lightLocation, boss ? .94 : weather.light * cycle.light * (night ? .75 : 1));
+    gl.uniform3f(sunLocation, ...(cycle ? cycle.sunDir : [0.45, 0.52, 0.38]));
+    gl.uniform1f(dayLocation, cycle ? cycle.dayFactor : 1);
     const furnaceActive = boss?.profile === BOSS && boss.hp;
     const furnaceCharge = furnaceActive ? (boss.state === "windup" ? .82 : boss.state === "attack" ? 1.34 : boss.state === "recovery" ? .38 : .46) : 0;
     gl.uniform4f(furnaceLocation, boss?.x ?? 0, boss ? boss.y + 1.8 : 0, boss?.z ?? 0, furnaceCharge);
@@ -2742,18 +4170,31 @@ export function initGame(window) {
     const range = isGun(weapon) ? (pulse.charge === null ? weapon.reach : pulseBurst.reach) : interactionReach;
     const blockHit = active && player.hp ? raycast(origin, d, range) : null;
     const aim = active && player.hp ? aimEnemy(origin, d, blockHit, range) : null;
-    gl.uniform3f(targetLocation, ...(!weapon && !aim && blockHit ? blockHit.hit : [-1, -1, -1]));
+    // The target block stays highlighted even while holding a weapon or
+    // aiming past a zombie: it shows what you would mine if you switched.
+    gl.uniform3f(targetLocation, ...(!aim && blockHit ? blockHit.hit : [-1, -1, -1]));
+    drawSkyDome(viewOrigin, sky);
     drawTerrain();
     drawForgeFloor();
     drawForgeStage();
     drawForgeAtmosphere();
     drawActors(bossModel);
+    drawParticles3D();
+    drawPops();
     drawGuardianFire();
     drawDragonFire();
+    drawRain3D(sheltered ? 0 : rain);
     sound.setRoar(active && !finished && Boolean(boss?.dragons.length));
-    const muzzle = isGun(weapon) && player.hp ? drawPulseWeapon(perspective(Math.PI / 3, aspect, .035, 6)) : null;
+    const muzzle = player.hp
+      ? isGun(weapon) ? drawPulseWeapon(perspective(Math.PI / 3, aspect, .035, 6))
+        : weapon ? drawMeleeWeapon(perspective(Math.PI / 3, aspect, .035, 6)) : null
+      : null;
     drawEffects(weapon, heldBlock, sheltered ? 0 : rain, vp, muzzle);
     if (started) updateStatus(aim, weapon);
+    if (started && pendingDurabilityWarning) {
+      showMessage(pendingDurabilityWarning);
+      pendingDurabilityWarning = null;
+    }
   }
 
   document.addEventListener("keydown", event => {
@@ -2763,7 +4204,9 @@ export function initGame(window) {
     }
     if (!inventoryScreen.hidden && (event.code === "Escape" || (event.code === "KeyC" && !event.repeat))) {
       event.preventDefault();
-      closeInventory(event.code === "KeyC" && inventoryFromPlay);
+      // Esc and C both go straight back to the game when the bag was opened
+      // from play; when opened from the pause menu both go back there.
+      closeInventory(inventoryFromPlay);
       return;
     }
     if (event.code === "Escape" && (mouseMode !== "paused" || lockAttempt)) {
@@ -2811,7 +4254,7 @@ export function initGame(window) {
     if (event.code.startsWith("Arrow")) event.preventDefault();
     if (event.code === "Space") {
       event.preventDefault();
-      if (!event.repeat) jumpBuffer = .12;
+      if (!event.repeat) jumpBuffer = .18;
     }
     if (event.code.startsWith("Digit")) selectSlot((Number(event.code.slice(5)) || 10) - 1);
   });
@@ -2862,6 +4305,13 @@ export function initGame(window) {
   }
 
   function suspendGame() {
+    // Pausing forces any batched block edits to disk now, so a tab that is
+    // closed or switched away from never loses the last 300ms of digging.
+    const flushResult = campaign.flush?.();
+    if (flushResult && !flushResult.saved) {
+      if (flushResult.conflict) checkSaveConflict(flushResult);
+      else showMessage("存档写入失败，本次改动可能未保存");
+    }
     window.clearTimeout(lockAttempt?.timer);
     lockAttempt = null;
     setMouseMode("paused");
@@ -2884,10 +4334,15 @@ export function initGame(window) {
     return Boolean(result?.conflict);
   }
 
-  function loadLatestSave() {
-    if (saveConflict || campaign.stale) {
+  // `force` rebuilds the world even when the save is not stale: the save
+  // import uses it so the menu backdrop shows the imported blocks right
+  // away instead of waiting for the next start.
+  function loadLatestSave(force = false) {
+    if (force || saveConflict || campaign.stale) {
       campaign = createProgression(storage, WORLD);
-      homeWorld.set(generateTerrain(WORLD, BLOCK));
+      const fresh = generateTerrain(WORLD, BLOCK);
+      homeWorld.set(fresh);
+      homeWorld.variants = fresh.variants;
       loadEdits();
       for (const mesh of chunkMeshes.values()) mesh.dirty = true;
       updateHotbar();
@@ -2939,10 +4394,11 @@ export function initGame(window) {
     if (mouseMode === "paused") return;
     wakeAudio();
     if (mouseMode === "locked" && event.button === 0 && isGun(weapons[selected - palette.length])) firing = true;
+    if (mouseMode === "locked" && event.button === 0) { mouseHeld = true; mouseHeldRepeat = 0; }
     if (mouseMode === "locked" || event.button === 2) interact(event.button === 2);
   });
   document.addEventListener("mouseup", event => {
-    if (event.button === 0) firing = false;
+    if (event.button === 0) { firing = false; mouseHeld = false; }
     if (event.button !== 2 || pulse.charge === null) return;
     const charged = Math.max(pulse.charge, (performance.now() - pulse.chargeStarted) / 1000) >= pulseBurst.windup;
     pulse.charge = null;
@@ -2980,7 +4436,7 @@ export function initGame(window) {
   });
   for (const type of ["pointercancel", "lostpointercapture"]) {
     canvas.addEventListener(type, event => {
-      if (drag?.pointerId === event.pointerId) { firing = false; cancelDrag(); }
+      if (drag?.pointerId === event.pointerId) { firing = false; mouseHeld = false; cancelDrag(); }
     });
   }
 
@@ -3012,6 +4468,7 @@ export function initGame(window) {
   document.addEventListener("visibilitychange", () => {
     if (document.hidden && (mouseMode !== "paused" || lockAttempt)) suspendGame();
   });
+  window.addEventListener("pagehide", () => campaign.flush?.());
   window.addEventListener("storage", event => {
     if (event.storageArea !== storage) return;
     if (event.key === sensitivityKey || event.key === null) {
@@ -3054,12 +4511,21 @@ export function initGame(window) {
   canvas.addEventListener("webglcontextrestored", rebuildRenderer);
   soundButton.addEventListener("click", toggleSound);
   pauseSoundButton.addEventListener("click", toggleSound);
+  // The speed readout is hidden by default (it's a debug panel, not HUD);
+  // the pause menu can bring it back.
+  speedToggleButton?.addEventListener("click", () => {
+    const hud = document.querySelector(".speed-hud");
+    const show = hud.hidden;
+    hud.hidden = !show;
+    speedToggleButton.textContent = show ? "隐藏速度表" : "显示速度表";
+    speedToggleButton.setAttribute("aria-pressed", String(show));
+  });
   resumeButton.addEventListener("click", () => requestMouse());
-  pauseInventoryButton.addEventListener("click", openInventory);
+  pauseInventoryButton.addEventListener("click", () => openInventory("backpack"));
   inventoryResume.addEventListener("click", () => closeInventory(true));
   craftAxeButton.addEventListener("click", () => craftItem("axe"));
-  craftDressingButton.addEventListener("click", () => craftItem("dressing"));
-  useDressingButton.addEventListener("click", healWithDressing);
+  // The healing buttons (craft + use per recipe, dressing included) are
+  // wired by healingControls above, so they are not wired again here.
 
   function returnToMenu() {
     started = false;
@@ -3073,7 +4539,7 @@ export function initGame(window) {
     deathScreen.hidden = true;
     hud.hidden = true;
     startScreen.hidden = false;
-    menuStatus.hidden = !graphicsLost;
+    showMenuRecord();
     resetSurvival();
     placePlayerAtSpawn();
     ({ yaw, pitch } = spawnView);
@@ -3081,7 +4547,10 @@ export function initGame(window) {
   }
   pauseMenuButton.addEventListener("click", returnToMenu);
   reloadSaveButton.addEventListener("click", returnToMenu);
-  deathMenuButton.addEventListener("click", returnToMenu);
+  deathMenuButton.addEventListener("click", () => {
+    if (pendingProgressChoice) { resolveProgressChoice(false); return; }
+    returnToMenu();
+  });
 
   function startWorld(mode) {
     if (graphicsLost) return;
@@ -3094,6 +4563,15 @@ export function initGame(window) {
     finished = false;
     Object.assign(defense, { beacon: null, routes: null, seconds: 0, elapsed: 0, victory: false });
     resetSurvival();
+    // Load the progress record before the run starts: it seeds the wave
+    // status display, and finishRun merges this run into it. Loading
+    // here also establishes the staleness snapshot, so a save from
+    // another tab during the run is caught at finishRun.
+    savedProgress = campaign.loadProgress();
+    runBossDefeated = null;
+    mergedProgress = null;
+    pendingProgressChoice = null;
+    deathMenuButton.textContent = "返回主菜单";
     if (!placePlayerAtSpawn()) {
       returnToMenu();
       menuStatus.hidden = false;
@@ -3136,7 +4614,7 @@ export function initGame(window) {
     hud.hidden = false;
     pause.hidden = true;
     updateStatus(null, weapons[selected - palette.length]);
-    showMessage(boss ? (boss.profile === COLOSSUS ? "8 星脉枪 · R 充能" : "6 石剑 · 7 石斧") : defense.beacon ? "守住信标，清完五波敌人"
+    showMessage(boss ? (boss.profile === COLOSSUS ? "8 星脉枪 · R 充能" : "6 石剑 · 7 石斧") : defense.beacon ? "守住信标，清完八波敌人"
       : withZombies ? "石剑已装备 · 按 C 查看配方" : "自由建造 · 方块改动会自动保存");
     requestMouse(true);
   }
@@ -3146,6 +4624,7 @@ export function initGame(window) {
   startButton.addEventListener("click", () => startWorld("survival"));
   buildButton.addEventListener("click", () => startWorld("creative"));
   respawnButton.addEventListener("click", () => {
+    if (pendingProgressChoice) { resolveProgressChoice(true); return; }
     if (boss) { startWorld(boss.profile.id); return; }
     if (campaign.stale) {
       startWorld(defense.beacon ? "defense" : "survival");
@@ -3154,6 +4633,8 @@ export function initGame(window) {
     if (defense.beacon) { startWorld("defense"); return; }
     finished = false;
     resetSurvival();
+    runBossDefeated = null;
+    mergedProgress = null;
     placePlayerAtSpawn();
     ({ yaw, pitch } = spawnView);
     selected = palette.length;
@@ -3167,7 +4648,7 @@ export function initGame(window) {
   loadEdits(); placePlayerAtSpawn(); rebuildRenderer();
   if (!graphicsLost) prepareTerrain(8);
   setText(landingSpeedLabel, `落地 → ${LANDING_SAMPLE_TIME.toFixed(2)} 秒后`);
-  updateHotbar(); updateSoundButton(); updateLookControl(); window.requestAnimationFrame(render);
+  updateHotbar(); updateSoundButton(); updateLookControl(); showMenuRecord(); window.requestAnimationFrame(render);
 }
 
 if (typeof window !== "undefined") initGame(window);

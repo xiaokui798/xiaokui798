@@ -1,0 +1,1 @@
+{"description":"方块世界：原生 JavaScript + WebGL 2 单人生存沙盒","engines":{"node":">=20"},"name":"fangkuai-shijie","scripts":{"start":"node server.js","test":"node --test"},"version":"0.1.0"}

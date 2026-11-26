@@ -15,6 +15,7 @@
       <section class="panel">
         <h1>方块世界</h1>
         <p class="intro">挑战断星巨像和熔炉守卫，或在方块世界里生存建造。</p>
+        <p class="menu-note">需要桌面浏览器 + 鼠标键盘游玩</p>
         <div class="menu-actions">
           <button id="colossus-button" type="button">挑战断星巨像</button>
           <button id="boss-button" class="secondary-button" type="button">挑战熔炉守卫</button>
@@ -26,8 +27,9 @@
         <p id="menu-status" class="menu-note" role="status" hidden></p>
         <div class="controls" aria-label="操作说明">
           <p><kbd>W A S D</kbd> 移动 <kbd>空格</kbd> 跳跃 <kbd>Shift</kbd> 冲刺</p>
-          <p><kbd>鼠标 / 方向键</kbd> 环视 <kbd>左键</kbd> 攻击或挖掘 <kbd>右键</kbd> 放置</p>
+          <p><kbd>鼠标 / 方向键</kbd> 环视 <kbd>左键</kbd> 攻击或挖掘（按住可连续） <kbd>右键</kbd> 放置</p>
           <p><kbd>1–5</kbd> 方块 <kbd>6</kbd> 石剑 <kbd>7</kbd> 石斧</p>
+          <p><kbd>8</kbd> 星脉枪 <kbd>9</kbd> 速射枪 <kbd>0</kbd> 重炮（断星巨像） <kbd>1</kbd> 回血 <kbd>4</kbd> 五龙冲击（断星巨像）</p>
           <p><kbd>C</kbd> 背包与制作 <kbd>H</kbd> 使用敷料</p>
           <p><kbd>T</kbd> 切换天气 <kbd>M</kbd> 音效 <kbd>Esc</kbd> 暂停</p>
         </div>
@@ -49,6 +51,10 @@
       </div>
       <div id="crosshair" aria-hidden="true" hidden></div>
       <div id="target-status" hidden></div>
+      <div id="weapon-state" class="vitals" hidden>
+        <label for="weapon-recovery" id="weapon-label"></label>
+        <progress id="weapon-recovery" max="100" value="100"></progress>
+      </div>
       <section id="boss-hud" class="boss-hud" aria-label="熔炉守卫" hidden>
         <label for="boss-health"><span id="boss-name">熔炉守卫</span><strong id="boss-health-value">80 / 80</strong></label>
         <progress id="boss-health" max="80" value="80"></progress>
@@ -60,7 +66,7 @@
         <div id="beacon-bearing" class="defense-detail"></div>
         <div id="defense-actions" class="defense-detail"></div>
       </div>
-      <section class="speed-hud" aria-label="移动速度">
+      <section class="speed-hud" aria-label="移动速度" hidden>
         <div class="speed-current"><span>水平速度</span><strong id="speed-current">0.00</strong><span>格/秒</span></div>
         <dl class="speed-metrics">
           <div><dt>起跳 → 峰值</dt><dd id="speed-jump">待起跳</dd></div>
@@ -73,10 +79,6 @@
           <progress id="health" max="100" value="100"></progress>
         </div>
         <div id="survival-supplies" class="supplies" hidden><span><kbd>C</kbd> 背包</span><span><kbd>H</kbd> 敷料 <strong id="hud-dressings">0</strong></span></div>
-        <div id="weapon-state" class="vitals" hidden>
-          <label for="weapon-recovery" id="weapon-label"></label>
-          <progress id="weapon-recovery" max="100" value="100"></progress>
-        </div>
         <div id="pulse-info" hidden></div>
         <div id="pulse-hint" hidden><kbd>左键</kbd> 单发 <kbd>按住右键</kbd> 爆发</div>
         <div id="hotbar" aria-label="物品栏"></div>
@@ -90,6 +92,7 @@
           <button id="pause-inventory-button" class="secondary-button" type="button">背包与制作</button>
           <button id="pause-menu-button" class="secondary-button" type="button">返回主菜单</button>
           <button id="pause-sound-button" class="sound-button" type="button" aria-label="游戏音效" aria-pressed="true">音效开启</button>
+          <button id="speed-toggle-button" class="secondary-button" type="button" aria-pressed="false">显示速度表</button>
           <button id="reload-save-button" type="button" hidden>载入最新存档</button>
         </div>
         <p id="save-warning" class="menu-note" role="status" hidden>另一标签页更新了存档。载入后会回到主菜单，当前波次结束。</p>
@@ -121,10 +124,6 @@
           <button id="inventory-resume" class="secondary-button" type="button">回到游戏</button>
         </header>
         <dl id="inventory-materials" class="inventory-materials" aria-label="材料数量"></dl>
-        <div class="recipe">
-          <div><h3>石斧</h3><p id="axe-cost"></p></div>
-          <button id="craft-axe" type="button">制作石斧</button>
-        </div>
         <div class="recipe">
           <div><h3>树叶敷料</h3><p id="dressing-cost"></p></div>
           <button id="craft-dressing" type="button">制作敷料</button>

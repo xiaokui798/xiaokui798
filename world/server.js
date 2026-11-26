@@ -11,9 +11,19 @@ const files = new Map([
   ["/progression.mjs", ["progression.mjs", "text/javascript; charset=utf-8"]],
   ["/terrain.mjs", ["terrain.mjs", "text/javascript; charset=utf-8"]],
   ["/defense.mjs", ["defense.mjs", "text/javascript; charset=utf-8"]],
+  ["/enemies.mjs", ["enemies.mjs", "text/javascript; charset=utf-8"]],
+  ["/recipes.mjs", ["recipes.mjs", "text/javascript; charset=utf-8"]],
+  ["/waves.mjs", ["waves.mjs", "text/javascript; charset=utf-8"]],
+  ["/difficulty.mjs", ["difficulty.mjs", "text/javascript; charset=utf-8"]],
+  ["/weapons.mjs", ["weapons.mjs", "text/javascript; charset=utf-8"]],
+  ["/armor.mjs", ["armor.mjs", "text/javascript; charset=utf-8"]],
+  ["/tools.mjs", ["tools.mjs", "text/javascript; charset=utf-8"]],
+  ["/tech.mjs", ["tech.mjs", "text/javascript; charset=utf-8"]],
+  ["/durability.mjs", ["durability.mjs", "text/javascript; charset=utf-8"]],
   ["/controls.mjs", ["controls.mjs", "text/javascript; charset=utf-8"]],
   ["/movement.mjs", ["movement.mjs", "text/javascript; charset=utf-8"]],
   ["/boss.mjs", ["boss.mjs", "text/javascript; charset=utf-8"]],
+  ["/forge-audio.mjs", ["forge-audio.mjs", "text/javascript; charset=utf-8"]],
   ["/weapon-assets.mjs", ["weapon-assets.mjs", "text/javascript; charset=utf-8"]],
   ["/styles.css", ["styles.css", "text/css; charset=utf-8"]]
 ]);
@@ -22,23 +32,39 @@ for (const name of ["laserSmall_003", "impactMetal_001", "explosionCrunch_002", 
   files.set("/" + file, [file, "audio/ogg"]);
 }
 
-http.createServer((req, res) => {
+const server = http.createServer((req, res) => {
   if (req.method !== "GET" && req.method !== "HEAD") {
-    res.writeHead(405, { Allow: "GET, HEAD" }).end();
+    res.writeHead(405, { Allow: "GET, HEAD", "X-Content-Type-Options": "nosniff" }).end();
     return;
   }
-  const asset = files.get(req.url.split("?", 1)[0]);
+  const pathname = req.url.split("?", 1)[0];
+  if (pathname === "/favicon.ico") {
+    res.writeHead(204, { "X-Content-Type-Options": "nosniff" }).end();
+    return;
+  }
+  const asset = files.get(pathname);
   if (!asset) {
-    res.writeHead(404).end();
+    res.writeHead(404, { "X-Content-Type-Options": "nosniff" }).end();
     return;
   }
   const [filename, contentType] = asset;
   fs.readFile(path.join(__dirname, filename), (error, content) => {
     if (error) {
-      res.writeHead(500).end();
+      res.writeHead(500, { "X-Content-Type-Options": "nosniff" }).end();
       return;
     }
-    res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-store" });
+    res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
     res.end(req.method === "HEAD" ? undefined : content);
 });
-}).listen(port, "127.0.0.1", () => console.log(`方块世界已启动：http://127.0.0.1:${port}`));
+});
+
+server.on("error", (error) => {
+  if (error.code === "EADDRINUSE") {
+    console.error(`端口 ${port} 已被占用：先停掉已在运行的方块世界服务，或用 WORLD_PORT=4174 node server.js 换一个端口。`);
+  } else {
+    console.error(error);
+  }
+  process.exit(1);
+});
+
+server.listen(port, "0.0.0.0", () => console.log(`方块世界已启动：http://127.0.0.1:${port}（监听 0.0.0.0，本机网卡地址也可访问）`));

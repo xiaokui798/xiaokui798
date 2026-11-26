@@ -53,7 +53,7 @@ test("running accelerates, release coasts, and counter-strafing brakes sooner", 
   nearly(player.vx, 0);
 });
 
-test("ground input reaches speed and reverses quickly while keeping a short coast", () => {
+test("ground input reaches speed and reverses quickly while coasting to a stop", () => {
   const player = playerAt();
   repeat(7, player, { side: 1 });
   assert.ok(player.vx >= 3.7);
@@ -64,14 +64,18 @@ test("ground input reaches speed and reverses quickly while keeping a short coas
   assert.ok(brake.vx <= 0);
   repeat(6, player);
   assert.ok(player.vx > 2);
-  repeat(6, player);
+  // Softer ground friction (12 -> 7) stretches the coast: stopping from full
+  // speed now takes ~21 ticks / 0.33 blocks instead of ~12 ticks / 0.2 blocks.
+  repeat(15, player);
   nearly(player.vx, 0);
-  assert.ok(player.x - startX < .2);
+  assert.ok(player.x - startX < .4);
 });
 
 test("changing direction drops the old sideways velocity without weakening the new direction", () => {
   const player = playerAt({ vx: 4.15 });
-  repeat(13, player, { forward: 1 });
+  // Softer lateral friction (14 -> 8) sheds the old velocity more slowly:
+  // 25 ticks instead of 13 to drop below .2.
+  repeat(25, player, { forward: 1 });
   assert.ok(player.vx < .2);
   assert.ok(player.vz < -4);
 });
@@ -94,7 +98,9 @@ test("jump keeps takeoff speed, air input steers gradually, and landing allows b
   tick(player, { side: 1 });
   assert.ok(player.vx > 0 && player.vx < 1 && player.vz < -3.9);
   repeat(20, player, { side: 1 });
-  assert.ok(player.vx > 1 && player.vx <= 2.3 && player.vz < 0);
+  // Air steering ceiling is now 3.5 (was 2.3), so sustained air strafing can
+  // build more sideways speed before the cap.
+  assert.ok(player.vx > 1 && player.vx <= 3.5 && player.vz < 0);
   for (let i = 0; i < 120 && !player.grounded; i++) tick(player);
   assert.equal(player.grounded, true);
   nearly(player.y, 1);
@@ -127,15 +133,17 @@ test("a takeoff with released keys preserves carried speed and a landing sheds i
   assert.ok(player.vz < -6 && player.vz > -6.75);
 });
 
-test("a fast landing coasts for less than 0.15s with movement keys released", () => {
+test("a fast landing coasts briefly with movement keys released", () => {
   const player = playerAt({ y: 1.025, vx: 6.75, vy: -4, grounded: false });
   tick(player);
   assert.equal(player.grounded, true);
   nearly(player.vx, 6.75);
   const landingX = player.x;
-  repeat(17, player);
+  // Softer ground friction (12 -> 7) stretches the slide to ~29 ticks
+  // (0.24s) and ~0.68 blocks instead of ~17 ticks (0.14s) and ~0.35 blocks.
+  repeat(29, player);
   nearly(player.vx, 0);
-  assert.ok(player.x - landingX < .4);
+  assert.ok(player.x - landingX < .75);
 });
 
 test("sustained air strafing respects its separate speed ceiling", () => {
@@ -205,6 +213,47 @@ test("stepping off a ledge removes ground support and placement uses the same bo
   assert.ok(player.x > 1.28 && player.y < 1 && !player.grounded);
   assert.equal(overlapsPlayerBlock(playerAt({ x: .72 }), 1, 1, 0), false);
   assert.equal(overlapsPlayerBlock(playerAt({ x: .73 }), 1, 1, 0), true);
+});
+
+test("walking off a ledge leaves 0.1s of coyote time to jump", () => {
+  const ledge = (x, y) => x < 1 && y < 1;
+  const player = playerAt();
+  let ticks = 0;
+  while (player.grounded && ticks < 120) { tick(player, { side: 1 }, ledge); ticks++; }
+  assert.ok(!player.grounded);
+  // Still inside the 0.1s coyote window, so this jump fires even though the
+  // player is already airborne.
+  assert.equal(tick(player, { jump: true }, ledge).jumped, true);
+  assert.ok(player.vy > 0);
+});
+
+test("coyote time expires, so a late jump in mid-air does nothing", () => {
+  const ledge = (x, y) => x < 1 && y < 1;
+  const player = playerAt();
+  let ticks = 0;
+  while (player.grounded && ticks < 120) { tick(player, { side: 1 }, ledge); ticks++; }
+  assert.ok(!player.grounded);
+  repeat(20, player, {}, ledge); // ~0.17s, past the 0.1s window
+  assert.equal(tick(player, { jump: true }, ledge).jumped, false);
+});
+
+test("a jump pressed just before landing fires on landing (0.18s buffer)", () => {
+  // Drop 0.15 blocks: ~0.12s of falling, inside the .18s buffer.
+  const player = playerAt({ y: 1.15, vy: 0, grounded: false });
+  assert.equal(tick(player, { jump: true }).jumped, false);
+  let jumped = false;
+  for (let i = 0; i < 30 && !jumped; i++) jumped = tick(player).jumped;
+  assert.equal(jumped, true);
+});
+
+test("a jump pressed too early expires before landing", () => {
+  // Drop 0.6 blocks: ~0.25s of falling, past the .18s buffer.
+  const player = playerAt({ y: 1.6, vy: 0, grounded: false });
+  assert.equal(tick(player, { jump: true }).jumped, false);
+  let jumped = false;
+  for (let i = 0; i < 60 && !jumped; i++) jumped = tick(player).jumped;
+  assert.equal(jumped, false);
+  assert.equal(player.grounded, true);
 });
 
 test("the beacon is swept as a solid obstacle from any approach speed", () => {

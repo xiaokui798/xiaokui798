@@ -1,27 +1,34 @@
-export const ENEMIES = Object.freeze({
-  walker: { name: "游荡者", hp: 70, speed: 1.52, reach: 1.18, damage: 12, strikeDelay: .32, cooldown: 1.28,
-    width: 1, height: 1, armor: false, coat: [.24, .31, .36], skin: [.54, .57, .40], eyes: [.96, .59, .21] },
-  runner: { name: "突袭者", hp: 43, speed: 2.52, reach: 1.14, damage: 8, strikeDelay: .18, cooldown: .94,
-    width: .8, height: .86, armor: false, coat: [.36, .26, .27], skin: [.58, .46, .40], eyes: [.91, .34, .20] },
-  breaker: { name: "破城者", hp: 155, speed: 1.13, reach: 1.44, damage: 22, strikeDelay: .70, cooldown: 1.55,
-    width: 1.20, height: 1.13, armor: true, coat: [.28, .27, .26], skin: [.55, .55, .50], eyes: [.89, .40, .14] }
-});
+import { ENEMIES, validateEnemies, assertValidEnemies } from "./enemies.mjs";
+export { ENEMIES, validateEnemies, assertValidEnemies };
+import { DEFENSE_WAVES, BEACON, validateWaves, assertValidWaves } from "./waves.mjs";
+export { DEFENSE_WAVES, BEACON, validateWaves, assertValidWaves };
+import { SURVIVAL_DIFFICULTY, validateDifficulty, assertValidDifficulty } from "./difficulty.mjs";
+export { SURVIVAL_DIFFICULTY, validateDifficulty, assertValidDifficulty };
 
-export const DEFENSE_WAVES = Object.freeze([
-  { name: "前哨接触", enemies: ["walker", "runner"], seconds: 65 },
-  { name: "快速突袭", enemies: ["runner", "runner", "walker"], seconds: 70 },
-  { name: "重型来袭", enemies: ["breaker", "walker", "runner"], seconds: 77 },
-  { name: "两面夹击", enemies: ["breaker", "runner", "runner", "walker", "walker"], seconds: 83 },
-  { name: "黎明前的攻势", enemies: ["breaker", "breaker", "runner", "runner", "walker", "walker"], seconds: 92 }
-]);
-
-export const BEACON = Object.freeze({ hp: 120, radius: .43, height: 1.93, repairRange: 3.1, repairCost: 3, repairedHp: 30 });
+// Defense runs past the five configured waves: waves 6-8 repeat the
+// final wave (see defenseWaveRoster), and clearing wave 8 wins.
+export const DEFENSE_TOTAL_WAVES = 8;
 
 export function choosesBeacon(kind, hasBeacon, distanceToPlayer, playerReachable, beaconReachable) {
   if (!hasBeacon) return false;
   if (kind === "breaker") return beaconReachable || !playerReachable;
   if (!playerReachable && beaconReachable) return true;
   return kind === "runner" && distanceToPlayer > 5.5 && beaconReachable;
+}
+
+// The roster a defense wave actually spawns: the configured roster from
+// waves.mjs, except the later waves gain one spitter, so the beacon
+// faces ranged pressure from wave 4 on without rebalancing the first
+// three waves. Returns a copy — the configured roster is never mutated.
+export function defenseWaveRoster(waveIndex) {
+  if (!Number.isInteger(waveIndex) || waveIndex < 0) return [];
+  // Past the configured waves the final wave repeats, so the ramp stays
+  // defined for any wave number.
+  const wave = DEFENSE_WAVES[waveIndex] ?? DEFENSE_WAVES[DEFENSE_WAVES.length - 1];
+  // The spitter count ramps with the wave number (1-based): none before
+  // wave 4, one on waves 4-5, two from wave 6 on.
+  const spitters = waveIndex >= 5 ? 2 : waveIndex >= 3 ? 1 : 0;
+  return [...wave.enemies, ...Array(spitters).fill("spitter")];
 }
 
 export function selectWaveSpawns(roster, candidates, alternateSides) {
@@ -45,10 +52,23 @@ export function repairPlan(hp, stone) {
   return { cost: BEACON.repairCost, restored: Math.min(BEACON.repairedHp, BEACON.hp - hp) };
 }
 
+// The single defense-victory predicate, shared by both victory paths:
+// the per-frame defenseResult below, and the clear-wave gate in game.js
+// (attack(), on the last kill — wired up separately, it still uses its
+// own inline check until the visual group closes 验收 1 and HQ clears
+// the game.js change). Both call sites must pass the alive count —
+// zombies still in their 0.5s death sink do not count — so victory keeps
+// the gate's timing instead of waiting for the sink to empty the array.
+// `wave >= TOTAL`, not `==`: a wave past eight still clears instead of
+// marching on to a ninth wave nobody configured.
+export function defenseCleared(wave, alive) {
+  return alive === 0 && wave >= DEFENSE_TOTAL_WAVES;
+}
+
 export function defenseResult(wave, remaining, beaconHp, playerHp, seconds) {
   if (beaconHp <= 0) return "beacon-destroyed";
   if (playerHp <= 0) return "player-down";
-  if (remaining === 0 && wave >= DEFENSE_WAVES.length) return "cleared";
+  if (defenseCleared(wave, remaining)) return "cleared";
   if (remaining > 0 && seconds <= 0) return "timeout";
   return "playing";
 }
@@ -115,6 +135,7 @@ export function findMeleeTarget(origin, direction, nearest, zombies, beacon, ela
       (...part) => { nearest = Math.min(nearest, rotating(...part)); });
   }
   for (const zombie of zombies) {
+    if (zombie.dying !== undefined) continue;
     const profile = ENEMIES[zombie.kind] ?? ENEMIES.walker;
     const hit = actorRay(origin, direction, zombie, zombie.angle, profile.width, profile.height);
     let distance = nearest;

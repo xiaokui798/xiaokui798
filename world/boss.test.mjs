@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ARENA, BOSS, GUARDIAN_WAVES, COLOSSUS, SKY_COURT, SKY_COURT_COVERS, BOSS_ATTACKS, buildArena, buildBossTerrain,
-  createBossFight, advanceBoss, strikeBoss, interruptFurnace, damagePrism, posedColossus, insideColossusHazard, modelHit, pulseViewModel } from "./boss.mjs";
+  createBossFight, advanceBoss, strikeBoss, interruptFurnace, damagePrism, posedColossus, insideColossusHazard, modelHit, pulseViewModel, meleeViewModel } from "./boss.mjs";
 import { WORLD, voxelIndex } from "./terrain.mjs";
 
 const player = { x: ARENA.x, y: ARENA.floor, z: ARENA.spawnZ };
@@ -222,6 +222,20 @@ test("the view model moves the muzzle and energy cell independently", () => {
   assert.ok(reloading.parts.filter(part => part.glow).length < ready.parts.filter(part => part.glow).length);
   const cellHeight = model => model.parts.find(part => part.dimensions[2] === .158).center[1];
   assert.ok(cellHeight(reloading) < cellHeight(ready) - .15);
+});
+
+test("the melee view model is a 3D sword or axe that moves through a swing", () => {
+  const rest = meleeViewModel({ style: "sword", swing: 0, bob: [0, 0] });
+  const mid = meleeViewModel({ style: "sword", swing: .135, bob: [0, 0] });
+  const axe = meleeViewModel({ style: "axe", swing: 0, bob: [0, 0] });
+  assert.ok(rest.parts.length >= 4 && mid.parts.length === rest.parts.length);
+  assert.ok(axe.parts.length >= 3);
+  // A mid-swing sword is somewhere else than at rest: the swing changes
+  // the aim basis, so the blade tip moves. The axe head is a different
+  // shape than the sword blade.
+  const tip = model => model.parts[2].center;
+  assert.notDeepEqual(tip(mid), tip(rest));
+  assert.notDeepEqual(axe.parts[2].dimensions, rest.parts[2].dimensions);
 });
 
 test("the colossus marks a delayed meteor and expands its rift after half health", () => {

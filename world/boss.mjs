@@ -993,4 +993,31 @@ export function pulseViewModel({ charge, recharge, recoiling, bob, ammo, charged
   return { parts: transformParts(parts, anchor, aim), muzzle: add(anchor, orient(muzzle, aim)) };
 }
 
+// Melee view model: a low-poly sword or axe held in the same view space as
+// the guns, so melee is a 3D object instead of a flat 2D drawing. `swing`
+// is the seconds left of the .27s swing (0 = at rest); the swing is split
+// into anticipation -> strike -> recover and reads through the aim basis.
+export function meleeViewModel({ style = "sword", swing = 0, bob = [0, 0] }) {
+  const phase = swing > 0 ? 1 - swing / .27 : 1;
+  const windup = phase < .25 ? phase / .25 : 0;
+  const strike = phase < .25 ? 0 : phase < .6 ? (phase - .25) / .35 : 1;
+  const recover = phase < .6 ? 0 : (phase - .6) / .4;
+  const sweep = strike * (1 - recover);
+  const steel = [.62, .68, .65], edge = [.86, .91, .88], dark = [.085, .14, .18];
+  const wood = [.48, .29, .12], leather = [.38, .27, .18];
+  const parts = style === "sword" ? [
+    piece(plate, [0, -.30, -.10], [.10, .16, .10], leather),
+    piece(plate, [0, -.22, -.10], [.20, .04, .12], dark),
+    piece(plate, [0, .02, -.10], [.09, .42, .03], steel),
+    piece(plate, [0, .26, -.10], [.07, .10, .03], edge)
+  ] : [
+    piece(plate, [0, -.28, -.10], [.08, .34, .08], wood),
+    piece(plate, [0, .02, -.10], [.30, .22, .04], steel),
+    piece(plate, [0, .02, -.10], [.10, .22, .05], edge)
+  ];
+  const anchor = [.42 + bob[0] - sweep * .30, -.34 + bob[1] - windup * .06 + sweep * .10, -1.01];
+  const aim = axes(.22 + windup * .18 - sweep * .30, -.16 + sweep * .22, -.35 + windup * .5 - sweep * .85);
+  return { parts: transformParts(parts, anchor, aim) };
+}
+
 const shadowCell = [.14, .22, .23];

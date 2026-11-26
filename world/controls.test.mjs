@@ -49,9 +49,23 @@ test("a burst of valid deltas is bounded even after a dropped frame", () => {
   const look = createMouseLook(100);
   look.push(20, 10, "locked");
   for (let i = 0; i < 30; i++) look.push(120, -90, "locked");
-  assert.ok(Math.hypot(...look.advance(.15)) <= .11000001);
-  assert.ok(Math.hypot(...settle(look)) < .081);
+  // The queue cap is now .75rad (was .19rad): a dropped frame may deliver the
+  // whole capped burst at once, but the total turn never exceeds the cap even
+  // though 31 pushes queued ~12rad of input.
+  const first = Math.hypot(...look.advance(.15));
+  assert.ok(first > .7 && first <= .75000001);
   assert.deepEqual(look.advance(.016), [0, 0]);
+});
+
+test("a large flick is delivered in full instead of being truncated", () => {
+  const look = createMouseLook();
+  // Prime the first-sample guard, then drain it so only the flick is measured.
+  look.push(10, 0, "locked");
+  settle(look);
+  look.push(500, 0, "locked");
+  // 500px at the default 40% sensitivity is 500 * .00325 * .40 = .65rad;
+  // the old .19rad queue cap would have delivered less than a third of it.
+  assert.ok(Math.abs(settle(look)[0] - .65) < .0005);
 });
 
 test("fast but plausible coalesced events continue to turn at the bounded rate", () => {
@@ -60,13 +74,25 @@ test("fast but plausible coalesced events continue to turn at the bounded rate",
   look.advance(.016);
   look.push(580, 0, "locked");
   const [x] = look.advance(.016);
-  assert.ok(x > .07 && x <= .11);
+  // 580px at 40% queues ~.75rad (capped); one 60fps frame drains
+  // 15rad/s * 1/60s = .25rad of it. The old bound (.07, .11] was the old
+  // .11rad/frame cap.
+  assert.ok(x > .20 && x <= .25);
 });
 
-test("dragging uses the same turn limit and clearing focus discards pending motion", () => {
+test("dragging uses the same gain and turn limit as locked look", () => {
   const look = createMouseLook();
   look.push(500, 500, "drag");
-  assert.ok(Math.hypot(...look.advance(.05)) <= .11000001);
+  assert.ok(Math.hypot(...look.advance(.05)) <= .75000001);
   look.reset();
   assert.deepEqual(look.advance(.05), [0, 0]);
+  // Same hand movement, same turn: drag used to be 2.46x the locked gain.
+  const locked = createMouseLook(), drag = createMouseLook();
+  for (const [l, mode] of [[locked, "locked"], [drag, "drag"]]) {
+    l.push(10, 0, mode);
+    l.advance(1 / 60);
+    l.push(200, 100, mode);
+  }
+  const [lx, ly] = settle(locked), [dx, dy] = settle(drag);
+  assert.ok(Math.abs(lx - dx) < .0005 && Math.abs(ly - dy) < .0005);
 });

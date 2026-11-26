@@ -4,9 +4,21 @@ export const LANDING_SAMPLE_TIME = .2;
 const radius = .28, height = 1.76;
 const runSpeed = 4.15, sprintSpeed = 7.1;
 const groundAcceleration = 26, brakingAcceleration = 36, airAcceleration = 7;
-const groundFriction = 12, groundStopSpeed = 3.4, lateralFriction = 14;
-const airProjectionLimit = 2.3, maxAirSpeed = 10.5;
+// Softer ground friction (was 12) and lateral friction (was 14) so releasing
+// the keys leaves a short slide instead of stopping almost instantly, and
+// changing direction sheds the old sideways velocity more gradually.
+const groundFriction = 7, groundStopSpeed = 3.4, lateralFriction = 8;
+// Higher air-steering ceiling (was 2.3) so a jump can still be steered into a
+// new direction instead of drifting almost straight.
+const airProjectionLimit = 3.5, maxAirSpeed = 10.5;
 const jumpSpeed = 7.2, gravity = 19.5;
+// Jump buffering and coyote time, both kept inside stepPlayer so its call
+// signature (and game.js) stays unchanged. game.js still passes jump=true
+// for .12s after a keypress; stepPlayer treats the rising edge as the
+// request and holds it for .18s from the keypress, so the effective window
+// is .18s, not .12 + .18. Coyote time lets a jump fire up to .1s after
+// walking off a ledge.
+const JUMP_BUFFER_TIME = .18, COYOTE_TIME = .1;
 const epsilon = 1e-8;
 const X = 1, Y = 2, Z = 4;
 
@@ -144,7 +156,15 @@ function steer(player, forward, side, sin, cos, sprint, onGround, dt) {
 
 export function stepPlayer(player, { forward, side, yaw, sprint, jump }, getBlock, obstacle, dt = PHYSICS_STEP) {
   const sin = Math.sin(yaw), cos = Math.cos(yaw);
-  const jumped = player.grounded && jump;
+  const state = playerState(player);
+  // Rising edge of the jump input starts the .18s buffer. Refreshing it on
+  // every jump=true tick would stretch the window to .12s (game.js) + .18s.
+  if (jump && !state.prevJump) state.buffer = JUMP_BUFFER_TIME;
+  state.prevJump = jump;
+  if (state.buffer > 0) state.buffer = Math.max(0, state.buffer - dt);
+  if (player.grounded) state.coyote = COYOTE_TIME;
+  const jumped = state.buffer > 0 && (player.grounded || state.coyote > 0);
+  if (jumped) state.buffer = 0;
   steer(player, forward, side, sin, cos, sprint, player.grounded && !jumped, dt);
   if (jumped) player.vy = jumpSpeed;
   player.vy -= gravity * dt;
@@ -182,5 +202,31 @@ export function stepPlayer(player, { forward, side, yaw, sprint, jump }, getBloc
     player.grounded = false;
   }
   [player.x, player.y, player.z] = position;
+  // Coyote time only ticks down while airborne; standing on the ground
+  // refreshes it at the start of the next call.
+  if (player.grounded) state.coyote = COYOTE_TIME;
+  else state.coyote = Math.max(0, state.coyote - dt);
+  state.lastX = player.x; state.lastY = player.y; state.lastZ = player.z;
   return { jumped, landingSpeed };
+}
+
+// Per-player jump state, keyed by the player object so stepPlayer keeps its
+// signature. A teleport (respawn/arena switch moves the player far more than
+// physics can in one tick) clears any buffered jump, so a jump pressed just
+// before dying cannot fire on its own after respawning.
+const playerStates = new WeakMap();
+function playerState(player) {
+  let state = playerStates.get(player);
+  if (!state) {
+    state = { buffer: 0, coyote: 0, prevJump: false, lastX: player.x, lastY: player.y, lastZ: player.z };
+    playerStates.set(player, state);
+    return state;
+  }
+  if (Math.abs(player.x - state.lastX) > 2 || Math.abs(player.y - state.lastY) > 2
+    || Math.abs(player.z - state.lastZ) > 2) {
+    state.buffer = 0;
+    state.coyote = 0;
+    state.prevJump = false;
+  }
+  return state;
 }

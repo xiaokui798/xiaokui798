@@ -147,6 +147,10 @@ kbd {
 #crosshair.hit-confirm::before, #crosshair.hit-confirm::after { background: #ffe2a0; }
 #target-status { position: absolute; top: calc(50% + 18px); width: 100%; text-align: center; font-size: .85rem; }
 
+#weapon-state { position: absolute; top: calc(50% + 30px); left: 50%; width: 12rem; transform: translateX(-50%); }
+
+.speed-hud[hidden] { display: none; }
+
 .speed-hud {
   position: absolute;
   bottom: 1.25rem;
@@ -188,7 +192,7 @@ kbd {
 .vitals progress::-webkit-progress-bar { background: #211b1a; }
 .vitals progress::-webkit-progress-value { background: #e4725c; }
 .vitals progress::-moz-progress-bar { background: #e4725c; }
-#weapon-state progress { height: .35rem; background: #262b26; }
+#weapon-state progress { height: .5rem; background: #262b26; }
 #weapon-state progress::-webkit-progress-bar { background: #262b26; }
 #weapon-state progress::-webkit-progress-value { background: #ddc281; }
 #weapon-state progress::-moz-progress-bar { background: #ddc281; }
@@ -244,6 +248,11 @@ kbd {
 .look-option output { text-align: right; font-variant-numeric: tabular-nums; }
 
 .inventory-panel { width: min(100%, 38rem); }
+.inventory-panel.wide { width: min(100%, 46rem); }
+#inventory-tab-row { display: flex; flex-wrap: wrap; gap: .5rem; margin: 1rem 0 .25rem; }
+.workbench-columns { display: grid; grid-template-columns: 55% 45%; gap: .75rem; align-items: start; }
+@media (max-width: 720px) { .workbench-columns { grid-template-columns: 1fr; } }
+.workbench-group > h3 { margin: 1rem 0 .25rem; font-size: .9rem; color: #c5d3bd; }
 .inventory-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .7rem; }
 .inventory-heading h2 { margin: 0; font-size: clamp(1.45rem, 5vw, 2.25rem); }
 .inventory-panel button { min-width: 0; padding: .58rem .75rem; }
