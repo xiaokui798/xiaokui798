@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { initGame } from "./game.js";
 import { BLOCK, SAVE_KEY, V4_SAVE_KEY, PROGRESS_KEY, createProgression, saveProgress } from "./progression.mjs";
 import { SURVIVAL_DIFFICULTY, survivalRoster, hpMultiplier, scaledHp } from "./difficulty.mjs";
@@ -585,7 +586,12 @@ test("the boss arena can be won and replayed, paying its reward without touching
 });
 
 
-test("PROBE pause-menu exit hides the boss hud", () => {
+test("leaving a boss fight through the pause menu takes the boss hud down with it", () => {
+  // Batch 78 (visual batch 74's guardian-trial observation): the
+  // pause -> return-to-menu exit left #boss-hud floating over the
+  // main menu, because its only hider was the per-frame status
+  // refresh and that stops when the run does. All three boss
+  // entries share the exit path, so all three are pinned.
   for (const [button, label] of [["trial-guardian-button", "guardian trial"], ["trial-colossus-button", "colossus trial"], ["boss-button", "main boss"]]) {
     const data = new Map();
     const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
@@ -601,7 +607,10 @@ test("PROBE pause-menu exit hides the boss hud", () => {
     assert.equal(game.get("pause-screen").hidden, false, `${label}: pause screen up`);
     game.click("pause-menu-button");
     frame();
-    console.log(`${label}: start-screen hidden=${game.get("start-screen").hidden} boss-hud hidden=${game.get("boss-hud").hidden}`);
+    assert.equal(game.get("start-screen").hidden, false, `${label}: back at the menu`);
+    assert.equal(game.get("boss-hud").hidden, true, `${label}: boss hud gone at the menu`);
+    assert.equal(game.get("boss-warning").hidden, true, `${label}: no stranded warning`);
+    assert.equal(game.get("boss-phase-banner").hidden, true, `${label}: no stranded banner`);
   }
 });
 
@@ -3389,6 +3398,21 @@ test("a crop grows on game time: its stage flips after one stage of growth", () 
   // stage flips to 1, 0.6 tall.
   for (let i = 0; i < 60; i++) frame();
   assert.ok(Math.abs(cropTopY(game, cell) - (cell[1] + .6)) < .02, `grown top is ${cropTopY(game, cell)}`);
+});
+
+test("the craft toast lives above the modal screens, not inside the hud layer", () => {
+  // Batch 78: the toast sat inside #hud (a z-index 2 stacking
+  // context) under the .screen overlays' dim backdrop (z-index 3),
+  // so it washed out whenever the inventory was open — which is
+  // where crafting happens. The node must stay a sibling above the
+  // screens; these source pins keep it there.
+  const html = fs.readFileSync(new URL("./index.html", import.meta.url), "utf8");
+  const css = fs.readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+  assert.ok(html.indexOf('id="craft-toast"') < html.indexOf('id="hud"'),
+    "the toast node sits outside #hud");
+  const toastRule = css.match(/#craft-toast \{[^}]*\}/)?.[0] ?? "";
+  assert.match(toastRule, /position: fixed/, "the toast positions against the viewport");
+  assert.match(toastRule, /z-index: 4/, "the toast layer clears the screens' z-index 3");
 });
 
 test("crafting pops the craft-complete toast with the item icon and name", () => {

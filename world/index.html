@@ -38,6 +38,14 @@
       </section>
     </main>
 
+      <div id="craft-toast" role="status" hidden>
+        <span class="craft-toast-icon">
+          <img id="craft-toast-icon" alt="">
+          <img class="craft-toast-check" src="icons/check.svg" alt="">
+        </span>
+        <span id="craft-toast-name"></span>
+        <span class="craft-toast-done">制作完成</span>
+      </div>
     <div id="hud" hidden>
       <div class="topbar">
         <div>
@@ -50,14 +58,6 @@
           <div id="stage-time" class="defense-detail" hidden></div>
           <div id="message" role="status"></div>
         </div>
-      </div>
-      <div id="craft-toast" role="status" hidden>
-        <span class="craft-toast-icon">
-          <img id="craft-toast-icon" alt="">
-          <img class="craft-toast-check" src="icons/check.svg" alt="">
-        </span>
-        <span id="craft-toast-name"></span>
-        <span class="craft-toast-done">制作完成</span>
       </div>
       <div id="crosshair" aria-hidden="true" hidden></div>
       <div id="target-status" hidden></div>

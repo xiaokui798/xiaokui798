@@ -127,7 +127,13 @@ kbd {
    under the top bar, clear of the crosshair, and never takes
    pointer events. */
 #craft-toast {
-  position: absolute;
+  /* Above the .screen overlays (z-index 3), whose dim backdrop used
+     to wash the toast out exactly when it matters — crafting happens
+     with the inventory open (batch 78). The node lives outside #hud
+     for the same reason: #hud is a z-index 2 stacking context, so
+     no z-index inside it could ever clear the screens. */
+  position: fixed;
+  z-index: 4;
   top: 16%;
   left: 50%;
   transform: translateX(-50%);

@@ -4227,6 +4227,12 @@ export function initGame(window) {
     loadLatestSave(wasTrial);
     deathScreen.hidden = true;
     hud.hidden = true;
+    // The boss presentation goes with the fight (batch 78): its
+    // only other hider is the per-frame status refresh, which
+    // never runs again once started is false — a mid-fight exit
+    // used to leave the boss bar floating over the main menu.
+    hudUi.setBossVisible(false);
+    hudUi.clearBossAlerts();
     startScreen.hidden = false;
     showMenuRecord();
     resetSurvival();

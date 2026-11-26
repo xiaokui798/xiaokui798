@@ -1029,6 +1029,40 @@ test("a corrupt slot is skipped for the older slot", () => {
   assert.equal(storage.keys().filter(key => key.startsWith(`${SAVE_SLOT_1_KEY}.corrupt:`)).length, 0);
 });
 
+test("a valid primary loads even when both slots carry larger counts", () => {
+  // Batch 78 (visual batch 74's rollback observation): the fallback
+  // order is positional, newest first — a slot stands in only when
+  // every newer entry is unusable, and can never outvote a valid
+  // primary, whatever its contents claim.
+  const save = count => JSON.stringify({ version: 5, edits: [], materials: [0, 0, count, 0, 0, 0],
+    axeUnlocked: false, dressings: { dressing: 0, bandage: 0, bigDressing: 0 } });
+  const storage = makeStorage([[SAVE_KEY, save(3)], [SAVE_SLOT_1_KEY, save(99)], [SAVE_SLOT_2_KEY, save(50)]]);
+  const game = createProgression(storage, line(10));
+  assert.equal(game.count(BLOCK.DIRT), 3);
+});
+
+test("an unflushed session keeps its synchronous saves and loses only the batched edit tail", () => {
+  // The hard-kill boundary, measured (batch 78): crafting and loot
+  // save synchronously, so they survive a kill with no flush; block
+  // edits batch for 300ms, so a kill loses exactly the edits since
+  // the last write — and a normal close (flush, as pagehide and
+  // pause both do) loses nothing.
+  const storage = makeStorage();
+  const game = createProgression(storage, line(20));
+  game.grantLoot("walker");
+  assert.ok(game.editBlock(1, BLOCK.WOOD, BLOCK.AIR, true).saved);
+  assert.ok(game.editBlock(2, BLOCK.WOOD, BLOCK.AIR, true).saved);
+  // Both edits batch: the 300ms window runs from the loot's write,
+  // not from the previous edit, so neither is on disk yet.
+  assert.equal(game.pendingSave, true, "both edits are batched, not yet on disk");
+  const afterKill = createProgression(storage, line(20));
+  assert.equal(afterKill.count(BLOCK.STONE), 1, "the synchronous loot save survived the kill");
+  assert.deepEqual([...afterKill.blockEdits()], [], "the whole batched tail is gone, nothing older");
+  assert.deepEqual(game.flush(), { saved: true });
+  const afterClose = createProgression(storage, line(20));
+  assert.deepEqual([...afterClose.blockEdits()], [[1, BLOCK.AIR], [2, BLOCK.AIR]], "a flush leaves nothing behind");
+});
+
 test("a corrupt primary falls back to a v3 save with its edits intact", () => {
   const oldSave = JSON.stringify({ version: 3, edits: [[2, 0, 0, BLOCK.STONE], [5, 0, 0, BLOCK.WOOD]],
     materials: [0, 0, 7, 0, 0, 0], axeUnlocked: true, dressings: 2 });
