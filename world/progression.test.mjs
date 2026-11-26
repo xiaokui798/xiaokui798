@@ -824,10 +824,11 @@ test("COOKING_KEYS lists the three dishes in table order", () => {
   assert.deepEqual(COOKING_KEYS, ["bakedWheat", "veggieSalad", "stew"]);
 });
 
-test("cooking needs the workbench, spends its costs and heals per dish", () => {
+test("cooking needs the workbench, spends its costs and feeds per dish", () => {
   // A v5 save with wheat in the farm counts and the blocks the dishes
-  // and the workbench spend — but no workbench yet.
-  const save = JSON.stringify({ version: 5, edits: [], materials: [0, 0, 0, 10, 10, 10], axeUnlocked: false,
+  // and the workbench spend — but no workbench yet. Hunger starts
+  // empty: food feeds hunger now (batch 86), it no longer heals.
+  const save = JSON.stringify({ version: 5, edits: [], materials: [0, 0, 0, 10, 10, 10], axeUnlocked: false, hunger: 0,
     dressings: { dressing: 0, bandage: 0, bigDressing: 0 },
     seeds: { wheatSeed: 0, wheat: 6, fertilizer: 0 }, workbenchBuilt: false });
   const storage = makeStorage([[SAVE_KEY, save]]);
@@ -851,19 +852,22 @@ test("cooking needs the workbench, spends its costs and heals per dish", () => {
   assert.equal(game.count("wheat"), 1, "炖菜 spends wheat 2");
   assert.equal(game.count(BLOCK.WOOD), 4, "炖菜 spends wood 1 (after the workbench's 5)");
   assert.deepEqual(game.dressingsByRecipe, { dressing: 0, bandage: 0, bigDressing: 0, bakedWheat: 1, veggieSalad: 1, stew: 1 });
-  // Eating heals the dish's own amount; an eaten dish is gone.
+  // Eating feeds the dish's own amount of hunger; an eaten dish is
+  // gone. The stew is eaten after a drain so its 60 fits uncapped.
   assert.deepEqual(game.useDressing("bakedWheat"), { saved: true, healed: 40 });
   assert.deepEqual(game.useDressing("veggieSalad"), { saved: true, healed: 25 });
+  game.advanceHunger(288, false);
   assert.deepEqual(game.useDressing("stew"), { saved: true, healed: 60 });
+  assert.equal(game.hunger, 65);
   assert.equal(game.useDressing("stew"), null);
   // The counts survive a reload.
   const reloaded = createProgression(storage, line(10));
   assert.deepEqual(reloaded.dressingsByRecipe, { dressing: 0, bandage: 0, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 0 });
 });
 
-test("the 急救 tech adds 10 healing to food too", () => {
-  const save = JSON.stringify({ version: 5, edits: [], materials: [0, 0, 0, 10, 10, 0], axeUnlocked: false,
-    dressings: { dressing: 0, bandage: 0, bigDressing: 0, stew: 1 },
+test("the 急救 tech adds 10 healing to dressings but never to food", () => {
+  const save = JSON.stringify({ version: 5, edits: [], materials: [0, 0, 0, 10, 10, 0], axeUnlocked: false, hunger: 0,
+    dressings: { dressing: 1, bandage: 0, bigDressing: 0, stew: 1 },
     seeds: { wheatSeed: 0, wheat: 0, fertilizer: 0 }, workbenchBuilt: true });
   const storage = makeStorage([[SAVE_KEY, save]]);
   const game = createProgression(storage, line(10));
@@ -871,7 +875,10 @@ test("the 急救 tech adds 10 healing to food too", () => {
     bestWave: 0, defense: { wave: 0, cleared: false, bestWave: 0 } });
   storage.setItem(PROGRESS_KEY, progress);
   assert.ok(game.unlockTech("firstAid").saved);
-  assert.deepEqual(game.useDressing("stew"), { saved: true, healed: 70 });
+  assert.deepEqual(game.useDressing("dressing"), { saved: true, healed: 40 });
+  // The dish feeds its listed 60 hunger — no first-aid inflation.
+  assert.deepEqual(game.useDressing("stew"), { saved: true, healed: 60 });
+  assert.equal(game.hunger, 60);
 });
 
 test("validateRecipes rejects a bad cooking recipe verbatim", () => {
@@ -1040,6 +1047,39 @@ test("a valid primary loads even when both slots carry larger counts", () => {
   const storage = makeStorage([[SAVE_KEY, save(3)], [SAVE_SLOT_1_KEY, save(99)], [SAVE_SLOT_2_KEY, save(50)]]);
   const game = createProgression(storage, line(10));
   assert.equal(game.count(BLOCK.DIRT), 3);
+});
+
+test("hunger defaults to a full belly on old saves, persists, and refills on restore", () => {
+  // No hunger field (every save written before batch 86): full belly.
+  const storage = makeStorage([[SAVE_KEY, JSON.stringify({ version: 5, edits: [], materials: [0, 0, 0, 0, 0, 0] })]]);
+  const game = createProgression(storage, line(10));
+  assert.equal(game.hunger, 100);
+  // A stored value loads as stored, clamped into 0..100.
+  const stored = makeStorage([[SAVE_KEY, JSON.stringify({ version: 5, edits: [], materials: [0, 0, 0, 0, 0, 0], hunger: 42.5 })]]);
+  assert.equal(createProgression(stored, line(10)).hunger, 42.5);
+  const wild = makeStorage([[SAVE_KEY, JSON.stringify({ version: 5, edits: [], materials: [0, 0, 0, 0, 0, 0], hunger: 900 })]]);
+  assert.equal(createProgression(wild, line(10)).hunger, 100);
+  // The drain marks the batched save; a flush writes the float, and
+  // a reload reads it back.
+  game.advanceHunger(48, false);
+  assert.equal(game.hunger, 90);
+  assert.deepEqual(game.flush(), { saved: true });
+  assert.equal(JSON.parse(storage.getItem(SAVE_KEY)).hunger, 90);
+  assert.equal(createProgression(storage, line(10)).hunger, 90);
+  // Respawn refills, and the refill is what's saved.
+  assert.ok(game.restoreHunger().saved);
+  assert.equal(game.hunger, 100);
+  assert.equal(createProgression(storage, line(10)).hunger, 100);
+});
+
+test("the hunger drain runs 50 per day walking, double sprinting, and floors at zero", () => {
+  const game = createProgression(makeStorage(), line(10));
+  game.advanceHunger(240, false);
+  assert.equal(game.hunger, 50, "one day at a walk drains half the bar");
+  game.advanceHunger(120, true);
+  assert.equal(game.hunger, 0, "half a day sprinting drains the rest (double rate)");
+  game.advanceHunger(240, false);
+  assert.equal(game.hunger, 0, "an empty belly stays empty");
 });
 
 test("an unflushed session keeps its synchronous saves and loses only the batched edit tail", () => {

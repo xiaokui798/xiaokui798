@@ -1,4 +1,4 @@
-import { WORLD, LEGACY_WORLD, contains, voxelIndex, voxelPosition } from "./terrain.mjs";
+import { WORLD, LEGACY_WORLD, DAY_LENGTH, contains, voxelIndex, voxelPosition } from "./terrain.mjs";
 import { BLOCK, RECIPES, validateRecipes } from "./recipes.mjs";
 import { ENEMIES, RARE_MATERIALS } from "./enemies.mjs";
 import { TECH, TECH_EFFECTS, assertValidTech, canUnlockTech, techForRecipe } from "./tech.mjs";
@@ -117,14 +117,14 @@ function normalizeSave(entry, stored) {
   if (entry.shaped) {
     if (stored?.version !== entry.version) return null;
     return { edits: Array.isArray(stored.edits) ? stored.edits : null,
-      materials: stored.materials, axeUnlocked: stored.axeUnlocked, wateringCanOwned: stored.wateringCanOwned, dressings: stored.dressings,
+      materials: stored.materials, axeUnlocked: stored.axeUnlocked, wateringCanOwned: stored.wateringCanOwned, hunger: stored.hunger, dressings: stored.dressings,
       rareMaterials: stored.rareMaterials, equipment: stored.equipment,
       techUnlocked: stored.techUnlocked, workbenchBuilt: stored.workbenchBuilt, stats: stored.stats,
       seeds: stored.seeds, crops: stored.crops,
       coordinates: entry.coordinates };
   }
   if (!Array.isArray(stored)) return null;
-  return { edits: stored, materials: undefined, axeUnlocked: undefined, wateringCanOwned: undefined, dressings: undefined,
+  return { edits: stored, materials: undefined, axeUnlocked: undefined, wateringCanOwned: undefined, hunger: undefined, dressings: undefined,
     rareMaterials: undefined, equipment: undefined, techUnlocked: undefined,
     workbenchBuilt: undefined, stats: undefined, seeds: undefined, crops: undefined, coordinates: false };
 }
@@ -279,6 +279,9 @@ export function saveProgress(storage, progress, options = {}) {
 }
 const starterMaterials = [0, 0, 10, 0, 2, 0];
 const stackLimit = 999;
+// Hunger points drained per game day at a walk (batch 86): a full
+// belly empties in about two days; sprinting doubles the rate.
+export const HUNGER_DRAIN_PER_DAY = 50;
 const validBlock = value => Number.isInteger(value) && value >= BLOCK.AIR && value <= BLOCK.LEAF;
 
 export function createProgression(storage, layout = WORLD) {
@@ -316,11 +319,18 @@ export function createProgression(storage, layout = WORLD) {
   // The watering can (R6): a one-time craft grant like the axe —
   // owning it is a save flag, the can itself occupies no slot.
   let wateringCanOwned = false;
+  // Hunger (batch 86): 0..100, a float — the drain is continuous,
+  // so the fraction carries between frames; the HUD floors it. A
+  // save written before the field existed loads as a full belly.
+  let hunger = 100;
   // Healing items counted per healing recipe, keyed by recipe: adding a
   // healing recipe to RECIPES adds its counter here automatically.
   const dressingCounts = Object.fromEntries(HEALING_KEYS.map(key => [key, 0]));
   function savedCount(value, fallback) {
     return Number.isInteger(value) && value >= 0 ? Math.min(value, stackLimit) : fallback;
+  }
+  function clampHunger(value) {
+    return typeof value === "number" && Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 100;
   }
   // v4 writes dressing counts per healing recipe ({ dressing, bandage,
   // bigDressing }); v3 and older wrote one number counting dressings
@@ -504,6 +514,7 @@ export function createProgression(storage, layout = WORLD) {
       ...starterMaterials.map((amount, block) => block ? savedCount(snapshot?.materials?.[block], amount) : 0));
     axeUnlocked = snapshot?.axeUnlocked === true;
     wateringCanOwned = snapshot?.wateringCanOwned === true;
+    hunger = clampHunger(snapshot?.hunger);
     Object.assign(dressingCounts, normalizeDressings(snapshot?.dressings));
     Object.assign(rareMaterials, normalizeRareMaterials(snapshot?.rareMaterials));
     Object.assign(seeds, normalizeSeeds(snapshot?.seeds));
@@ -522,7 +533,7 @@ export function createProgression(storage, layout = WORLD) {
 
   function serializeSave() {
     const positions = Array.from(edits, ([cell, block]) => [...voxelPosition(layout, cell), block]);
-    return JSON.stringify({ version: SAVE_VERSION, edits: positions, materials, axeUnlocked, wateringCanOwned, dressings: { ...dressingCounts },
+    return JSON.stringify({ version: SAVE_VERSION, edits: positions, materials, axeUnlocked, wateringCanOwned, hunger, dressings: { ...dressingCounts },
       rareMaterials: { ...rareMaterials }, equipment: { ...equipment }, techUnlocked: [...techUnlocked],
       workbenchBuilt, stats: { ...stats }, seeds: { ...seeds },
       crops: Object.fromEntries(Object.entries(crops).map(([cell, crop]) => [cell, { ...crop }])) });
@@ -691,7 +702,7 @@ export function createProgression(storage, layout = WORLD) {
     if (entry.shaped && (!Array.isArray(snapshot.edits) || !Array.isArray(snapshot.materials))) {
       return { imported: false, reason: "invalid-save" };
     }
-    const previousMaterials = materials.slice(), previousAxe = axeUnlocked, previousWateringCan = wateringCanOwned,
+    const previousMaterials = materials.slice(), previousAxe = axeUnlocked, previousWateringCan = wateringCanOwned, previousHunger = hunger,
       previousDressings = { ...dressingCounts }, previousRare = { ...rareMaterials }, previousEdits = new Map(edits),
       previousEquipment = { ...equipment }, previousTech = [...techUnlocked],
       previousWorkbench = workbenchBuilt, previousStats = { ...stats },
@@ -701,6 +712,7 @@ export function createProgression(storage, layout = WORLD) {
       ...starterMaterials.map((amount, block) => block ? savedCount(snapshot?.materials?.[block], amount) : 0));
     axeUnlocked = snapshot?.axeUnlocked === true;
     wateringCanOwned = snapshot?.wateringCanOwned === true;
+    hunger = clampHunger(snapshot?.hunger);
     Object.assign(dressingCounts, normalizeDressings(snapshot?.dressings));
     Object.assign(rareMaterials, normalizeRareMaterials(snapshot?.rareMaterials));
     Object.assign(seeds, normalizeSeeds(snapshot?.seeds));
@@ -714,6 +726,7 @@ export function createProgression(storage, layout = WORLD) {
       materials.splice(0, materials.length, ...previousMaterials);
       axeUnlocked = previousAxe;
       wateringCanOwned = previousWateringCan;
+      hunger = previousHunger;
       Object.assign(dressingCounts, previousDressings);
       Object.assign(rareMaterials, previousRare);
       Object.assign(seeds, previousSeeds);
@@ -734,7 +747,7 @@ export function createProgression(storage, layout = WORLD) {
   }
 
   function change(apply, cell) {
-    const previousMaterials = materials.slice(), previousAxe = axeUnlocked, previousWateringCan = wateringCanOwned, previousDressings = { ...dressingCounts },
+    const previousMaterials = materials.slice(), previousAxe = axeUnlocked, previousWateringCan = wateringCanOwned, previousHunger = hunger, previousDressings = { ...dressingCounts },
       previousRare = { ...rareMaterials }, previousEquipment = { ...equipment }, previousTech = [...techUnlocked],
       previousWorkbench = workbenchBuilt, previousStats = { ...stats },
       previousSeeds = { ...seeds }, previousCrops = { ...crops };
@@ -750,6 +763,7 @@ export function createProgression(storage, layout = WORLD) {
       materials.splice(0, materials.length, ...previousMaterials);
       axeUnlocked = previousAxe;
       wateringCanOwned = previousWateringCan;
+      hunger = previousHunger;
       Object.assign(dressingCounts, previousDressings);
       Object.assign(rareMaterials, previousRare);
       Object.assign(seeds, previousSeeds);
@@ -935,12 +949,41 @@ export function createProgression(storage, layout = WORLD) {
   function useDressing(key = "dressing") {
     const recipe = RECIPES[key];
     if (!recipe?.healing || !(dressingCounts[key] > 0)) return null;
-    const result = change(() => { dressingCounts[key]--; });
+    // A dish feeds hunger instead of health (batch 86): the gain is
+    // applied inside the same change as the spend, capped at a full
+    // belly, and reported as `healed` like a dressing's heal — the
+    // amount that actually landed. The caller refuses at a full
+    // belly, so the cap rarely bites.
+    let fed = 0;
+    const result = change(() => {
+      dressingCounts[key]--;
+      if (recipe.cooking) { fed = Math.min(recipe.healing, 100 - hunger); hunger += fed; }
+    });
+    if (recipe.cooking) return result.saved ? { ...result, healed: fed } : result;
     // The 急救 tech adds 10 healing to every dressing use (dressing,
     // bandage and big dressing share this one call); without it the
-    // recipe amount is unchanged.
+    // recipe amount is unchanged. It never inflates a dish's feed.
     const bonus = techUnlocked.includes("firstAid") ? TECH_EFFECTS.firstAidHealing : 0;
     return result.saved ? { ...result, healed: recipe.healing + bonus } : result;
+  }
+
+  // The hunger drain (batch 86): HUNGER_DRAIN_PER_DAY points per
+  // game day, doubled while sprinting. Continuous in memory; the
+  // batched save is only marked when the floored value moves, so a
+  // quiet walk does not serialize every frame. The mode gating
+  // (survival only, frozen in boss / defense / creative) is the
+  // caller's — this just moves the number.
+  function advanceHunger(dt, sprinting) {
+    if (!(dt > 0) || hunger <= 0) return;
+    const before = Math.floor(hunger);
+    hunger = Math.max(0, hunger - HUNGER_DRAIN_PER_DAY / DAY_LENGTH * dt * (sprinting ? 2 : 1));
+    if (Math.floor(hunger) !== before) { dirty = true; scheduleFlush(); }
+  }
+
+  // Respawn refills the belly like it refills health (batch 86): a
+  // starved save must not reload into an instant re-starve.
+  function restoreHunger() {
+    return change(() => { hunger = 100; });
   }
 
   // Pays one kill's drops from the enemy registry: block materials add
@@ -1096,7 +1139,7 @@ export function createProgression(storage, layout = WORLD) {
     blockEdits: () => edits.entries(), count, editBlock, canCraft, craft, useDressing, unlockTech, techState,
     wearEquipment, repairEquipment, plantCrop, harvestCrop, removeCrop, advanceCrops, isCropMature, fertilizeCrop, waterCrop,
     cropAt: cell => { const crop = crops[cell]; return crop ? { ...crop } : null; },
-    grantLoot, grantBossLoot, spendMaterial, flush,
+    grantLoot, grantBossLoot, spendMaterial, flush, advanceHunger, restoreHunger,
     checkConflict, keepLocal, loadRemote, exportSave, importSave,
     get pendingConflict() { return pendingConflict ? { ...pendingConflict } : null; },
     saveProgress: (progress, options) => saveProgress(storage, progress, options),
@@ -1107,6 +1150,7 @@ export function createProgression(storage, layout = WORLD) {
     get stale() { try { return isStale(); } catch { return false; } },
     get axeUnlocked() { return axeUnlocked; },
     get wateringCanOwned() { return wateringCanOwned; },
+    get hunger() { return hunger; },
     // The dressing count game.js displays and spends: the "dressing"
     // recipe only, so the existing HUD ("敷料 N 件") keeps working
     // unchanged until the UI is rewired per recipe. The full per-recipe

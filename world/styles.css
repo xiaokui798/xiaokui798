@@ -224,6 +224,14 @@ kbd {
 .vitals progress::-webkit-progress-bar { background: #211b1a; }
 .vitals progress::-webkit-progress-value { background: #e4725c; }
 .vitals progress::-moz-progress-bar { background: #e4725c; }
+/* The hunger bar (batch 86): amber while fed, the health bar's red
+   when low, blinking when critical. */
+#hunger::-webkit-progress-value { background: #d9a441; }
+#hunger::-moz-progress-bar { background: #d9a441; }
+#hunger.low::-webkit-progress-value { background: #e4725c; }
+#hunger.low::-moz-progress-bar { background: #e4725c; }
+#hunger.critical { animation: hunger-blink .5s steps(2, start) infinite; }
+@keyframes hunger-blink { to { opacity: .35; } }
 #weapon-state progress { height: .5rem; background: #262b26; }
 #weapon-state progress::-webkit-progress-bar { background: #262b26; }
 #weapon-state progress::-webkit-progress-value { background: #ddc281; }

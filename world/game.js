@@ -77,6 +77,9 @@ export function initGame(window) {
   const fx = fxCanvas.getContext("2d");
   const health = document.querySelector("#health");
   const healthValue = document.querySelector("#health-value");
+  const hungerBar = document.querySelector("#hunger");
+  const hungerValue = document.querySelector("#hunger-value");
+  const hungerLabel = document.querySelector("#hunger-label");
   const vitals = document.querySelector("#vitals");
   const weaponState = document.querySelector("#weapon-state");
   const weaponLabel = document.querySelector("#weapon-label");
@@ -1603,6 +1606,68 @@ export function initGame(window) {
   function updateHealth() {
     health.value = player.hp;
     healthValue.textContent = String(player.hp);
+  }
+
+  // Hunger (batch 86) is live only in survival runs: boss fights,
+  // trials, beacon defense and creative freeze it whole — no drain,
+  // no starving, no satiety regen, and the bar hides.
+  function hungerActive() {
+    return survival.enabled && !boss && !defense.beacon;
+  }
+
+  function updateHunger() {
+    const value = Math.floor(campaign.hunger);
+    hungerBar.value = value;
+    hungerValue.textContent = String(value);
+    hungerBar.classList.toggle("low", value <= 30 && value > 10);
+    hungerBar.classList.toggle("critical", value <= 10);
+    const hidden = !hungerActive();
+    hungerLabel.hidden = hidden;
+    hungerBar.hidden = hidden;
+  }
+
+  // The warning bands: 2 fed, 1 hungry (<= 30), 0 critical (<= 10).
+  // A band drop speaks once; eating back above a band re-arms it.
+  // Satiety is a latch, not an instant check: it sets at hunger
+  // >= 80 and clears below 75 — the drain would otherwise cross
+  // 80 within a frame of reaching it and the regen would never run.
+  let hungerBand = 2, hungerFxTimer = 0, satiated = false;
+  const hungerBandFor = value => value <= 10 ? 0 : value <= 30 ? 1 : 2;
+
+  function updateHungerTick(dt) {
+    const sprinting = (input.held("ShiftLeft") || input.held("ShiftRight")) && player.grounded
+      && Math.hypot(player.vx, player.vz) > 4.5;
+    // Satiety reads the belly before this frame's drain: a bite
+    // that lands exactly on 80 (in the paused bag) must still set
+    // the latch on the first tick back in play.
+    if (campaign.hunger >= 80) satiated = true;
+    else if (campaign.hunger < 75) satiated = false;
+    campaign.advanceHunger(dt, sprinting);
+    const band = hungerBandFor(campaign.hunger);
+    if (band < hungerBand) {
+      showMessage(band === 1 ? "肚子饿了 · 吃点东西补充体力" : "饿得发慌 · 再不吃东西就要掉血了");
+    }
+    hungerBand = band;
+    // An empty belly bleeds health; a satiated one slowly restores
+    // it. Both run at 1 hp per 2 seconds through one timer.
+    if (player.hp > 0 && (campaign.hunger <= 0 || (satiated && player.hp < 100))) {
+      hungerFxTimer += dt;
+      while (hungerFxTimer >= 2) {
+        hungerFxTimer -= 2;
+        if (campaign.hunger <= 0) {
+          player.hp = Math.max(0, player.hp - 1);
+          updateHealth();
+          if (!player.hp) {
+            finishRun("你饿倒了", `撑到第 ${survival.wave} 波，击退 ${survival.kills} 只僵尸。建筑和背包会保留。`, "重生");
+            break;
+          }
+        } else if (player.hp < 100) {
+          player.hp = Math.min(100, player.hp + 1);
+          updateHealth();
+        }
+      }
+    } else hungerFxTimer = 0;
+    updateHunger();
   }
 
   // Total damage reduction: the armor registry rate plus the 坚韧 tech
@@ -3152,6 +3217,7 @@ export function initGame(window) {
     setText(jumpSpeed, jump ? `${jump.takeoff.toFixed(2)} → ${jump.peak.toFixed(2)}` : "待起跳");
     setText(landingSpeedValue, landing ? `${landing.at.toFixed(2)} → ${landing.after?.toFixed(2) ?? "…"}` : "待落地");
     setText(weatherStatus, boss ? boss.profile.arena.name : weatherTypes[weather.index].name);
+    updateHunger();
     const enemiesLeft = survival.zombies.length;
     const beacon = defense.beacon;
     defenseHud.hidden = !beacon;
@@ -3448,6 +3514,7 @@ export function initGame(window) {
   function updateInventory() {
     inventoryUi.updateInventory(campaign, {
       playerHp: player.hp,
+      hunger: campaign.hunger,
       raining: weather.rain > .02,
       roofed: weather.rain > .02 && underRoof(),
       palette, blockNames
@@ -3468,7 +3535,25 @@ export function initGame(window) {
   function healWithDressing(key = "dressing") {
     if (!survival.enabled || !player.hp) return;
     let notice;
-    if (player.hp >= 100) notice = "生命已满";
+    if (COOKING_KEYS.includes(key)) {
+      // A dish feeds hunger, never health directly (batch 86); a
+      // full belly refuses the bite so no food is wasted. The buff
+      // (R5) still applies on the bite.
+      if (campaign.hunger >= 100) notice = "已经吃饱了";
+      else {
+        const result = campaign.useDressing(key);
+        if (checkSaveConflict(result)) return;
+        if (!result) notice = `背包里没有${RECIPES[key]?.name ?? "食物"}，按 C 制作`;
+        else if (!result.saved) notice = `食用${RECIPES[key]?.name ?? "食物"}失败 · 未保存`;
+        else {
+          applyBuff(RECIPES[key]?.buff);
+          updateHunger();
+          updateHotbar();
+          notice = `饥饿 +${Math.max(1, Math.round(result.healed))}`;
+        }
+      }
+    }
+    else if (player.hp >= 100) notice = "生命已满";
     else {
       const result = campaign.useDressing(key);
       if (checkSaveConflict(result)) return;
@@ -3816,6 +3901,9 @@ export function initGame(window) {
     // boss-fight and hidden-tab frames never reach advanceWorld, so a
     // crop does not grow while the day clock is frozen.
     if (!boss) updateCrops(dt);
+    // Hunger ticks on the same game-time beat as the crops, gated
+    // to survival runs (advanceWorld already never runs paused).
+    if (hungerActive()) updateHungerTick(dt);
   }
 
   // Growth tick (R2): rain doubles the rate; the shelter check is the
@@ -4293,6 +4381,10 @@ export function initGame(window) {
     const withZombies = mode === "survival" || mode === "defense";
     survival.enabled = withZombies;
     finished = false;
+    hungerBand = hungerBandFor(campaign.hunger);
+    hungerFxTimer = 0;
+    satiated = campaign.hunger >= 80;
+    updateHunger();
     Object.assign(defense, { beacon: null, routes: null, seconds: 0, elapsed: 0, victory: false });
     resetSurvival();
     // Load the progress record before the run starts: it seeds the wave
@@ -4366,6 +4458,11 @@ export function initGame(window) {
     if (defense.beacon) { startWorld("defense"); return; }
     finished = false;
     resetSurvival();
+    campaign.restoreHunger();
+    hungerBand = 2;
+    hungerFxTimer = 0;
+    satiated = true;
+    updateHunger();
     runBossDefeated = null;
     mergedProgress = null;
     placePlayerAtSpawn();

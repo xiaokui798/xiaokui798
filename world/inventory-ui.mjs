@@ -614,17 +614,17 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
     const firstAid = campaign.techUnlocked.includes("firstAid") ? TECH_EFFECTS.firstAidHealing : 0;
     for (const { key, cost, craft, use, cooking } of healingControls) {
       if (cooking) {
-        // The food line shows the heal a bite actually gives (recipe
-        // amount plus the 急救 bonus, like the dressing line); a
-        // buffed dish names its buff instead of where it is made —
-        // its cost lives on the workbench tab, not here. Eating is
-        // the only action on this row. The first-aid bonus touches
-        // only the heal number, never the buff percent or seconds.
+        // The food line shows the hunger a bite restores (batch 86:
+        // dishes feed hunger, not health, and the 急救 bonus never
+        // touches them); a buffed dish names its buff instead of
+        // where it is made — its cost lives on the workbench tab,
+        // not here. Eating is the only action on this row, and it
+        // locks at a full belly instead of full health.
         const buff = RECIPES[key].buff;
         setText(cost, buff
-          ? `恢复 ${RECIPES[key].healing + firstAid} 点生命 · ${buffLabels[buff.kind]} +${buff.pct}%（${buff.seconds} 秒）`
-          : `恢复 ${RECIPES[key].healing + firstAid} 点生命 · 在工作台烹饪`);
-        use.disabled = !counts[key] || env.playerHp >= 100;
+          ? `恢复 ${RECIPES[key].healing} 点饥饿 · ${buffLabels[buff.kind]} +${buff.pct}%（${buff.seconds} 秒）`
+          : `恢复 ${RECIPES[key].healing} 点饥饿 · 在工作台烹饪`);
+        use.disabled = !counts[key] || env.hunger >= 100;
         continue;
       }
       setText(cost, `${recipeCost(campaign, env, key)} · 恢复 ${RECIPES[key].healing + firstAid} 点生命`);
@@ -636,7 +636,7 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
       // A buffed dish names its buff on the workbench line too, in
       // the backpack row's format (batch 48, closing the R5 note).
       const buff = RECIPES[key].buff;
-      const line = `${recipeCost(campaign, env, key)} · 恢复 ${RECIPES[key].healing + firstAid} 点生命`
+      const line = `${recipeCost(campaign, env, key)} · 恢复 ${RECIPES[key].healing} 点饥饿`
         + (buff ? ` · ${buffLabels[buff.kind]} +${buff.pct}%（${buff.seconds} 秒）` : "");
       setText(cost, reason ? `${reason} · ${line}` : line);
       craft.disabled = !campaign.canCraft(key);

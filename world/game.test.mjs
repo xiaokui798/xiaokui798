@@ -2563,7 +2563,7 @@ test("the pause menu exports the save and imports a file back", async () => {
   // defaults, and is re-saved as the current version; everything else
   // comes back verbatim.
   assert.deepEqual(JSON.parse(data.get(SAVE_KEY)),
-    { ...JSON.parse(imported), version: 5, wateringCanOwned: false, rareMaterials: { emberCore: 0, starShard: 0 },
+    { ...JSON.parse(imported), version: 5, wateringCanOwned: false, hunger: 100, rareMaterials: { emberCore: 0, starShard: 0 },
       dressings: { dressing: 2, bandage: 1, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 0 },
       equipment: { weapon: null, armor: null, tool: null }, techUnlocked: [],
       workbenchBuilt: false, stats: { blocksMined: 0, cropsPlanted: 0, cropsHarvested: 0 },
@@ -4021,8 +4021,8 @@ test("a crop maturing announces itself once, several at once in one line", () =>
 // Cooking (R4): dishes are crafted on the workbench tab and eaten from
 // the backpack tab. A v5 save with wheat and dish materials, the
 // workbench state set by the caller.
-function v5SaveForCooking({ workbenchBuilt = true, techUnlocked = [], dressings = {} } = {}) {
-  return JSON.stringify({ version: 5, edits: [], materials: [0, 0, 0, 10, 10, 10], axeUnlocked: false,
+function v5SaveForCooking({ workbenchBuilt = true, techUnlocked = [], dressings = {}, hunger = 100 } = {}) {
+  return JSON.stringify({ version: 5, edits: [], materials: [0, 0, 0, 10, 10, 10], axeUnlocked: false, hunger,
     dressings: { dressing: 0, bandage: 0, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 0, ...dressings },
     rareMaterials: { emberCore: 0, starShard: 0 },
     equipment: { weapon: null, armor: null, tool: null }, techUnlocked, workbenchBuilt,
@@ -4044,9 +4044,9 @@ test("cooking rows are locked on the workbench tab without a workbench", () => {
   assert.equal(game.get("inventory-screen").hidden, false);
   // The backpack food row: effect line only, eating disabled with no
   // dish, and a jump button to the workbench.
-  assert.equal(game.get("bakedWheat-effect").textContent, "恢复 40 点生命 · 在工作台烹饪");
-  assert.equal(game.get("veggieSalad-effect").textContent, "恢复 25 点生命 · 移速 +10%（30 秒）");
-  assert.equal(game.get("stew-effect").textContent, "恢复 60 点生命 · 攻击 +10%（30 秒）");
+  assert.equal(game.get("bakedWheat-effect").textContent, "恢复 40 点饥饿 · 在工作台烹饪");
+  assert.equal(game.get("veggieSalad-effect").textContent, "恢复 25 点饥饿 · 移速 +10%（30 秒）");
+  assert.equal(game.get("stew-effect").textContent, "恢复 60 点饥饿 · 攻击 +10%（30 秒）");
   assert.equal(game.get("use-bakedWheat").disabled, true);
   game.click("goto-workbench-stew");
   assert.equal(game.get("tab-workbench").hidden, false);
@@ -4062,8 +4062,8 @@ test("cooking rows are locked on the workbench tab without a workbench", () => {
     assert.equal(game.get(`craft-${key}`).disabled, true, `${key} must be uncraftable without a workbench`);
     assert.match(game.get(`${key}-cost`).textContent, /^需先建造工作台 · /);
   }
-  assert.equal(game.get("bakedWheat-cost").textContent, "需先建造工作台 · 小麦 6/2 · 恢复 40 点生命");
-  assert.equal(game.get("stew-cost").textContent, "需先建造工作台 · 小麦 6/2 · 木头 10/1 · 恢复 60 点生命 · 攻击 +10%（30 秒）");
+  assert.equal(game.get("bakedWheat-cost").textContent, "需先建造工作台 · 小麦 6/2 · 恢复 40 点饥饿");
+  assert.equal(game.get("stew-cost").textContent, "需先建造工作台 · 小麦 6/2 · 木头 10/1 · 恢复 60 点饥饿 · 攻击 +10%（30 秒）");
   game.key("KeyC");
   game.grantPointerLock();
   frame();
@@ -4073,7 +4073,7 @@ test("cooking rows are locked on the workbench tab without a workbench", () => {
 test("dishes craft at the workbench, eat from the backpack, and KeyH never eats food", t => {
   let seed = 7;
   t.mock.method(Math, "random", () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296));
-  const data = new Map([[SAVE_KEY, v5SaveForCooking()]]);
+  const data = new Map([[SAVE_KEY, v5SaveForCooking({ hunger: 10 })]]);
   const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
   const game = mountGame({ storage, pointerLock: true });
   let time = 0;
@@ -4096,18 +4096,19 @@ test("dishes craft at the workbench, eat from the backpack, and KeyH never eats 
   assert.equal(saved.seeds.wheat, 1, "the three dishes spend wheat 2 + 1 + 2 of the 6");
   assert.equal(saved.materials[5], 8, "the salad spends leaves 2");
   assert.equal(saved.materials[4], 9, "the stew spends wood 1");
-  assert.equal(game.get("bakedWheat-cost").textContent, "小麦 1/2 · 恢复 40 点生命");
-  // At full health every eat button is disabled.
+  assert.equal(game.get("bakedWheat-cost").textContent, "小麦 1/2 · 恢复 40 点饥饿");
+  // Eating is gated by hunger, not health (batch 86): at full health
+  // but hungry (10), every eat button is live.
   game.click("tab-btn-backpack");
-  for (const key of ["bakedWheat", "veggieSalad", "stew"]) assert.equal(game.get(`use-${key}`).disabled, true);
+  for (const key of ["bakedWheat", "veggieSalad", "stew"]) assert.equal(game.get(`use-${key}`).disabled, false);
   game.key("KeyC");
   game.grantPointerLock();
   frame();
   assert.equal(game.get("inventory-screen").hidden, true);
-  // Take hits until a 40 heal fits without clamping.
+  // Take hits until health is low enough to prove a dish does not heal.
   for (let i = 0; i < 3000 && game.get("death-screen").hidden && hp() > 50; i++) frame();
   assert.equal(game.get("death-screen").hidden, true, "the player must survive the beating");
-  assert.ok(hp() <= 60 && hp() > 0, `health must leave room for a 40 heal (now ${hp()})`);
+  assert.ok(hp() <= 60 && hp() > 0, `health must be low but alive (now ${hp()})`);
   // KeyH eats only the basic dressing: with none owned it heals
   // nothing and spends no food.
   const beforeKeyH = hp();
@@ -4115,14 +4116,17 @@ test("dishes craft at the workbench, eat from the backpack, and KeyH never eats 
   frame();
   assert.equal(hp(), beforeKeyH, "KeyH must not eat food");
   assert.match(game.get("hud-dressings").textContent, /烤麦饼 1 · 果蔬沙拉 1 · 炖菜 1/);
-  // Eat the baked wheat from the backpack: +40, count spent.
+  // Eat the baked wheat from the backpack: hunger +40, health
+  // untouched (food no longer heals), count spent.
   game.key("KeyC");
   frame();
   assert.equal(game.get("use-bakedWheat").disabled, false);
   const beforeEat = hp();
+  const hungerBefore = Number(game.get("hunger-value").textContent);
   game.click("use-bakedWheat");
-  assert.equal(hp(), beforeEat + 40);
-  assert.equal(game.get("inventory-notice").textContent, "生命 +40");
+  assert.equal(hp(), beforeEat, "a dish must not heal");
+  assert.equal(Number(game.get("hunger-value").textContent), hungerBefore + 40);
+  assert.equal(game.get("inventory-notice").textContent, "饥饿 +40");
   assert.match(game.get("inventory-dressings").textContent, /烤麦饼 0 件/);
   assert.equal(game.get("use-bakedWheat").disabled, true, "no dish left: eating disables again");
   game.key("KeyC");
@@ -4131,7 +4135,7 @@ test("dishes craft at the workbench, eat from the backpack, and KeyH never eats 
   assert.equal(game.get("inventory-screen").hidden, true);
 });
 
-test("food lines show the first-aid +10, in the backpack and at the workbench", () => {
+test("food lines show hunger with no first-aid +10, while dressing lines keep it", () => {
   const data = new Map([[SAVE_KEY, v5SaveForCooking({ techUnlocked: ["firstAid"], dressings: { stew: 1 } })]]);
   const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
   const game = mountGame({ storage, pointerLock: true });
@@ -4142,9 +4146,10 @@ test("food lines show the first-aid +10, in the backpack and at the workbench", 
   for (let i = 0; i < 5; i++) frame();
   game.key("KeyC");
   frame();
-  assert.equal(game.get("stew-effect").textContent, "恢复 70 点生命 · 攻击 +10%（30 秒）");
+  assert.equal(game.get("stew-effect").textContent, "恢复 60 点饥饿 · 攻击 +10%（30 秒）");
+  assert.match(game.get("dressing-cost").textContent, /恢复 40 点生命/, "the dressing line still adds the first-aid +10 to its 30");
   game.click("tab-btn-workbench");
-  assert.equal(game.get("stew-cost").textContent, "小麦 6/2 · 木头 10/1 · 恢复 70 点生命 · 攻击 +10%（30 秒）");
+  assert.equal(game.get("stew-cost").textContent, "小麦 6/2 · 木头 10/1 · 恢复 60 点饥饿 · 攻击 +10%（30 秒）");
   game.key("KeyC");
   game.grantPointerLock();
   frame();
@@ -4203,18 +4208,16 @@ function measureSpeedReadout(game, frame, expected) {
 // per-step velocity record — the same oracle the pre-existing speed
 // tests assert on — and it is exact.)
 
-// Pass game time standing still, topping up with baked wheat (the
-// buff-free staple) whenever the wave-1 walkers chew the player to
-// 50: circling or running out the clock gets the player cornered or
-// killed, while a paused bag stops both the zombies and the buff
-// clock, so only the frames outside the bag are counted.
+// Pass game time standing still, topping up with a KeyH dressing
+// whenever the wave-1 walkers chew the player to 50: circling or
+// running out the clock gets the player cornered or killed. Since
+// batch 86 food feeds hunger instead of health, the top-up is a
+// dressing — KeyH needs no bag detour, so the buff clock never
+// pauses and every frame counts.
 function passGameTime(game, frame, frames, hp) {
   let passed = 0;
   while (passed < frames) {
-    if (hp() <= 50) {
-      eatFromBackpack(game, frame, "bakedWheat");
-      continue;
-    }
+    if (hp() <= 50) game.key("KeyH");
     frame();
     passed++;
   }
@@ -4253,7 +4256,7 @@ function buffSeconds(game, kind) {
 test("the salad's speed buff measures +10%, shows on the HUD, and expires back to exactly 4.15", t => {
   let seed = 11;
   t.mock.method(Math, "random", () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296));
-  const data = new Map([[SAVE_KEY, v5SaveForCooking({ dressings: { veggieSalad: 1, bakedWheat: 20 } })]]);
+  const data = new Map([[SAVE_KEY, v5SaveForCooking({ dressings: { dressing: 10, veggieSalad: 1, bakedWheat: 20 }, hunger: 60 })]]);
   const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
   const game = mountGame({ storage, pointerLock: true });
   let time = 0;
@@ -4282,7 +4285,7 @@ test("the salad's speed buff measures +10%, shows on the HUD, and expires back t
 test("re-eating refreshes without stacking, buffs coexist, and the stew's punch hits +10% until expiry", t => {
   let seed = 23;
   t.mock.method(Math, "random", () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296));
-  const data = new Map([[SAVE_KEY, v5SaveForCooking({ dressings: { veggieSalad: 2, stew: 1, bakedWheat: 20 } })]]);
+  const data = new Map([[SAVE_KEY, v5SaveForCooking({ dressings: { dressing: 10, veggieSalad: 2, stew: 1, bakedWheat: 20 }, hunger: 40 })]]);
   const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
   const game = mountGame({ storage, pointerLock: true });
   let time = 0;
@@ -4643,4 +4646,182 @@ test("a swung weapon reads 冷却中 while it recovers", () => {
   game.frame(20);
   assert.ok(game.get("weapon-label").textContent.includes("冷却中"));
   assert.ok(!game.get("weapon-label").textContent.includes("收招中"));
+});
+
+// ---- Hunger (batch 86) -------------------------------------------------
+// Survival-only: the bar drains on game time, food feeds it instead
+// of healing, a full belly regens slowly, an empty one starves.
+
+test("hunger: the bar shows in survival, drains, and warns at 30 then 10", () => {
+  // Two mounts, each crossing one band inside the first wave's
+  // approach window, so no zombie timing touches the message line.
+  // (The band speaks when the float crosses; the bar shows the
+  // floor, so the read waits until the floor is one past the band.)
+  const mount = hungerSeed => {
+    const data = new Map([[SAVE_KEY, v5SaveForCooking({ hunger: hungerSeed })]]);
+    const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+    const game = mountGame({ storage, pointerLock: true });
+    let time = 0;
+    const frame = () => game.frame(time += 20);
+    game.click("start-button");
+    game.grantPointerLock();
+    frame();
+    return { game, frame };
+  };
+  const low = mount(31);
+  assert.equal(low.game.get("hunger").hidden, false, "the hunger bar shows in survival");
+  assert.equal(low.game.get("hunger-value").textContent, "31");
+  for (let i = 0; i < 600 && Number(low.game.get("hunger-value").textContent) > 29; i++) low.frame();
+  assert.equal(low.game.get("message").textContent, "肚子饿了 · 吃点东西补充体力");
+  assert.equal(low.game.get("hunger").classList.contains("low"), true);
+
+  const critical = mount(11);
+  for (let i = 0; i < 600 && Number(critical.game.get("hunger-value").textContent) > 9; i++) critical.frame();
+  assert.equal(critical.game.get("message").textContent, "饿得发慌 · 再不吃东西就要掉血了");
+  assert.equal(critical.game.get("hunger").classList.contains("critical"), true);
+});
+
+test("hunger: an empty belly bleeds exactly 1 hp per 2 seconds", () => {
+  const data = new Map([[SAVE_KEY, v5SaveForCooking({ hunger: 0 })]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 0;
+  // dt is capped at 0.1s per frame: 70 frames is 6-7 game seconds,
+  // inside the first wave's 14-second countdown — no zombie can
+  // interfere, so the drop is starvation alone: 3 ticks of 1 hp.
+  const frame = () => game.frame(time += 100);
+  game.click("start-button");
+  game.grantPointerLock();
+  for (let i = 0; i < 70; i++) frame();
+  assert.equal(game.get("hunger-value").textContent, "0");
+  assert.equal(game.get("health-value").textContent, "97");
+  assert.equal(game.get("death-screen").hidden, true);
+});
+
+test("hunger: the game loop drains the saved belly at the walking rate", () => {
+  const data = new Map([[SAVE_KEY, v5SaveForCooking({})]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 0;
+  const frame = () => game.frame(time += 100);
+  game.click("start-button");
+  game.grantPointerLock();
+  // 100 frames at the 0.1s dt cap = 10 game seconds = 10 * 50/240
+  // hunger. Pausing flushes the save, so the float is readable.
+  for (let i = 0; i < 100; i++) frame();
+  game.key("Escape");
+  frame();
+  const saved = JSON.parse(data.get(SAVE_KEY)).hunger;
+  assert.ok(Math.abs(saved - (100 - 10 * 50 / 240)) < 0.05, `the saved hunger drains at the set rate (got ${saved})`);
+});
+
+test("hunger: frozen and hidden in a boss trial and in beacon defense", () => {
+  const trialData = new Map([[SAVE_KEY, v5SaveForCooking({})]]);
+  const trialStorage = { getItem: key => trialData.get(key) ?? null, setItem: (key, value) => trialData.set(key, value) };
+  const trial = mountGame({ storage: trialStorage, pointerLock: true });
+  let t1 = 0;
+  const trialFrame = () => trial.frame(t1 += 100);
+  trial.click("trial-guardian-button");
+  trial.grantPointerLock();
+  trialFrame();
+  assert.equal(trial.get("hunger").hidden, true, "no hunger bar in a trial");
+  for (let i = 0; i < 300; i++) trialFrame();
+  assert.equal(trial.get("hunger-value").textContent, "100", "30 game seconds in a trial drain nothing");
+
+  const defenseData = new Map([[SAVE_KEY, v5SaveForCooking({ hunger: 55 })]]);
+  const defenseStorage = { getItem: key => defenseData.get(key) ?? null, setItem: (key, value) => defenseData.set(key, value) };
+  const defense = mountGame({ storage: defenseStorage, pointerLock: true });
+  let t2 = 0;
+  const defenseFrame = () => defense.frame(t2 += 20);
+  defense.click("defense-button");
+  defense.grantPointerLock();
+  defenseFrame();
+  assert.equal(defense.get("hunger").hidden, true, "no hunger bar in defense");
+  for (let i = 0; i < 600; i++) defenseFrame();
+  assert.equal(defense.get("hunger-value").textContent, "55", "defense freezes hunger where it was");
+});
+
+test("hunger: eating feeds the bar, caps at full, and a full belly refuses", () => {
+  const data = new Map([[SAVE_KEY, v5SaveForCooking({ hunger: 30, dressings: { bakedWheat: 1, stew: 1 } })]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 0;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  frame();
+  game.key("KeyC");
+  frame();
+  game.click("use-bakedWheat");
+  assert.equal(game.get("inventory-notice").textContent, "饥饿 +40");
+  assert.equal(game.get("hunger-value").textContent, "70");
+  assert.equal(game.get("health-value").textContent, "100", "the dish did not heal");
+  game.click("use-stew");
+  assert.equal(game.get("inventory-notice").textContent, "饥饿 +30", "the stew's 60 caps at a full belly");
+  assert.equal(game.get("hunger-value").textContent, "100");
+  game.key("KeyC");
+  game.grantPointerLock();
+  frame();
+
+  const fullData = new Map([[SAVE_KEY, v5SaveForCooking({ hunger: 100, dressings: { stew: 1 } })]]);
+  const fullStorage = { getItem: key => fullData.get(key) ?? null, setItem: (key, value) => fullData.set(key, value) };
+  const full = mountGame({ storage: fullStorage, pointerLock: true });
+  let t2 = 0;
+  const fullFrame = () => full.frame(t2 += 20);
+  full.click("start-button");
+  full.grantPointerLock();
+  fullFrame();
+  full.key("KeyC");
+  fullFrame();
+  assert.equal(full.get("use-stew").disabled, true, "a full belly locks the eat button");
+  full.click("use-stew");
+  assert.equal(full.get("inventory-notice").textContent, "已经吃饱了");
+  assert.match(full.get("inventory-dressings").textContent, /炖菜 1 件/, "the refused bite spends nothing");
+});
+
+test("hunger: a belly at 80 slowly restores health, one at 65 does not", () => {
+  const run = dishes => {
+    const data = new Map([[SAVE_KEY, v5SaveForCooking({ hunger: 0, dressings: dishes })]]);
+    const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+    const game = mountGame({ storage, pointerLock: true });
+    let time = 0;
+    const frame = () => game.frame(time += 100);
+    const hp = () => Number(game.get("health-value").textContent);
+    game.click("start-button");
+    game.grantPointerLock();
+    // Starve 6 game seconds (inside the wave countdown): hp 97.
+    for (let i = 0; i < 70; i++) frame();
+    assert.equal(hp(), 97);
+    // Eat the dishes from the bag (paused: no time passes), which
+    // sets the belly to an exact mark, then watch 8 game seconds —
+    // still ahead of the first walker's arrival.
+    game.key("KeyC");
+    frame();
+    for (const [key, count] of Object.entries(dishes)) for (let i = 0; i < count; i++) game.click(`use-${key}`);
+    game.key("KeyC");
+    game.grantPointerLock();
+    frame();
+    for (let i = 0; i < 80; i++) frame();
+    return hp();
+  };
+  assert.equal(run({ bakedWheat: 2 }), 100, "hunger exactly 80 regens back to full");
+  assert.equal(run({ bakedWheat: 1, veggieSalad: 1 }), 97, "hunger 65 does not regen");
+});
+
+test("hunger: starving to death ends the run, and respawn refills the belly", () => {
+  const data = new Map([[SAVE_KEY, v5SaveForCooking({ hunger: 0 })]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 0;
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  // Starvation alone kills at 200 game seconds; the wave walkers
+  // only hasten it. Either way the run ends on the death screen.
+  for (let i = 0; i < 14000 && game.get("death-screen").hidden; i++) frame();
+  assert.equal(game.get("death-screen").hidden, false, "an empty belly ends the run");
+  game.click("respawn-button");
+  frame();
+  assert.equal(game.get("health-value").textContent, "100");
+  assert.equal(game.get("hunger-value").textContent, "100", "respawn refills hunger with health");
 });
