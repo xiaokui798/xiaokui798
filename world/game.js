@@ -1,5 +1,6 @@
 import { BLOCK, RECIPES, HEALING_KEYS, COOKING_KEYS, BOSS_DROPS, RARE_MATERIALS, SAVE_KEY, PREVIOUS_SAVE_KEY, LEGACY_KEY, createProgression } from "./progression.mjs";
 import { LOOK_SENSITIVITY_KEY, applyBlockEdits, mergeRunProgressRecord, saveImportFailureReason } from "./save.mjs";
+import { createHud } from "./hud.mjs";
 import { WORLD, CHUNK_SIZE, FACES as faces, contains, voxelIndex, voxelPosition,
   seeded, generateTerrain, createChunkGrid, distanceSquared, buildChunkMesh,
   ATLAS_TILES, atlasTileFor, faceUV,
@@ -396,6 +397,14 @@ export function initGame(window) {
       buffLines[kind] = line;
     }
   }
+  // The HUD write-out layer (hud.mjs, split piece 2): this file
+  // decides what the HUD says; hud.mjs owns writing it to the DOM.
+  const hudUi = createHud({ hud, bossHud, bossName, bossHealth, bossHealthValue, bossHealthGhost,
+    bossCallout, bossWarning, bossPhaseBanner, bossSkills, bossSkillHeal, bossSkillDragons,
+    waveStatus, coordinates, message, buffLines },
+    { setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window) });
+  const showMessage = hudUi.showMessage;
+
   // Establish the initial tab state explicitly (the panels' hidden flags
   // in the markup are the browser default; the harness reads the flags
   // this call sets, so both agree the backpack tab is open).
@@ -577,7 +586,6 @@ export function initGame(window) {
   let graphicsLost = false;
   let drag = null;
   let { yaw, pitch } = spawnView;
-  let noticeTimer;
   let jumpBuffer = 0;
   let movementTime = 0;
   let previousEye = null, renderedView = null;
@@ -3958,33 +3966,19 @@ export function initGame(window) {
     const beacon = defense.beacon;
     defenseHud.hidden = !beacon;
     stageTime.hidden = !beacon;
-    bossHud.hidden = !boss;
+    hudUi.setBossVisible(Boolean(boss));
     if (boss) {
       const wave = boss.profile === BOSS ? GUARDIAN_WAVES[boss.phase - 1] : null;
       const maxHp = wave?.hp ?? boss.profile.maxHp;
-      if (bossHealth.max !== maxHp) bossHealth.max = maxHp;
-      if (bossHealth.value !== boss.hp) bossHealth.value = boss.hp;
-      setText(bossHealthValue, `${boss.hp} / ${maxHp}`);
-      const ghostWidth = `${Math.round(bossGhostHp / maxHp * 1000) / 10}%`;
-      if (bossHealthGhost.style.width !== ghostWidth) bossHealthGhost.style.width = ghostWidth;
       // The right-top line carries one job per boss (batch 48): the
       // guardian shows its minion count and one plain-language tip —
       // the wave itself is reported only in the boss hud — and the
       // colossus shows just its phase, its skills living on the two
       // chips under the health bar instead of crowding this line.
-      if (wave) {
-        const tip = ["守卫蓄力时绕到背后打核心", "先打倒随从，能打断守卫放火", "躲开冲锋，它撞空后反击时间更长"][boss.phase - 1];
-        setText(waveStatus, `场上随从 ${enemiesLeft} 只 · ${tip}`);
-        setText(bossName, `熔炉守卫 · 第 ${boss.phase} / ${GUARDIAN_WAVES.length} 波 · ${wave.name}`);
-      } else {
-        setText(waveStatus, boss.phase === 1 ? "第一阶段" : "第二阶段");
-      }
-      bossSkills.hidden = boss.profile !== COLOSSUS;
-      if (boss.profile === COLOSSUS) {
-        const chip = ready => ready > boss.elapsed ? `还剩 ${Math.ceil(ready - boss.elapsed)} 秒` : "就绪";
-        setText(bossSkillHeal, `[1] 回血 · ${chip(boss.healReady)}`);
-        setText(bossSkillDragons, `[4] 五龙冲击 · ${chip(boss.dragonsReady)}`);
-      }
+      const statusText = wave
+        ? `场上随从 ${enemiesLeft} 只 · ${["守卫蓄力时绕到背后打核心", "先打倒随从，能打断守卫放火", "躲开冲锋，它撞空后反击时间更长"][boss.phase - 1]}`
+        : boss.phase === 1 ? "第一阶段" : "第二阶段";
+      const bossNameText = wave ? `熔炉守卫 · 第 ${boss.phase} / ${GUARDIAN_WAVES.length} 波 · ${wave.name}` : null;
       const attack = boss.attack && BOSS_ATTACKS[boss.attack.kind];
       const covered = bossHasCover();
       const danger = !finished && insideHazard(boss, { ...player, covered });
@@ -3994,18 +3988,14 @@ export function initGame(window) {
       // Phase-change show (batch 49): the first frame of a new
       // phase fires a shock ring out to the arena edge and raises
       // the big banner with the phase sentence; the health bar
-      // wears the phase colour for the whole phase.
+      // wears the phase colour for the whole phase. The ring and
+      // the banner state live here; hud.mjs only writes them out.
       if (bossPhaseSeen && boss.phase !== bossPhaseSeen) {
         groundDecals.push({ kind: "phasering", x: boss.x, z: boss.z, radius: boss.profile.arena.radius, age: 0, ttl: .9,
           color: boss.profile === COLOSSUS ? [1, .55, .9] : [1, .6, .25] });
         phaseBanner = { text: boss.profile === COLOSSUS ? "断星巨像进入第二阶段" : phaseShiftHint ?? "", until: boss.elapsed + 1.5 };
       }
       bossPhaseSeen = boss.phase;
-      bossHud.classList.toggle("phase-1", boss.phase === 1);
-      bossHud.classList.toggle("phase-2", boss.phase === 2);
-      bossHud.classList.toggle("phase-3", boss.phase === 3);
-      bossPhaseBanner.hidden = !(phaseBanner && phaseBanner.text && boss.elapsed < phaseBanner.until);
-      if (!bossPhaseBanner.hidden) setText(bossPhaseBanner, phaseBanner.text);
       // Danger sentences per kind: the plan's kept variants first,
       // the rest in the same "where you are, then what to do" shape.
       const dangerHint = boss.attack && {
@@ -4029,20 +4019,23 @@ export function initGame(window) {
             : danger ? `${attack.name} · ${dangerHint}`
             : boss.state === "attack" && (boss.attack.kind === "shock" || boss.attack.kind === "nova") ? `${attack.name} · 跳！`
             : attack.hint;
-      setText(bossCallout, callout);
       // The big central warning mirrors the callout for as long as
       // the attack is telegraphed or landing — the moment the
       // player most needs it — and clears with the recovery.
       const warningOn = !finished && (boss.state === "windup" || boss.state === "attack");
-      bossWarning.hidden = !warningOn;
-      if (warningOn) setText(bossWarning, `⚠ ${callout}`);
-      bossHud.classList.toggle("vulnerable", boss.state === "recovery");
-      bossHud.classList.toggle("in-danger", danger);
-      hud.classList.toggle("in-danger", danger);
+      hudUi.updateBossHud({
+        name: bossNameText, healthMax: maxHp, health: boss.hp, ghostHp: bossGhostHp,
+        statusText, skillsHidden: boss.profile !== COLOSSUS,
+        healReadyAt: boss.healReady, dragonsReadyAt: boss.dragonsReady, elapsed: boss.elapsed,
+        callout, warningOn, vulnerable: boss.state === "recovery", danger,
+        phase: boss.phase,
+        bannerVisible: Boolean(phaseBanner && phaseBanner.text && boss.elapsed < phaseBanner.until),
+        bannerText: phaseBanner?.text ?? ""
+      });
     } else if (beacon) {
       const wave = Math.min(DEFENSE_TOTAL_WAVES, enemiesLeft || finished ? survival.wave : survival.wave + 1);
       const plan = DEFENSE_WAVES[Math.min(Math.max(0, wave - 1), DEFENSE_WAVES.length - 1)];
-      setText(waveStatus, `第 ${wave || 1} / ${DEFENSE_TOTAL_WAVES} 波 · ${plan.name}${recordSuffix(savedProgress?.defense.bestWave)}`);
+      hudUi.setWaveStatus(`第 ${wave || 1} / ${DEFENSE_TOTAL_WAVES} 波 · ${plan.name}${recordSuffix(savedProgress?.defense.bestWave)}`);
       setText(stageTime, finished ? "防守结束" : enemiesLeft
         ? `剩余 ${enemiesLeft} 只 · 限时 ${Math.ceil(defense.seconds)} 秒`
         : `准备 ${Math.ceil(survival.countdown)} 秒 · 按 B 提前迎敌`);
@@ -4055,19 +4048,14 @@ export function initGame(window) {
       setText(beaconBearing, `信标在${direction} ${Math.hypot(dx, dz).toFixed(1)} 米`);
       setText(defenseActions, `E 维修 · 石头 ${campaign.count(STONE)} / ${BEACON.repairCost}`);
     } else {
-      setText(waveStatus, !survival.enabled ? "自由建造" : enemiesLeft
+      hudUi.setWaveStatus(!survival.enabled ? "自由建造" : enemiesLeft
         ? `第 ${survival.wave} 波 · 剩余 ${enemiesLeft} 只`
         : `第 ${survival.wave + 1} 波 · ${Math.max(1, Math.ceil(survival.countdown))} 秒后${recordSuffix(savedProgress?.wave)}`);
     }
     // The debug coordinates yield to the fight (batch 48): hidden
     // while a boss is up, the arena name beside them stays.
-    coordinates.hidden = Boolean(boss);
-    if (!boss) {
-      hud.classList.toggle("in-danger", false);
-      bossWarning.hidden = true;
-      bossPhaseBanner.hidden = true;
-    }
-    setText(coordinates, `X ${player.x.toFixed(1)} · Y ${player.y.toFixed(1)} · Z ${player.z.toFixed(1)}`);
+    if (!boss) hudUi.clearBossAlerts();
+    hudUi.updateCoordinates(`X ${player.x.toFixed(1)} · Y ${player.y.toFixed(1)} · Z ${player.z.toFixed(1)}`, Boolean(boss));
     const charging = weapon === pulseWeapon && pulse.charge !== null;
     const inReach = aim && aim.distance <= (charging ? pulseBurst : weapon ?? punch).reach;
     const target = aim?.zombie;
@@ -4108,9 +4096,7 @@ export function initGame(window) {
     // never reads 0), gone the frame the buff expires.
     for (const kind of ["speed", "attack"]) {
       const buff = activeBuff(kind);
-      const line = buffLines[kind];
-      line.hidden = !buff;
-      if (buff) setText(line, `${BUFF_LABELS[kind]} +${buff.pct}% · 还剩 ${Math.ceil(buff.remaining)} 秒`);
+      hudUi.updateBuffLine(kind, buff ? { label: BUFF_LABELS[kind], pct: buff.pct, remaining: buff.remaining } : null);
     }
     if (boss && aim && !aim.zombie) {
       setText(targetStatus, !inReach ? "超出攻击距离" : aim.crystal ? `金色晶体 ${boss.attack.crystalHp} / ${BOSS_ATTACKS.prism.crystalHp} · 打碎它能停掉光束`
@@ -4120,11 +4106,6 @@ export function initGame(window) {
       const hint = !inReach ? " · 超出攻击距离" : target.windup > 0 ? " · 蓄力" : "";
       setText(targetStatus, `${style.name} ${target.hp} / ${style.hp}${hint}`);
     }
-  }
-  function showMessage(text) {
-    window.clearTimeout(noticeTimer);
-    message.textContent = text;
-    noticeTimer = window.setTimeout(() => message.textContent = "", 1700);
   }
   function updateSoundButton() {
     const label = !sound.available ? "音效不可用" : !sound.enabled ? "音效关闭" : sound.playing ? "音效开启" : "音效待启动";
