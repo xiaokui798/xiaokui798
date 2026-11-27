@@ -768,6 +768,33 @@ test("crafting counts healing items per recipe and useDressing heals per key", (
   assert.equal(reloaded.useDressing("nope"), null);
 });
 
+test("batch 104: five dressings drain only through five saved uses, each paying its heal", () => {
+  // The open observation from batch 93 (real-machine defense): the
+  // dressing count fell 5 -> 0 while hp seemed stuck at 3. At the
+  // progression layer the spend is atomic: dressingCounts has exactly
+  // one decrement site (useDressing, inside change()), a use whose
+  // save fails rolls the count back, and every saved use returns the
+  // recipe's heal — there is no spend-without-heal and no other drain
+  // (no wave settlement, hit trigger or auto-use touches the counts).
+  const v5 = JSON.stringify({ version: 5, edits: [], materials: [0, 0, 0, 0, 0, 0], axeUnlocked: false,
+    dressings: { dressing: 5, bandage: 0, bigDressing: 0, bakedWheat: 0, veggieSalad: 0, stew: 0 } });
+  const storage = makeStorage([[SAVE_KEY, v5]]);
+  const game = createProgression(storage, line(10));
+  assert.equal(game.dressings, 5);
+  for (let expected = 4; expected >= 0; expected--) {
+    assert.deepEqual(game.useDressing(), { saved: true, healed: 30 });
+    assert.equal(game.dressings, expected);
+    // The drain is persisted as it happens, not batched or offset:
+    // a reload at any point sees the same count the HUD showed.
+    assert.equal(JSON.parse(storage.getItem(SAVE_KEY)).dressings.dressing, expected);
+    assert.equal(createProgression(storage, line(10)).dressings, expected);
+  }
+  // A sixth use is refused and changes nothing — counts never go
+  // negative and a refused use cannot resurrect or drain further.
+  assert.equal(game.useDressing(), null);
+  assert.equal(game.dressings, 0);
+});
+
 test("the 急救 tech adds 10 healing to every dressing use", () => {
   const storage = makeStorage();
   const game = createProgression(storage, line(10));
