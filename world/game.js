@@ -18,7 +18,7 @@ import { armorReduction } from "./armor.mjs";
 import { miningInterval } from "./tools.mjs";
 import { TECH, TECH_EFFECTS, canUnlockTech, techConditions, techDisplayOrder, techForRecipe, techLockReason } from "./tech.mjs";
 import { durabilityMax, repairCost } from "./durability.mjs";
-import { CROPS, FARM_MATERIALS, isMature } from "./crops.mjs";
+import { CROPS, FARM_MATERIALS, isMature, cropVisual } from "./crops.mjs";
 import { createMouseLook } from "./controls.mjs";
 import { PHYSICS_STEP, LANDING_SAMPLE_TIME, createSpeedReadout, overlapsPlayerBlock, stepPlayer } from "./movement.mjs";
 import { ARENA_PALETTE, BOSS, GUARDIAN_WAVES, COLOSSUS, BAR_COLORS, BOSS_ATTACKS, buildBossTerrain, createBossFight, advanceBoss, strikeBoss, guardianBackOpen, interruptFurnace, damagePrism, damageTurret,
@@ -1242,35 +1242,32 @@ export function initGame(window) {
     gl.enable(gl.DEPTH_TEST);
   }
 
-  // Crops (R2): one small box per planted crop, drawn from the
-  // campaign's crops field — a thin box that grows taller and turns from
-  // pale green to gold as it matures. Follows the pop mesh (the same
+  // Crops (R2, batch 102): drawn from the campaign's crops field, sized
+  // by cropVisual (crops.mjs) from the crop's growth progress — a fresh
+  // sowing is a few tiny seed grains lying on the soil, then one stalk
+  // that grows continuously taller and wider (green to gold) up to the
+  // mature size; there is no stage jump. Follows the pop mesh (the same
   // per-face colours and LEAF atlas tile), one mesh rebuilt each frame.
-  // The mesh holds 256 quads (42 crops); a field bigger than that draws
-  // its first 42 and the rest wait for the next frame — a field that big
-  // is a later-round problem, not an R2 one.
+  // The mesh holds 1024 quads: a seed-stage crop costs 4 small boxes
+  // (24 quads), a grown one 1 box (6 quads), so a field of ~42 seed-stage
+  // crops (or far more grown ones) still fits in one frame.
   function drawCrops() {
     const entries = Object.entries(campaign.crops);
     if (!entries.length) return;
-    cropMesh ??= createActorMesh(256);
+    cropMesh ??= createActorMesh(1024);
     const { vertices } = cropMesh;
     let used = 0;
-    const stageColors = [[.55, .75, .35], [.35, .62, .25], [.85, .72, .30]];
-    const stageHeights = [.35, .6, .85];
-    const width = .5;
-    for (const [cell, crop] of entries) {
-      if (used + 288 > vertices.length) break;
-      const [x, y, z] = voxelPosition(WORLD, Number(cell));
-      const height = stageHeights[crop.stage] ?? .35;
-      const color = stageColors[crop.stage] ?? stageColors[0];
-      const cx = x + .5, cy = y + height / 2, cz = z + .5;
+    // One axis-aligned box sitting on the soil at (bx, y, bz).
+    function cropBox(bx, y, bz, width, height, color) {
+      if (used + 288 > vertices.length) return false;
+      const cy = y + height / 2;
       for (const { d, v, light } of faces) {
         const tile = atlasTileFor(LEAF, d, { grass: GRASS, leaf: LEAF, dirt: DIRT, stone: STONE, wood: WOOD });
         for (const corner of v) {
           const [fu, fv] = faceUV(d, corner);
-          vertices[used++] = cx + (corner[0] - .5) * width;
+          vertices[used++] = bx + (corner[0] - .5) * width;
           vertices[used++] = cy + (corner[1] - .5) * height;
-          vertices[used++] = cz + (corner[2] - .5) * width;
+          vertices[used++] = bz + (corner[2] - .5) * width;
           vertices[used++] = color[0] * light;
           vertices[used++] = color[1] * light;
           vertices[used++] = color[2] * light;
@@ -1282,6 +1279,22 @@ export function initGame(window) {
           vertices[used++] = fv;
         }
       }
+      return true;
+    }
+    // Seed grains scattered in the cell, deterministic per cell so the
+    // scatter does not shimmer between frames.
+    const grainOffsets = [[-.18, -.14], [.16, -.10], [-.06, .18], [.20, .14]];
+    for (const [cell, crop] of entries) {
+      const [x, y, z] = voxelPosition(WORLD, Number(cell));
+      const visual = cropVisual(CROPS[crop.crop], crop.growth ?? 0);
+      if (visual.mode === "seed") {
+        let drew = true;
+        for (let grain = 0; grain < visual.grainCount; grain++) {
+          const [ox, oz] = grainOffsets[grain % grainOffsets.length];
+          if (!cropBox(x + .5 + ox, y, z + .5 + oz, visual.grainWidth, visual.grainHeight, visual.color)) { drew = false; break; }
+        }
+        if (!drew) break;
+      } else if (!cropBox(x + .5, y, z + .5, visual.width, visual.height, visual.color)) break;
     }
     uploadActorMesh(cropMesh, used);
   }

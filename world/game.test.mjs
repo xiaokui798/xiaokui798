@@ -2965,6 +2965,62 @@ test("the backpack lists every healing recipe and the HUD shows all three counts
   assert.equal(game.get("inventory-screen").hidden, true);
 });
 
+test("a crafted dressing appears in the backpack grid and KeyH spends it everywhere at once", t => {
+  // Batch 101 regression (player report): the player crafted a leaf
+  // dressing, saw the craft-complete toast and "H 敷料 1" on the HUD,
+  // but the backpack grid held only the seven material cells — the
+  // dressing counts live in dressingsByRecipe, and the grid never read
+  // them. The chain pinned here: craft -> grid cell shows the count ->
+  // KeyH use -> grid, foot line and HUD all drop together.
+  let seed = 1;
+  t.mock.method(Math, "random", () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296));
+  // The player's own counts: grass 19, dirt 11, stone 23, wood 0,
+  // leaves 12, no healing items yet (materials are indexed by block id).
+  const data = new Map([[V4_SAVE_KEY, JSON.stringify({ version: 4, edits: [], materials: [0, 19, 11, 23, 0, 12],
+    axeUnlocked: false, dressings: { dressing: 0, bandage: 0, bigDressing: 0 } })]]);
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const game = mountGame({ storage, pointerLock: true });
+  let time = 0;
+  const frame = () => game.frame(time += 20);
+  const hp = () => Number(game.get("health-value").textContent);
+  const cellFor = name => game.get("inventory-materials").children
+    .find(cell => cell.children[1]?.textContent === name);
+  game.click("start-button");
+  game.grantPointerLock();
+  for (let i = 0; i < 5; i++) frame();
+  game.key("KeyC");
+  frame();
+  assert.equal(game.get("inventory-screen").hidden, false);
+  assert.equal(game.get("inventory-materials").children.length, 13,
+    "the backpack grid lists the seven materials plus every healing / food item");
+  assert.equal(cellFor("树叶敷料").children[2].textContent, "0");
+  assert.equal(cellFor("树叶").children[2].textContent, "12");
+  game.click("craft-dressing");
+  assert.equal(cellFor("树叶敷料").children[2].textContent, "1",
+    "the crafted dressing is visible in the backpack grid");
+  assert.equal(cellFor("树叶").children[2].textContent, "10", "crafting spent two leaves");
+  assert.match(game.get("inventory-dressings").textContent, /树叶敷料 1 件/);
+  assert.match(game.get("hud-dressings").textContent, /^1 · /);
+  game.key("KeyC");
+  game.grantPointerLock();
+  frame();
+  // Take wave-1 spitter hits until a 30 heal fits, then spend the
+  // dressing with the H hotkey, outside the backpack.
+  for (let i = 0; i < 3000 && game.get("death-screen").hidden && hp() > 70; i++) frame();
+  assert.equal(game.get("death-screen").hidden, true, "the player must survive the beating");
+  const beforeKeyH = hp();
+  assert.ok(beforeKeyH <= 70 && beforeKeyH > 0, `health must be low enough to prove a 30 heal (now ${beforeKeyH})`);
+  game.key("KeyH");
+  frame();
+  assert.equal(hp(), beforeKeyH + 30, "KeyH heals the dressing's 30");
+  assert.match(game.get("hud-dressings").textContent, /^0 · /, "the HUD count drops with the use");
+  game.key("KeyC");
+  frame();
+  assert.equal(cellFor("树叶敷料").children[2].textContent, "0",
+    "the backpack grid drops with the use, in sync with the HUD");
+  assert.match(game.get("inventory-dressings").textContent, /树叶敷料 0 件/);
+});
+
 test("using a healing item heals by its own recipe amount", t => {
   let seed = 1;
   t.mock.method(Math, "random", () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296));
@@ -4001,8 +4057,9 @@ function settledAimCell(game, frame) {
 }
 
 // The top y of the crop box at this cell in the last actor-mesh upload:
-// the crop is the only actor mesh in its cell's footprint, and its box
-// tops out at cellY + the stage height (0.35 / 0.6 / 0.85).
+// the crop is the only actor mesh in its cell's footprint, and its top
+// is cellY + its cropVisual height for its growth (batch 102: 0.06 for
+// seed grains, growing continuously to 0.85 at maturity).
 function cropTopY(game, cell) {
   const [x, y, z] = cell;
   let top = -Infinity;
@@ -4087,12 +4144,41 @@ test("a crop grows on game time: its stage flips after one stage of growth", () 
   game.grantPointerLock();
   settledAimCell(game, frame);
   const cell = [soil[0], soil[1] + 1, soil[2]];
-  // The crop is a seedling: its box tops out at 0.35 above the soil.
-  assert.ok(Math.abs(cropTopY(game, cell) - (cell[1] + .35)) < .02, `seedling top is ${cropTopY(game, cell)}`);
+  // Batch 102: the visible height follows growth continuously, not the
+  // stage. At growth ~119.5 the stalk is ~0.43 above the soil.
+  const topBefore = cropTopY(game, cell);
+  assert.ok(Math.abs(topBefore - (cell[1] + .43)) < .02, `growing top is ${topBefore}`);
   // 60 frames is 1.2s of game time: the growth crosses 120s and the
-  // stage flips to 1, 0.6 tall.
+  // stage flips to 1 — but the height must NOT jump (the old stage
+  // heights leapt 0.35 -> 0.6 here); it grows by under 0.03.
   for (let i = 0; i < 60; i++) frame();
-  assert.ok(Math.abs(cropTopY(game, cell) - (cell[1] + .6)) < .02, `grown top is ${cropTopY(game, cell)}`);
+  const topAfter = cropTopY(game, cell);
+  assert.ok(topAfter > topBefore && topAfter - topBefore < .03, `no jump at the stage flip: ${topBefore} -> ${topAfter}`);
+});
+
+test("a crop renders as tiny seed grains when sown and full-size when mature (batch 102)", () => {
+  const soil = probeSoilCell();
+  const cropCell = voxelIndex(WORLD, soil[0], soil[1] + 1, soil[2]);
+  const cell = [soil[0], soil[1] + 1, soil[2]];
+  const mountWith = growth => {
+    const data = new Map([[SAVE_KEY, v5SaveWithSeeds({ wheatSeed: 0, wheat: 0 },
+      { [cropCell]: { crop: "wheat", stage: growth >= 240 ? 2 : 0, plantedAt: 30, growth } })]]);
+    const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+    const game = mountGame({ storage, pointerLock: true });
+    let time = 16;
+    const frame = () => game.frame(time += 20);
+    game.click("start-button");
+    game.grantPointerLock();
+    settledAimCell(game, frame);
+    return game;
+  };
+  // Just sown: the grains top out at 0.06 above the soil — nowhere near
+  // the old 0.35 stage-0 box the player reported.
+  const sown = mountWith(0);
+  assert.ok(Math.abs(cropTopY(sown, cell) - (cell[1] + .06)) < .02, `sown top is ${cropTopY(sown, cell)}`);
+  // Mature: the full 0.85 stalk.
+  const mature = mountWith(240);
+  assert.ok(Math.abs(cropTopY(mature, cell) - (cell[1] + .85)) < .02, `mature top is ${cropTopY(mature, cell)}`);
 });
 
 test("the craft toast lives above the modal screens, not inside the hud layer", () => {
@@ -4120,10 +4206,17 @@ test("item icons lead the material strips, rows, cards and hotbar slots", () => 
   game.key("KeyC");
   assert.equal(game.get("inventory-screen").hidden, false);
   const strip = game.get("inventory-materials");
-  assert.equal(strip.children.length, 7);
+  // Batch 101: the backpack strip is the seven material cells plus one
+  // cell per healing / food item (their counts live in dressingsByRecipe,
+  // not materials — a grid without them hid every crafted dressing).
+  // The workbench strip keeps the original seven material cells.
+  assert.equal(strip.children.length, 13);
   assert.equal(strip.children[0].children[0].className, "item-icon s20");
   assert.equal(strip.children[0].children[0].src, "icons/grass.svg");
   assert.equal(strip.children[5].children[0].src, "icons/emberCore.svg");
+  assert.equal(strip.children[7].children[0].src, "icons/dressing.svg");
+  assert.equal(strip.children[7].children[1].textContent, "树叶敷料");
+  assert.equal(game.get("workbench-materials").children.length, 7);
   assert.match(game.get("farm-materials").innerHTML, /icons\/wheatSeed\.svg/);
   assert.match(game.get("healing-recipes").innerHTML, /icons\/bandage\.svg/);
   assert.match(game.get("workbench-list").innerHTML, /icons\/workbench\.svg/);

@@ -347,8 +347,14 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
   }
 
   // One material cell per block plus one per rare material; the backpack
-  // tab and the workbench strip render the same seven cells.
-  function renderMaterials(campaign, list, env) {
+  // tab and the workbench strip render the same seven cells. The backpack
+  // strip additionally lists every healing / food item (batch 101): those
+  // counts live in dressingsByRecipe, not in materials, so a grid that
+  // only reads materials never shows a crafted dressing — the player
+  // crafted one, saw the toast and the HUD count, and found no such item
+  // in the backpack. The workbench strip keeps the original seven cells:
+  // it is a crafting-materials strip, not the backpack.
+  function renderMaterials(campaign, list, env, includeHealing = false) {
     const iconFor = key => {
       const icon = document.createElement("img");
       icon.className = "item-icon s20";
@@ -356,21 +362,21 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
       icon.alt = "";
       return icon;
     };
-    list.replaceChildren(...env.palette.map(block => {
+    const cell = (iconKey, name, count) => {
       const entry = document.createElement("div");
       const label = document.createElement("dt"), value = document.createElement("dd");
-      label.textContent = env.blockNames[block];
-      value.textContent = String(campaign.count(block));
-      entry.append(iconFor(block), label, value);
-      return entry;
-    }), ...Object.entries(campaign.rareMaterials).map(([id, count]) => {
-      const entry = document.createElement("div");
-      const label = document.createElement("dt"), value = document.createElement("dd");
-      label.textContent = RARE_MATERIALS[id];
+      label.textContent = name;
       value.textContent = String(count);
-      entry.append(iconFor(id), label, value);
+      entry.append(iconFor(iconKey), label, value);
       return entry;
-    }));
+    };
+    list.replaceChildren(...env.palette.map(block =>
+      cell(block, env.blockNames[block], campaign.count(block))
+    ), ...Object.entries(campaign.rareMaterials).map(([id, count]) =>
+      cell(id, RARE_MATERIALS[id], count)
+    ), ...(includeHealing ? HEALING_KEYS.map(key =>
+      cell(key, RECIPES[key].name, campaign.dressingsByRecipe[key] ?? 0)
+    ) : []));
   }
 
   // The lock line for one equipment recipe: no workbench yet, or the
@@ -604,7 +610,7 @@ export function createInventoryUi({ document, base, buffLabels, actions, refresh
   }
 
   function updateInventory(campaign, env) {
-    renderMaterials(campaign, inventoryMaterials, env);
+    renderMaterials(campaign, inventoryMaterials, env, true);
     renderMaterials(campaign, workbenchMaterials, env);
     setText(axeCost, campaign.axeUnlocked ? "已解锁，按 7 装备" : recipeCost(campaign, env, "axe"));
     const counts = campaign.dressingsByRecipe;

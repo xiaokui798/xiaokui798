@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { CROPS, FARM_MATERIALS, STARTER_SEEDS, RAIN_GROWTH_MULTIPLIER, FERTILIZER_GROWTH_MULTIPLIER,
-  growthStage, isMature, validateCrops, assertValidCrops } from "./crops.mjs";
+  growthStage, isMature, cropVisual, validateCrops, assertValidCrops } from "./crops.mjs";
 import { DAY_LENGTH } from "./terrain.mjs";
 import { BLOCK } from "./recipes.mjs";
 
@@ -33,6 +33,45 @@ test("growthStage steps through the stages and stays mature", () => {
   assert.equal(growthStage(wheat, -5), 0);
   assert.equal(growthStage(null, 240), 0);
   assert.equal(growthStage({ stages: 1, growthSeconds: 240 }, 240), 0);
+});
+
+test("cropVisual: a fresh sowing is tiny seed grains, then the stalk grows continuously to mature size", () => {
+  const wheat = CROPS.wheat;
+  // Just sown (and the whole first 15% of the cycle): seeds, not a plant —
+  // 4 grains, 0.10 wide, 0.06 tall, lying on the soil.
+  for (const growth of [0, 10, 35]) {
+    const v = cropVisual(wheat, growth);
+    assert.equal(v.mode, "seed", `growth ${growth} is seeds`);
+    assert.equal(v.grainCount, 4);
+    assert.equal(v.grainWidth, .10);
+    assert.equal(v.grainHeight, .06);
+    assert.ok(v.height <= .06 && v.width <= .10, "seeds are far smaller than the mature plant");
+  }
+  // Sprouting starts small and grows monotonically, with no jump at the
+  // old stage boundary (120s): either side of it differs by under 0.02.
+  const before = cropVisual(wheat, 119), after = cropVisual(wheat, 121);
+  assert.equal(before.mode, "growing");
+  assert.ok(Math.abs(after.height - before.height) < .02, `no stage jump: ${before.height} -> ${after.height}`);
+  assert.ok(Math.abs(after.width - before.width) < .02);
+  let previous = cropVisual(wheat, 36);
+  for (let growth = 48; growth <= 240; growth += 12) {
+    const v = cropVisual(wheat, growth);
+    assert.ok(v.height > previous.height, `height grows at ${growth}: ${previous.height} -> ${v.height}`);
+    assert.ok(v.width > previous.width, `width grows at ${growth}`);
+    previous = v;
+  }
+  // Mid-growth is visibly between sprout and mature; mature is the old
+  // full size, gold, and stays there past full growth.
+  const mid = cropVisual(wheat, 120);
+  assert.ok(mid.height > .35 && mid.height < .55, `mid height ${mid.height}`);
+  const mature = cropVisual(wheat, 240);
+  assert.equal(mature.mode, "mature");
+  assert.equal(mature.height, .85);
+  assert.equal(mature.width, .50);
+  assert.deepEqual(mature.color, [.85, .72, .30]);
+  assert.deepEqual(cropVisual(wheat, 9999), mature, "past full growth stays mature-sized");
+  assert.equal(cropVisual(wheat, -5).mode, "seed", "negative growth clamps to seeds");
+  assert.equal(cropVisual(null, 240).mode, "seed", "a bad def falls back to the seed visual");
 });
 
 test("isMature is true only at a full growthSeconds", () => {

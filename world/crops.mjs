@@ -63,6 +63,40 @@ export function growthStage(def, growth) {
   return Math.min(def.stages - 1, Math.floor(Math.max(0, growth) / stageSeconds));
 }
 
+// How a crop looks at a given growth, as a pure function of its growth
+// progress (growth / growthSeconds, clamped to 0..1) — the render layer
+// (game.js drawCrops) draws exactly this, so what the player sees is
+// testable here without a GL context. A freshly sown crop is NOT a
+// small version of the mature plant: for the first 15% of its cycle it
+// is seeds — a few tiny grains lying on the soil (mode "seed",
+// grainCount grains of grainWidth x grainHeight). Past that it is one
+// stalk (mode "growing", then "mature" at full growth) whose width and
+// height grow continuously with progress — no jump at a stage boundary
+// — from 0.18 wide / 0.14 tall just after sprouting to the mature
+// 0.50 wide / 0.85 tall, its colour shifting green to gold as it nears
+// maturity. Water/rain/fertilizer change `growth` itself (advanceCrops),
+// never this curve, so speeding growth up speeds the visible growth too.
+export function cropVisual(def, growth) {
+  const seedColor = [.66, .52, .30];
+  if (!def || typeof def.growthSeconds !== "number" || def.growthSeconds <= 0
+    || typeof growth !== "number" || !Number.isFinite(growth)) {
+    return { progress: 0, mode: "seed", width: .10, height: .06, grainCount: 4, grainWidth: .10, grainHeight: .06, color: seedColor };
+  }
+  const progress = Math.min(1, Math.max(0, growth / def.growthSeconds));
+  if (progress < .15) {
+    return { progress, mode: "seed", width: .10, height: .06, grainCount: 4, grainWidth: .10, grainHeight: .06, color: seedColor };
+  }
+  const u = (progress - .15) / .85;
+  const width = .18 + .32 * u;
+  const height = .14 + .71 * u;
+  // Colour: pale green -> deep green over the first half of the stalk
+  // phase, then deep green -> gold over the second half.
+  const early = [.55, .75, .35], mid = [.35, .62, .25], late = [.85, .72, .30];
+  const [from, to, f] = u < .5 ? [early, mid, u * 2] : [mid, late, (u - .5) * 2];
+  const color = from.map((channel, i) => channel + (to[i] - channel) * f);
+  return { progress, mode: progress >= 1 ? "mature" : "growing", width, height, grainCount: 0, grainWidth: 0, grainHeight: 0, color };
+}
+
 // True once the crop has had a full growthSeconds of effective growth —
 // the same point growthStage returns the last stage.
 export function isMature(def, growth) {
