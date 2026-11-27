@@ -28,7 +28,8 @@ import { BLOCK } from "./progression.mjs";
 
 test("defense re-exports the enemy registry from enemies.mjs unchanged", () => {
   assert.equal(ENEMIES, ENEMIES_FROM_REGISTRY);
-  assert.deepEqual(Object.keys(ENEMIES), ["breaker", "spitter", "dasher", "juggernaut", "exploder"]);
+  assert.deepEqual(Object.keys(ENEMIES), ["breaker", "spitter", "dasher", "juggernaut", "exploder",
+    "splitter", "splitling", "summoner", "whelp", "lurker"]);
   assert.deepEqual(ENEMIES, {
     breaker: { name: "破城者", hp: 155, speed: 1.13, reach: 1.44, damage: 14, strikeDelay: .70, cooldown: 1.55,
       width: 1.20, height: 1.13, armor: true, coat: [.28, .27, .26], skin: [.55, .55, .50], eyes: [.89, .40, .14],
@@ -47,7 +48,27 @@ test("defense re-exports the enemy registry from enemies.mjs unchanged", () => {
       width: .9, height: .95, armor: false, fuseSeconds: 1, blastTrigger: 2, blastRadius: 2.5,
       blastDamage: 18, blastBeaconDamage: 10,
       coat: [.55, .30, .12], skin: [.66, .50, .30], eyes: [1, .75, .2],
-      drops: [["emberCore", 1]] }
+      drops: [["emberCore", 1]] },
+    splitter: { name: "分裂者", hp: 80, speed: 1.5, reach: 1.15, damage: 9, strikeDelay: .45, cooldown: 1.2,
+      width: 1.0, height: 1.0, armor: false, splitKind: "splitling", splitCount: 2,
+      coat: [.16, .50, .28], skin: [.55, .30, .45], eyes: [.95, .90, .40],
+      drops: [[BLOCK.STONE, 1], [BLOCK.LEAF, 1]] },
+    splitling: { name: "小分裂体", hp: 15, speed: 2.4, reach: .9, damage: 4, strikeDelay: .2, cooldown: .8,
+      width: .55, height: .5, armor: false,
+      coat: [.16, .50, .28], skin: [.55, .30, .45], eyes: [.95, .90, .40],
+      drops: [] },
+    summoner: { name: "召唤者", hp: 90, speed: 1.0, reach: 1.1, damage: 4, strikeDelay: .5, cooldown: 1.2,
+      width: .9, height: 1.05, armor: false, summonKind: "whelp", summonInterval: 6, summonCap: 4,
+      coat: [.34, .18, .44], skin: [.62, .50, .34], eyes: [.85, .60, 1],
+      drops: [[BLOCK.LEAF, 2]] },
+    whelp: { name: "幼体", hp: 15, speed: 2.2, reach: .9, damage: 3, strikeDelay: .25, cooldown: .9,
+      width: .55, height: .55, armor: false,
+      coat: [.40, .30, .48], skin: [.64, .52, .35], eyes: [.85, .60, 1],
+      drops: [] },
+    lurker: { name: "潜伏者", hp: 45, speed: 2.6, reach: 1.1, damage: 11, strikeDelay: .5, cooldown: 1.0,
+      width: .8, height: .85, armor: false, burrowSpeed: 2.0, surfaceTrigger: 2.5, surfaceWarning: .8,
+      coat: [.45, .36, .22], skin: [.58, .48, .33], eyes: [1, .5, .2],
+      drops: [[BLOCK.STONE, 1], [BLOCK.LEAF, 1]] }
   });
   assert.ok(Object.isFrozen(ENEMIES));
 });
@@ -77,18 +98,19 @@ test("defense rosters layer the kind ramps over the rebuilt tables", () => {
   assert.deepEqual(defenseWaveRoster(0), ["spitter", "spitter"]);
   assert.deepEqual(defenseWaveRoster(1), ["spitter", "spitter", "spitter"]);
   assert.deepEqual(defenseWaveRoster(2), ["breaker", "spitter", "spitter", "dasher"]);
-  assert.deepEqual(defenseWaveRoster(3), ["breaker", "spitter", "spitter", "spitter", "spitter", "dasher"]);
-  assert.deepEqual(defenseWaveRoster(4), ["breaker", "breaker", "spitter", "spitter", "spitter", "dasher", "juggernaut"]);
+  assert.deepEqual(defenseWaveRoster(3), ["breaker", "splitter", "spitter", "spitter", "spitter", "dasher"]);
+  assert.deepEqual(defenseWaveRoster(4), ["breaker", "breaker", "splitter", "spitter", "spitter", "dasher", "juggernaut"]);
   // Past the configured waves the final wave repeats with its ramps —
   // the shipped defense roster is the batch-88 skeleton on the
-  // deletion's tables (batch 90).
-  assert.deepEqual(defenseWaveRoster(5), [...DEFENSE_WAVES[4].enemies, "dasher", "juggernaut", "exploder"]);
-  assert.deepEqual(defenseWaveRoster(9), [...DEFENSE_WAVES[4].enemies, "dasher", "juggernaut", "exploder"]);
+  // deletion's tables (batch 90), with batch 94's splitters swapped
+  // into the tables and its summoner/lurker on the ramps.
+  assert.deepEqual(defenseWaveRoster(5), [...DEFENSE_WAVES[4].enemies, "dasher", "juggernaut", "exploder", "summoner", "lurker"]);
+  assert.deepEqual(defenseWaveRoster(9), [...DEFENSE_WAVES[4].enemies, "dasher", "juggernaut", "exploder", "summoner", "lurker"]);
   assert.deepEqual(defenseWaveRoster(-1), []);
   // The configured rosters are never mutated by the derivation.
   assert.deepEqual(DEFENSE_WAVES.map(wave => wave.enemies), [
     ["spitter", "spitter"], ["spitter", "spitter", "spitter"], ["breaker", "spitter", "spitter"],
-    ["breaker", "spitter", "spitter", "spitter", "spitter"], ["breaker", "breaker", "spitter", "spitter", "spitter"]
+    ["breaker", "splitter", "spitter", "spitter", "spitter"], ["breaker", "breaker", "splitter", "spitter", "spitter"]
   ]);
   assert.ok(DEFENSE_WAVES.every(wave => wave.enemies.every(enemy => Boolean(ENEMIES[enemy]))));
 });
@@ -100,8 +122,8 @@ test("defense re-exports the wave and beacon registry from waves.mjs unchanged",
     { name: "前哨接触", enemies: ["spitter", "spitter"], seconds: 45 },
     { name: "交叉火力", enemies: ["spitter", "spitter", "spitter"], seconds: 49 },
     { name: "重型来袭", enemies: ["breaker", "spitter", "spitter"], seconds: 54 },
-    { name: "两面夹击", enemies: ["breaker", "spitter", "spitter", "spitter", "spitter"], seconds: 58 },
-    { name: "黎明前的攻势", enemies: ["breaker", "breaker", "spitter", "spitter", "spitter"], seconds: 64 }
+    { name: "两面夹击", enemies: ["breaker", "splitter", "spitter", "spitter", "spitter"], seconds: 58 },
+    { name: "黎明前的攻势", enemies: ["breaker", "breaker", "splitter", "spitter", "spitter"], seconds: 75 }
   ]);
   assert.deepEqual(BEACON, { hp: 120, radius: .43, height: 1.93, repairRange: 3.1, repairCost: 3, repairedHp: 30 });
   assert.ok(Object.isFrozen(DEFENSE_WAVES));
@@ -165,13 +187,13 @@ test("only clearing wave eight wins, and all three failure cases end the run", (
 
 test("waves six and eight repeat the final table with ramps, seven is the breather", () => {
   // Past the configured waves the final wave repeats; the ramps still
-  // apply, so waves 6 and 8 carry the juggernaut and exploder while
-  // wave 7 (the breather) carries neither.
-  assert.deepEqual(defenseWaveRoster(5), [...DEFENSE_WAVES[4].enemies, "dasher", "juggernaut", "exploder"]);
+  // apply, so waves 6 and 8 carry the juggernaut, exploder, summoner
+  // and lurker while wave 7 (the breather) carries none of them.
+  assert.deepEqual(defenseWaveRoster(5), [...DEFENSE_WAVES[4].enemies, "dasher", "juggernaut", "exploder", "summoner", "lurker"]);
   assert.deepEqual(defenseWaveRoster(6), [...DEFENSE_WAVES[4].enemies, "dasher"]);
-  assert.deepEqual(defenseWaveRoster(7), [...DEFENSE_WAVES[4].enemies, "dasher", "juggernaut", "exploder"]);
+  assert.deepEqual(defenseWaveRoster(7), [...DEFENSE_WAVES[4].enemies, "dasher", "juggernaut", "exploder", "summoner", "lurker"]);
   const roster = defenseWaveRoster(5);
-  assert.equal(roster.filter(kind => kind === "spitter").length, 3);
+  assert.equal(roster.filter(kind => kind === "spitter").length, 2);
   assert.equal(roster.filter(kind => kind === "breaker").length, 2);
 });
 
@@ -193,8 +215,8 @@ test("a dying zombie is no longer a melee target", () => {
 });
 
 test("defense waves run on tighter timers than the original 65-92s", () => {
-  assert.ok(DEFENSE_WAVES.every(wave => wave.seconds <= 64));
-  assert.ok(DEFENSE_WAVES.reduce((total, wave) => total + wave.seconds, 0) <= 270);
+  assert.ok(DEFENSE_WAVES.every(wave => wave.seconds <= 75));
+  assert.ok(DEFENSE_WAVES.reduce((total, wave) => total + wave.seconds, 0) <= 281);
 });
 
 test("defenseResult clears on wave eight or later, and failures outrank clearing", () => {
@@ -239,47 +261,56 @@ test("defense balance, computed from the config: what each wave deals vs what it
     .reduce((sum, [, amount]) => sum + amount, 0);
   const leavesFor = kind => (ENEMIES[kind].drops ?? []).filter(([id]) => id === BLOCK.LEAF)
     .reduce((sum, [, amount]) => sum + amount, 0);
+  // Batch 94 honesty rules: a splitter's wave cost is its EFFECTIVE
+  // health — parent plus the two splitlings it becomes — and the
+  // kills column counts the splitlings too (they are counting
+  // zombies the player must actually kill), while the buy columns
+  // stay on roster drops (splitlings and whelps pay nothing, and a
+  // summoner's whelps are time pressure, not roster health).
+  const effectiveHp = (kind, wave) => scaledHp(ENEMIES[kind].hp, wave)
+    + (ENEMIES[kind].splitKind ? ENEMIES[kind].splitCount * scaledHp(ENEMIES[ENEMIES[kind].splitKind].hp, wave) : 0);
   const balance = Array.from({ length: DEFENSE_TOTAL_WAVES }, (_, i) => {
     const wave = i + 1, roster = defenseWaveRoster(i);
     const leaves = roster.reduce((sum, kind) => sum + leavesFor(kind), 0);
     const stone = roster.reduce((sum, kind) => sum + stoneFor(kind), 0);
-    return [wave, roster.length,
-      roster.reduce((sum, kind) => sum + scaledHp(ENEMIES[kind].hp, wave), 0),
+    return [wave, roster.reduce((sum, kind) => sum + 1 + (ENEMIES[kind].splitKind ? ENEMIES[kind].splitCount : 0), 0),
+      roster.reduce((sum, kind) => sum + effectiveHp(kind, wave), 0),
       roster.reduce((sum, kind) => sum + ENEMIES[kind].damage, 0),
       leaves * 15 + (wave < DEFENSE_TOTAL_WAVES ? 24 : 0),
       stone * 10];
   });
   assert.deepEqual(balance, [
     [1, 2, 110, 26, 84, 20], [2, 3, 174, 39, 114, 30], [3, 4, 332, 46, 129, 40],
-    [4, 6, 470, 72, 189, 60], [5, 7, 828, 88, 174, 100], [6, 8, 902, 92, 174, 100],
-    [7, 6, 666, 73, 174, 70], [8, 8, 971, 92, 150, 100]
+    [4, 8, 533, 68, 174, 60], [5, 9, 894, 84, 159, 100], [6, 12, 1140, 103, 204, 110],
+    [7, 8, 738, 69, 159, 70], [8, 12, 1228, 103, 180, 110]
   ]);
   const total = column => balance.reduce((sum, row) => sum + row[column], 0);
-  assert.equal(total(1), 44);
-  assert.equal(total(2), 4453);
-  assert.equal(total(3), 528);
-  assert.equal(total(4), 1188);
-  assert.equal(total(5), 520);
+  assert.equal(total(1), 58);
+  assert.equal(total(2), 5149);
+  assert.equal(total(3), 538);
+  assert.equal(total(4), 1203);
+  assert.equal(total(5), 540);
   // Wave 5, checked rather than quoted below: two hits from every
-  // zombie in it deal 176, against 174 healing its kills buy and a
+  // zombie in it deal 168, against 159 healing its kills buy and a
   // 100-hp player bar. Over the whole run two hits per zombie is
-  // 1056 damage against 1188 healing — the totals favor healing,
-  // because the roster's spitters pay 2 leaves each. The run is
-  // still won by interrupting windups (a sword hit resets a
-  // non-armored zombie's windup), dodging throws and intercepting
-  // breakers, not by out-healing: from wave 4 on, a single wave's
-  // two full rounds (144–184) exceed the player's whole bar, so no
-  // amount of banked healing lets the player stand and take it.
+  // 1076 damage against 1203 healing — the totals favor healing,
+  // because the roster's leaf-payers (spitters, splitters, the
+  // summoner) pay out as they die. The run is still won by
+  // interrupting windups (a sword hit resets a non-armored zombie's
+  // windup), dodging throws and intercepting breakers, not by
+  // out-healing: from wave 4 on, a single wave's two full rounds
+  // (130–198) exceed the player's whole bar, so no amount of banked
+  // healing lets the player stand and take it.
   const wave5 = balance[4];
-  assert.equal(wave5[3] * 2, 176);
-  // Two full rounds of wave 5 deal 176 against 174 healing its
-  // kills buy — the wave's damage still (just) beats its own
-  // healing even though the spitter-heavy roster pays 2 leaves a
-  // kill. And 176 is still 1.76 times the player's whole 100-hp
-  // bar, with the leaves only dropping as the kills land, so
-  // standing in the fire and out-healing it is not a line: every
-  // wave from wave 4 on deals more than a full health bar in two
-  // rounds.
+  assert.equal(wave5[3] * 2, 168);
+  // Two full rounds of wave 5 deal 168 against 159 healing its
+  // kills buy: after the batch-94 tuning follow-up (one splitter
+  // traded back to a spitter in the table, the summoner ramp moved
+  // to waves 6 and 8), the wave's own ledger is under water again
+  // — its kills do not even buy back two rounds of its own damage,
+  // let alone the 1.68 health bars those rounds represent. Standing
+  // in the fire and out-healing it is not a line: every wave from
+  // wave 4 on deals more than a full health bar in two rounds.
   assert.ok(wave5[3] * 2 > 100);
   assert.ok(balance.slice(3).every(row => row[3] * 2 > 100));
   // The beacon's hard case is wave 5's focused fire: two breakers and
@@ -532,4 +563,77 @@ test("a lit exploder grows a flashing core part; an unlit one does not", async (
   assert.equal(count({ ...base, fuse: .5 }), count(base) + 1);
   assert.equal(count({ kind: "breaker", x: 0, y: 0, z: 0, angle: 0, walk: 0, windup: 0, cooldown: 1, fuse: undefined }),
     count({ kind: "breaker", x: 0, y: 0, z: 0, angle: 0, walk: 0, windup: 0, cooldown: 1 }));
+});
+
+test("the batch-94 kinds sit in their design bands", () => {
+  const { splitter, splitling, summoner, whelp, lurker } = ENEMIES;
+  // Splitter: mid-line health and hit, and its effective cost is the
+  // parent plus the pair it becomes — between the spitter and the
+  // breaker, never near the juggernaut.
+  assert.ok(splitter.hp > ENEMIES.spitter.hp && splitter.hp < ENEMIES.breaker.hp);
+  assert.ok(splitter.damage > ENEMIES.dasher.damage && splitter.damage < ENEMIES.spitter.damage);
+  const effective = splitter.hp + splitter.splitCount * ENEMIES[splitter.splitKind].hp;
+  assert.equal(effective, 110);
+  assert.ok(effective < ENEMIES.breaker.hp);
+  // Splitling: one generation only (no split fields of its own),
+  // fast and fragile, smaller than every roster kind.
+  assert.equal(splitling.splitKind, undefined);
+  assert.ok(splitling.speed > splitter.speed && splitling.hp <= 20);
+  assert.ok(splitling.width < ENEMIES.dasher.width && splitling.height < ENEMIES.dasher.height);
+  // Summoner: a caster's pool and pace — slower than the spitter,
+  // token melee only, and its numbers are the approved cadence:
+  // one whelp every 6 seconds, at most 4 alive.
+  assert.ok(summoner.hp > ENEMIES.spitter.hp && summoner.hp < ENEMIES.breaker.hp);
+  assert.ok(summoner.speed < ENEMIES.spitter.speed && summoner.damage <= ENEMIES.dasher.damage);
+  assert.equal(summoner.summonInterval, 6);
+  assert.equal(summoner.summonCap, 4);
+  assert.equal(summoner.summonKind, "whelp");
+  // Whelp: an affiliated kind — no drops, and in no roster anywhere.
+  assert.deepEqual(whelp.drops, []);
+  assert.deepEqual(splitling.drops, []);
+  assert.ok(!Object.values(DEFENSE_WAVES).some(wave => wave.enemies.includes("whelp") || wave.enemies.includes("splitling")));
+  // Lurker: burrowed it is slower than its surfaced self (2.6, second
+  // only to the dasher), the warning is the approved 0.8s, and it
+  // surfaces close — but never at the goal's feet.
+  assert.ok(lurker.burrowSpeed < lurker.speed && lurker.speed < ENEMIES.dasher.speed);
+  assert.equal(lurker.surfaceWarning, .8);
+  assert.equal(lurker.surfaceTrigger, 2.5);
+  assert.ok(lurker.damage > ENEMIES.splitter.damage && lurker.damage < ENEMIES.spitter.damage);
+});
+
+test("validateEnemies rejects incomplete batch-94 field groups and a splitting split target", () => {
+  const base = { hp: 10, speed: 1, reach: 1, damage: 2, strikeDelay: .3, cooldown: 1,
+    width: 1, height: 1, armor: false, coat: [0, 0, 0], skin: [0, 0, 0], eyes: [0, 0, 0], drops: [] };
+  // A summon kind missing its cap, or pointing at no registered kind.
+  assert.equal(validateEnemies({ caster: { ...base, summonKind: "whelp", summonInterval: 6 } }).valid, false);
+  assert.equal(validateEnemies({ caster: { ...base, summonKind: "ghost", summonInterval: 6, summonCap: 4 } }).valid, false);
+  // A split kind whose target itself splits would chain forever.
+  assert.equal(validateEnemies({
+    outer: { ...base, splitKind: "inner", splitCount: 2 },
+    inner: { ...base, splitKind: "core", splitCount: 2 },
+    core: { ...base }
+  }).valid, false);
+  // A burrow kind missing its warning time.
+  assert.equal(validateEnemies({ diver: { ...base, burrowSpeed: 2, surfaceTrigger: 2.5 } }).valid, false);
+  // The shipped affiliated kinds pass on their own.
+  assert.equal(validateEnemies({ whelp: ENEMIES.whelp, splitling: ENEMIES.splitling }).valid, true);
+});
+
+test("a burrowed lurker is not a melee target and shows only its soil mound; a surfacing one is fair game", async () => {
+  const { zombieParts, findMeleeTarget } = await import("./defense.mjs");
+  const lurker = { x: 0, y: 0, z: -2, kind: "lurker", angle: 0, walk: 0, windup: 0, cooldown: 1 };
+  // Aimed at chest height for the lurker's .85 stature (its head
+  // tops out near y 1.39 from a 1.4 eye line).
+  const origin = [0, 1.1, 0], direction = [0, 0, -1];
+  assert.equal(findMeleeTarget(origin, direction, 6, [{ ...lurker, burrow: "burrowed" }], null, 0), null);
+  const surfaced = findMeleeTarget(origin, direction, 6, [{ ...lurker, burrow: "surfacing" }], null, 0);
+  assert.ok(surfaced && surfaced.zombie.burrow === "surfacing");
+  // The mound is exactly two dirt parts — no body colors anywhere.
+  const parts = [];
+  zombieParts({ ...lurker, burrow: "burrowed" }, ENEMIES.lurker, (...part) => parts.push(part));
+  assert.equal(parts.length, 2);
+  assert.ok(parts.every(part => part[8] === .17 || part[8] === .21), "mound parts use only the two dirt browns");
+  const body = [];
+  zombieParts({ ...lurker, burrow: "surfaced" }, ENEMIES.lurker, (...part) => body.push(part));
+  assert.ok(body.length > 2, "a surfaced lurker renders its full body");
 });

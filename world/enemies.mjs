@@ -44,7 +44,57 @@ export const ENEMIES = Object.freeze({
     width: .9, height: .95, armor: false, fuseSeconds: 1, blastTrigger: 2.0, blastRadius: 2.5,
     blastDamage: 18, blastBeaconDamage: 10,
     coat: [.55, .30, .12], skin: [.66, .50, .30], eyes: [1, .75, .2],
-    drops: [["emberCore", 1]] }
+    drops: [["emberCore", 1]] },
+  // Splitter (batch 94): a mid-line brawler whose death is the threat —
+  // it splits into two splitlings on ANY death, so killing it first
+  // hands you two fast small problems. Its wave cost is the parent
+  // plus the pair (80 + 2x15); the splitlings count toward the wave
+  // (parent -1, split +2, net +1) and never split again — the
+  // registry refuses a split target that itself splits, so the chain
+  // is one generation deep by construction.
+  splitter: { name: "分裂者", hp: 80, speed: 1.5, reach: 1.15, damage: 9, strikeDelay: .45, cooldown: 1.2,
+    width: 1.0, height: 1.0, armor: false, splitKind: "splitling", splitCount: 2,
+    coat: [.16, .50, .28], skin: [.55, .30, .45], eyes: [.95, .90, .40],
+    drops: [[BLOCK.STONE, 1], [BLOCK.LEAF, 1]] },
+  // Splitling: the splitter's offspring — fast, fragile, no drops,
+  // no further split. An affiliated kind: it never appears in a wave
+  // roster, only as a split product.
+  splitling: { name: "小分裂体", hp: 15, speed: 2.4, reach: .9, damage: 4, strikeDelay: .2, cooldown: .8,
+    width: .55, height: .5, armor: false,
+    coat: [.16, .50, .28], skin: [.55, .30, .45], eyes: [.95, .90, .40],
+    drops: [] },
+  // Summoner (batch 94): a backline caster that never closes in — it
+  // holds 8-10 units off the player, retreats when pressed, and calls
+  // a whelp every summonInterval seconds, at most summonCap alive at
+  // once. Validation requires a positive damage on every kind, so it
+  // carries a token melee it can only use when cornered with no
+  // retreat left; its real weapon is the summons. Whelps do NOT count
+  // toward a wave's remaining count and dissolve when the wave's
+  // counting zombies are gone — otherwise a hidden summoner could
+  // hold a wave open forever.
+  summoner: { name: "召唤者", hp: 90, speed: 1.0, reach: 1.1, damage: 4, strikeDelay: .5, cooldown: 1.2,
+    width: .9, height: 1.05, armor: false, summonKind: "whelp", summonInterval: 6, summonCap: 4,
+    coat: [.34, .18, .44], skin: [.62, .50, .34], eyes: [.85, .60, 1],
+    drops: [[BLOCK.LEAF, 2]] },
+  // Whelp: the summoner's minion — small, quick, weak, no drops, and
+  // flagged not to count toward the wave. Affiliated kind: only ever
+  // spawned by a summoner, never by a roster.
+  whelp: { name: "幼体", hp: 15, speed: 2.2, reach: .9, damage: 3, strikeDelay: .25, cooldown: .9,
+    width: .55, height: .55, armor: false,
+    coat: [.40, .30, .48], skin: [.64, .52, .35], eyes: [.85, .60, 1],
+    drops: [] },
+  // Lurker (batch 94): spawns burrowed and travels underground at
+  // burrowSpeed, visible only as a moving soil mound — untargetable
+  // and harmless while under. Within surfaceTrigger of its goal it
+  // stops and surfaces over surfaceWarning seconds (mound shaking,
+  // body rising, burrow sound), then fights as a fast melee kind at
+  // its full speed and never burrows again. The fairness trade is
+  // written into the numbers: the trail is always visible, the
+  // warning is a real 0.8s, and it cannot be interrupted underground.
+  lurker: { name: "潜伏者", hp: 45, speed: 2.6, reach: 1.1, damage: 11, strikeDelay: .5, cooldown: 1.0,
+    width: .8, height: .85, armor: false, burrowSpeed: 2.0, surfaceTrigger: 2.5, surfaceWarning: .8,
+    coat: [.45, .36, .22], skin: [.58, .48, .33], eyes: [1, .5, .2],
+    drops: [[BLOCK.STONE, 1], [BLOCK.LEAF, 1]] }
 });
 
 // Validate an enemy registry (defaults to this module's own): every kind
@@ -77,6 +127,43 @@ export function validateEnemies(enemies = ENEMIES) {
     const blastFields = ["fuseSeconds", "blastTrigger", "blastRadius", "blastDamage", "blastBeaconDamage"];
     if (blastFields.some(field => profile[field] !== undefined)) {
       for (const field of blastFields) {
+        if (typeof profile[field] !== "number" || !Number.isFinite(profile[field]) || profile[field] <= 0) {
+          errors.push(`${label}：${field} 不是正数`);
+        }
+      }
+    }
+    // A kind carrying any summon field must carry them all: the
+    // offspring kind must be registered, the interval positive, the
+    // cap a positive whole number.
+    const summonFields = ["summonKind", "summonInterval", "summonCap"];
+    if (summonFields.some(field => profile[field] !== undefined)) {
+      if (typeof profile.summonKind !== "string" || !Object.hasOwn(enemies, profile.summonKind)) {
+        errors.push(`${label}：summonKind 不是已注册的敌人`);
+      }
+      if (typeof profile.summonInterval !== "number" || !Number.isFinite(profile.summonInterval) || profile.summonInterval <= 0) {
+        errors.push(`${label}：summonInterval 不是正数`);
+      }
+      if (!Number.isInteger(profile.summonCap) || profile.summonCap <= 0) {
+        errors.push(`${label}：summonCap 不是正整数`);
+      }
+    }
+    // Split fields likewise — and the split target must not itself
+    // split, so a split chain is exactly one generation deep.
+    const splitFields = ["splitKind", "splitCount"];
+    if (splitFields.some(field => profile[field] !== undefined)) {
+      if (typeof profile.splitKind !== "string" || !Object.hasOwn(enemies, profile.splitKind)) {
+        errors.push(`${label}：splitKind 不是已注册的敌人`);
+      } else if (enemies[profile.splitKind].splitKind !== undefined) {
+        errors.push(`${label}：分裂目标不能再分裂（防无限分裂）`);
+      }
+      if (!Number.isInteger(profile.splitCount) || profile.splitCount <= 0) {
+        errors.push(`${label}：splitCount 不是正整数`);
+      }
+    }
+    // Burrow fields likewise, all positive.
+    const burrowFields = ["burrowSpeed", "surfaceTrigger", "surfaceWarning"];
+    if (burrowFields.some(field => profile[field] !== undefined)) {
+      for (const field of burrowFields) {
         if (typeof profile[field] !== "number" || !Number.isFinite(profile[field]) || profile[field] <= 0) {
           errors.push(`${label}：${field} 不是正数`);
         }

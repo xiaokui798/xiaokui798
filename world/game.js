@@ -276,6 +276,16 @@ export function initGame(window) {
     { name: "降雨", sky: [.30, .39, .45], fog: [8, 22], light: .68, rain: 1, seconds: 27 }
   ];
   const weather = { index: 0, elapsed: 0, sky: [...weatherTypes[0].sky], fog: [...weatherTypes[0].fog], light: 1, rain: 0, phase: 0 };
+  // Test-only clock speed hook (batch 97): ?ts=N on the page URL runs
+  // the game clock N times faster, so real-machine verification can
+  // reach deep content (late defense waves, boss summons, exploder
+  // fuses) that a slow device clock otherwise never gets to.  Parsed
+  // once at boot, never saved, and with no parameter — or an invalid
+  // one — the scale is exactly 1 and the frame dt in render() stays
+  // bit-identical to before this hook existed.
+  const tsParam = new URLSearchParams(window.location?.search ?? "").get("ts");
+  const tsValue = tsParam === null ? NaN : Number(tsParam);
+  const TIME_SCALE = Number.isFinite(tsValue) && tsValue > 0 ? Math.min(tsValue, 100) : 1;
   // Day clock, seconds into the 240s cycle.  The game starts mid-morning
   // (30s in) so the first impression is the familiar bright day; dusk
   // arrives about a minute and a half later.  Boss arenas ignore it — they
@@ -451,7 +461,14 @@ export function initGame(window) {
       "pulse-ready": { seconds: .15, noiseGain: .02, toneGain: .19, pitch: 4.5, endPitch: 3.7 },
       "pulse-burst": { seconds: .30, noiseGain: .37, toneGain: .33, pitch: 1.9, endPitch: .24 },
       "pulse-crystal": { seconds: .41, noiseGain: .36, toneGain: .26, pitch: 4.4, endPitch: 1.32 },
-      "pulse-recharge": { seconds: .22, noiseGain: .04, toneGain: .15, pitch: 1.6, endPitch: 1.75 }
+      "pulse-recharge": { seconds: .22, noiseGain: .04, toneGain: .15, pitch: 1.6, endPitch: 1.75 },
+      // Batch 94 kinds: the summoner's call is a low rising hum, the
+      // split a short wet pop, the lurker's surfacing warning a long
+      // dirt rumble and its emergence a dirt burst.
+      summon: { seconds: .5, noiseGain: .05, toneGain: .22, pitch: .6, endPitch: 1.9 },
+      split: { seconds: .22, noiseGain: .34, toneGain: .10, pitch: 1.5, endPitch: .5 },
+      burrow: { seconds: .8, noiseGain: .22, toneGain: .06, pitch: .5, endPitch: .8 },
+      surface: { seconds: .3, noiseGain: .36, toneGain: .10, pitch: .9, endPitch: .45 }
     };
     const AudioContext = window.AudioContext ?? window.webkitAudioContext;
     let context, output, noiseBuffer, rainGain, pendingEffect;
@@ -1588,9 +1605,50 @@ export function initGame(window) {
 
   function addEnemies(spawns, wave = 1) {
     for (const { kind, cell, x, z } of spawns) {
-      survival.zombies.push({ kind, cell, next: -1, travel: 0, x: x + .5, y: cellPosition(cell)[1], z: z + .5,
-        hp: scaledHp(ENEMIES[kind].hp, wave), angle: 0, cooldown: .65, windup: 0, hurt: 0, walk: 0 });
+      const profile = ENEMIES[kind] ?? ENEMIES.spitter;
+      const zombie = { kind, cell, next: -1, travel: 0, x: x + .5, y: cellPosition(cell)[1], z: z + .5,
+        hp: scaledHp(profile.hp, wave), angle: 0, cooldown: .65, windup: 0, hurt: 0, walk: 0 };
+      // Batch 94 state: a summoner starts its summon clock, a lurker
+      // starts underground. Kinds without those fields never carry
+      // the state, the same convention as the exploder's fuse.
+      if (profile.summonKind) zombie.summonTimer = profile.summonInterval;
+      if (profile.burrowSpeed) zombie.burrow = "burrowed";
+      survival.zombies.push(zombie);
     }
+  }
+
+  // Batch 94 counting: summoned whelps never count toward a wave —
+  // the wave is over when the last COUNTING zombie dies, and any
+  // whelps still standing then dissolve (they sink like a corpse,
+  // with a small puff) instead of holding the wave open. Splitlings
+  // DO count: they are the splitter's second half, already paid for
+  // in the wave's roster slot.
+  function countingAlive() {
+    return survival.zombies.filter(zombie => zombie.dying === undefined && zombie.counts !== false).length;
+  }
+
+  function sweepSummons() {
+    for (const zombie of survival.zombies) {
+      if (zombie.counts === false && zombie.dying === undefined) {
+        zombie.dying = .5;
+        zombie.kx = 0; zombie.kz = 0;
+        spawnBurst3D(zombie.x, zombie.y + .5, zombie.z, 6,
+          { colors: [[.40, .30, .48], [.62, .55, .45]], speed: 1.6, up: 2.0,
+            size: 0.08, life: 0.45, gravity: 10, floor: floorUnder(zombie.x, zombie.y, zombie.z) });
+      }
+    }
+  }
+
+  // Spawn one offspring zombie at its parent's position (a summoner's
+  // whelp, a splitter's splitlings): same cell, same facing, health
+  // scaled by the current wave exactly like a roster spawn.
+  function spawnOffspring(parent, kind, counts) {
+    const profile = ENEMIES[kind] ?? ENEMIES.spitter;
+    const zombie = { kind, cell: parent.cell, next: -1, travel: 0, x: parent.x, y: parent.y, z: parent.z,
+      hp: scaledHp(profile.hp, survival.wave), angle: parent.angle, cooldown: .65, windup: 0, hurt: 0, walk: 0 };
+    if (counts === false) zombie.counts = false;
+    survival.zombies.push(zombie);
+    return zombie;
   }
 
   function resetSurvival() {
@@ -1991,7 +2049,8 @@ export function initGame(window) {
       if (finished) return;
     }
     // The burst can clear a wave just like a sword kill can.
-    const alive = survival.zombies.filter(other => other.dying === undefined).length;
+    const alive = countingAlive();
+    if (!alive) sweepSummons();
     if (!alive && !boss) {
       if (defense.beacon && defenseCleared(survival.wave, alive)) { finishDefense("cleared"); return; }
       if (!defense.beacon) {
@@ -2239,6 +2298,72 @@ export function initGame(window) {
       const origin = [zombie.x, zombie.y + 1.26 * profile.height, zombie.z];
       const delta = [dx, goal.y + 1.2 - origin[1], dz];
       const reach = Math.hypot(...delta);
+      // Summoners (batch 94) hold the back line: they reference the
+      // PLAYER (never the beacon — their pressure is on the player's
+      // position), walk the player routes in while the player is
+      // far, stand and cast inside their band, and retreat step by
+      // step when pressed. The summon clock runs in every stance;
+      // at the cap it re-checks soon instead of banking a burst.
+      if (profile.summonKind !== undefined) {
+        zombie.summonTimer = (zombie.summonTimer ?? profile.summonInterval) - dt;
+        if (zombie.summonTimer <= 0) {
+          const live = survival.zombies.filter(other => other.kind === profile.summonKind && other.dying === undefined).length;
+          if (live < profile.summonCap) {
+            zombie.summonTimer = profile.summonInterval;
+            const whelp = spawnOffspring(zombie, profile.summonKind, false);
+            spawnBurst3D(whelp.x, whelp.y + .4, whelp.z, 6,
+              { colors: [[.40, .30, .48], [.62, .55, .45]], speed: 1.6, up: 2.0,
+                size: 0.08, life: 0.45, gravity: 10, floor: floorUnder(whelp.x, whelp.y, whelp.z) });
+            sound.play("summon", DIRT);
+          } else zombie.summonTimer = .5;
+        }
+        if (playerDistance > 10) walkZombie(zombie, dt, survival.routes, profile);
+        else if (playerDistance < 5) {
+          const away = playerDistance || 1;
+          const nx = zombie.x + (zombie.x - player.x) / away * profile.speed * dt;
+          const nz = zombie.z + (zombie.z - player.z) / away * profile.speed * dt;
+          const cell = groundCell(Math.floor(nx), Math.floor(zombie.y), Math.floor(nz));
+          if (cell >= 0 && standable(...cellPosition(cell))) {
+            zombie.x = nx; zombie.z = nz; zombie.cell = cell;
+            zombie.y = cellPosition(cell)[1]; zombie.next = -1;
+            zombie.walk += dt * 7 * profile.speed;
+          }
+        }
+        continue;
+      }
+      // Lurkers (batch 94) travel burrowed: routes and all, at
+      // burrowSpeed, untargetable (findMeleeTarget skips them) and
+      // harmless — they never reach the attack block underground.
+      // Inside surfaceTrigger of the goal they stop and surface over
+      // surfaceWarning seconds, rising out of the ground to the
+      // burrow rumble; from then on they are an ordinary fast melee
+      // zombie and never burrow again.
+      if (profile.burrowSpeed !== undefined && zombie.burrow !== undefined) {
+        if (zombie.burrow === "burrowed") {
+          if (distance <= profile.surfaceTrigger) {
+            zombie.burrow = "surfacing";
+            zombie.burrowTimer = profile.surfaceWarning;
+            zombie.groundY = zombie.y;
+            sound.play("burrow", DIRT);
+          } else walkZombie(zombie, dt, atBeacon ? defense.routes : survival.routes, { ...profile, speed: profile.burrowSpeed });
+          continue;
+        }
+        if (zombie.burrow === "surfacing") {
+          zombie.burrowTimer -= dt;
+          const risen = 1 - Math.max(0, zombie.burrowTimer) / profile.surfaceWarning;
+          zombie.y = zombie.groundY - (1 - risen) * .8;
+          zombie.walk += dt * 30;
+          if (zombie.burrowTimer <= 0) {
+            zombie.burrow = "surfaced";
+            zombie.y = zombie.groundY;
+            spawnBurst3D(zombie.x, zombie.y + .4, zombie.z, 10,
+              { colors: [[.45, .36, .22], [.36, .27, .17], profile.coat], speed: 2.2, up: 2.6,
+                size: 0.10, life: 0.5, gravity: 12, floor: floorUnder(zombie.x, zombie.y, zombie.z) });
+            sound.play("surface", DIRT);
+          }
+          continue;
+        }
+      }
       // Exploders never melee: inside blastTrigger of their goal they
       // stop, light the fuse (flashing core, windup sound) and count
       // it down standing still. A kill during the fuse lands in the
@@ -2482,8 +2607,20 @@ export function initGame(window) {
     spawnBurst3D(zombie.x, zombie.y + 1.1 * (style.height ?? 1), zombie.z, 12,
       { colors: [style.coat, style.skin, [.16, .14, .12]], speed: 2.6, up: 3.2,
         size: 0.10, life: 0.6, gravity: 14, floor: floorUnder(zombie.x, zombie.y, zombie.z) });
+    // Splitter (batch 94): death at this path — sword or pulse —
+    // divides it into its splitlings, offset to either side. They
+    // are counting zombies, so the wave's remaining count goes
+    // parent -1, split +2: net +1, the roster slot's honest cost.
+    if (style.splitKind) {
+      for (let i = 0; i < style.splitCount; i++) {
+        const child = spawnOffspring(zombie, style.splitKind, true);
+        child.x += i === 0 ? -.45 : .45;
+      }
+      sound.play("split", DIRT);
+    }
     survival.kills++;
-    const alive = survival.zombies.filter(other => other.dying === undefined).length;
+    const alive = countingAlive();
+    if (!alive) sweepSummons();
     if (boss) {
       sound.play("defeat", DIRT);
       if (interruptFurnace(boss)) {
@@ -3271,7 +3408,9 @@ export function initGame(window) {
     setText(landingSpeedValue, landing ? `${landing.at.toFixed(2)} → ${landing.after?.toFixed(2) ?? "…"}` : "待落地");
     setText(weatherStatus, boss ? boss.profile.arena.name : weatherTypes[weather.index].name);
     updateHunger();
-    const enemiesLeft = survival.zombies.length;
+    // The HUD count follows the wave's own accounting (batch 94):
+    // live counting zombies — no corpses, no summoned whelps.
+    const enemiesLeft = survival.zombies.filter(zombie => zombie.dying === undefined && zombie.counts !== false).length;
     const beacon = defense.beacon;
     defenseHud.hidden = !beacon;
     stageTime.hidden = !beacon;
@@ -3984,7 +4123,7 @@ export function initGame(window) {
 
   function render(time) {
     window.requestAnimationFrame(render);
-    const dt = lastTime === null ? 0 : Math.min(.1, Math.max(0, (time - lastTime) / 1000));
+    const dt = lastTime === null ? 0 : Math.min(.1, Math.max(0, (time - lastTime) / 1000)) * TIME_SCALE;
     lastTime = time;
     if (graphicsLost || document.hidden) return;
     const resized = resize();

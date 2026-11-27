@@ -1883,31 +1883,136 @@ test("survival wave 5's exploder detonates on the player and pays no loot", t =>
   releaseRecoveryKeys();
   assert.equal(game.get("death-screen").hidden, true, `the player must survive to wave 5 (reached wave ${maxWave})`);
   assert.ok(wave5Live, "wave 5 must go live");
-  // Phase 2: fight on, but the first time the exploder is in the
-  // sights, hold fire and stand still so its fuse runs out. Watch
-  // for the blast message and the health it takes.
-  let exploderSeen = false, handsOff = false, blastSeen = false, blastDrop = 0;
+  // Phase 2: clear the crowd with an exploder-blind driver, then
+  // stand still and let it fuse. Batch 94 rewrote this staging
+  // three times over, and the probes are the documentation:
+  // (1) freeze-on-sighting died of the ring — the splitter and its
+  // splitlings fill every cell around a stationary player and the
+  // exploder waits outside its 2.0 trigger forever; (2) standing
+  // still from the start died of the spitter wall — the exploder
+  // parked at 7.65 behind the spitters' firing line and never
+  // moved again, because only a moving player makes the spitters
+  // reposition and opens the route; (3) thinning with the plain
+  // driver died of the sword — it killed the exploder point-blank
+  // while clearing (熔火核心 +1 in the message line), and no
+  // status-text guard can prevent that, because the target-status
+  // channel lags the real-time aim. So this driver aims and
+  // swings by vertex colour instead: its steering target is the
+  // nearest vertex that is not the exploder's, and it never
+  // swings at all while the exploder's coat is within 3.0 — the
+  // ray might be crossing it. When nothing but the exploder is
+  // left, the driver stands down and the hands-off endgame plays
+  // as originally staged: an empty ring, a closing exploder, a
+  // lit fuse.
+  const exploderPartRatios = [ENEMIES.exploder.coat, ENEMIES.exploder.skin, ENEMIES.exploder.eyes]
+    .map(([r, g, b]) => [g / b, r / g]);
+  const isExploderVertex = (r, g, b) => g > 0.08 && b > 0.04
+    && exploderPartRatios.some(([gb, rg]) => Math.abs(g / b - gb) < 0.10 && Math.abs(r / g - rg) < 0.10);
+  const exploderDistance = () => {
+    const vertices = game.actorVertices;
+    if (!vertices?.length) return Infinity;
+    let best = Infinity;
+    for (let v = 0; v < vertices.length; v += 12) {
+      if (!isExploderVertex(vertices[v + 3], vertices[v + 4], vertices[v + 5])) continue;
+      best = Math.min(best, Math.hypot(vertices[v] - game.camera[0], vertices[v + 2] - game.camera[2]));
+    }
+    return best;
+  };
+  const nearestNonExploderVertex = () => {
+    const vertices = game.actorVertices;
+    if (!vertices?.length) return null;
+    let best = null, bestD = Infinity;
+    for (let v = 0; v < vertices.length; v += 12) {
+      if (isExploderVertex(vertices[v + 3], vertices[v + 4], vertices[v + 5])) continue;
+      const dx = vertices[v] - game.camera[0], dz = vertices[v + 2] - game.camera[2];
+      const d = dx * dx + dz * dz;
+      if (d < bestD) { bestD = d; best = { x: vertices[v], y: vertices[v + 1], z: vertices[v + 2] }; }
+    }
+    if (!best || bestD > 30 * 30) return null;
+    let ySum = 0, yCount = 0;
+    for (let v = 0; v < vertices.length; v += 12) {
+      if (Math.hypot(vertices[v] - best.x, vertices[v + 2] - best.z) > 1.5) continue;
+      ySum += vertices[v + 1]; yCount++;
+    }
+    return { x: best.x, y: yCount ? ySum / yCount : best.y, z: best.z, distance: Math.sqrt(bestD) };
+  };
+  let p2SwingCooldown = 0, p2Recovery = 0, p2Still = 0, p2LastX = game.camera[0], p2LastZ = game.camera[2];
+  const fightStepP2 = () => {
+    if (p2Recovery > 0) {
+      if (--p2Recovery === 0) { game.release("Space"); game.release("KeyD"); }
+      return;
+    }
+    if (p2SwingCooldown > 0) { p2SwingCooldown--; return; }
+    const target = nearestNonExploderVertex();
+    if (!target) { game.release("KeyW"); return; }
+    // Swing only when the aim target is nearer than the exploder:
+    // the ray then meets the target's body first, so the blade
+    // cannot land on the exploder behind it. A blanket no-swing
+    // radius deadlocked instead (probe: the exploder parked at
+    // coat distance 1.82 — centre ~2.1, a hair outside its 2.0
+    // trigger — behind a melee zombie claiming the cell it
+    // needed, and with every swing banned the blocker never died
+    // and the fuse never lit).
+    if (game.get("crosshair").classList.contains("on-target") && target.distance < exploderDistance() - 0.3) {
+      game.release("KeyW");
+      game.get("game").emit("mousedown", { button: 0 });
+      p2SwingCooldown = 25;
+      return;
+    }
+    if (Math.hypot(game.camera[0] - p2LastX, game.camera[2] - p2LastZ) > .05) {
+      p2LastX = game.camera[0]; p2LastZ = game.camera[2]; p2Still = 0;
+    } else if (++p2Still > 30) {
+      game.release("KeyW");
+      game.key("Space");
+      game.key("KeyD");
+      p2Recovery = 15;
+      p2Still = 0;
+      return;
+    }
+    // Inside the fuse zone (coat within 2.3) the player holds his
+    // ground: the fuse may already be lit, and walking out of the
+    // 2.5 radius before it blows pays nothing (probe: blast seen,
+    // health dropped 0). The swings above still clear a blocker
+    // from standstill — it is in sword reach by definition, since
+    // it is close enough to hit the player.
+    if (exploderDistance() < 2.3) { game.release("KeyW"); return; }
+    const dx = target.x - game.camera[0], dz = target.z - game.camera[2];
+    const turn = Math.atan2(dx, -dz) - Math.atan2(game.direction[0], -game.direction[2]);
+    const dist = Math.hypot(dx, dz);
+    const desiredPitch = Math.max(-1.35, Math.min(0.35, Math.atan2(target.y - game.camera[1], dist)));
+    const currentPitch = Math.asin(Math.max(-1, Math.min(1, game.direction[1])));
+    const clampTurn = radians => Math.max(-65, Math.min(65, radians / .0013));
+    game.document.emit("mousemove", {
+      movementX: clampTurn(Math.atan2(Math.sin(turn), Math.cos(turn))),
+      movementY: clampTurn(-(desiredPitch - currentPitch))
+    });
+    game.key("KeyW");
+  };
+  let exploderSeen = false, blastSeen = false, blastDrop = 0;
   let prevHp = hp();
   for (let i = 0; i < 4000 && game.get("death-screen").hidden && !blastSeen; i++) {
     frame();
-    if (recovery === 0) releaseRecoveryKeys();
     if (/爆裂者/.test(status())) exploderSeen = true;
-    if (exploderSeen && !handsOff) { handsOff = true; game.release("KeyW"); }
     if (game.get("message").textContent.includes("爆裂者爆炸了")) {
       exploderSeen = true;
       blastSeen = true;
       blastDrop = prevHp - hp();
       break;
     }
-    if (handsOff) {
-      game.release("KeyW");
-      if (hp() <= 45) game.key("KeyH");
-    } else {
-      fightStep();
+    if (nearestNonExploderVertex()) {
+      fightStepP2();
       if (hp() <= 70) game.key("KeyH");
+    } else {
+      game.release("KeyW");
+      game.release("Space");
+      game.release("KeyD");
+      if (hp() <= 45) game.key("KeyH");
     }
     prevHp = hp();
   }
+  game.release("KeyW");
+  game.release("Space");
+  game.release("KeyD");
   assert.ok(exploderSeen, "wave 5 must show an exploder (爆裂者) in the target status");
   assert.ok(blastSeen, "the exploder must detonate next to the player");
   assert.ok(blastDrop >= 18, `the blast must deal at least its registered 18 (health dropped ${blastDrop})`);
@@ -1917,6 +2022,230 @@ test("survival wave 5's exploder detonates on the player and pays no loot", t =>
   for (let i = 0; i < 30; i++) frame();
   const saved = JSON.parse(storage.getItem(SAVE_KEY));
   assert.equal(saved.rareMaterials.emberCore, 0, "a self-detonation pays no ember core — the core is kill loot only");
+});
+
+
+
+test("a splitter's death raises the survival remaining count by exactly one", t => {
+  // Batch 94, the splitter at game level: it fields in survival
+  // wave 5, and when one dies — by any path — two splitlings take
+  // its place on the field. The remaining count is the player's
+  // own readout of that arithmetic: parent out, two in, net +1,
+  // visible as the count rising by exactly one between two
+  // consecutive live frames of the same wave (nothing else can
+  // raise it mid-wave; spawns happen only at the wave break).
+  // defense.test pins the same +1 on the roster side. The wave
+  // must then still clear, splitlings and all, which proves the
+  // children are ordinary killable zombies that count.
+  let seed = 1;
+  t.mock.method(Math, "random", () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296));
+  const data = new Map();
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  let time = 0;
+  const game = mountGame({ storage, pointerLock: true, now: () => time });
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  frame();
+  const hp = () => Number(game.get("health-value").textContent);
+  const waveStatus = () => game.get("wave-status").textContent;
+  // The exploder test's per-frame driver, verbatim in behaviour:
+  // swing on the crosshair's word, otherwise steer at the nearest
+  // zombie vertex and walk, with a hop-and-strafe unstick.
+  let swingCooldown = 0, recovery = 0, stillFrames = 0;
+  let lastX = game.camera[0], lastZ = game.camera[2];
+  const fightStep = () => {
+    if (recovery > 0) { recovery--; return; }
+    if (swingCooldown > 0) { swingCooldown--; return; }
+    if (game.get("crosshair").classList.contains("on-target")) {
+      game.release("KeyW");
+      game.get("game").emit("mousedown", { button: 0 });
+      swingCooldown = 25;
+      return;
+    }
+    const target = nearestZombieVertex(game);
+    if (!target) { game.release("KeyW"); return; }
+    if (Math.hypot(game.camera[0] - lastX, game.camera[2] - lastZ) > .05) {
+      lastX = game.camera[0]; lastZ = game.camera[2]; stillFrames = 0;
+    } else if (++stillFrames > 30) {
+      game.release("KeyW");
+      game.key("Space");
+      game.key("KeyD");
+      recovery = 15;
+      stillFrames = 0;
+      return;
+    }
+    const dx = target.x - game.camera[0], dz = target.z - game.camera[2];
+    const turn = Math.atan2(dx, -dz) - Math.atan2(game.direction[0], -game.direction[2]);
+    const dist = Math.hypot(dx, dz);
+    const desiredPitch = Math.max(-1.35, Math.min(0.35, Math.atan2(target.y - game.camera[1], dist)));
+    const currentPitch = Math.asin(Math.max(-1, Math.min(1, game.direction[1])));
+    const clampTurn = radians => Math.max(-65, Math.min(65, radians / .0013));
+    game.document.emit("mousemove", {
+      movementX: clampTurn(Math.atan2(Math.sin(turn), Math.cos(turn))),
+      movementY: clampTurn(-(desiredPitch - currentPitch))
+    });
+    game.key("KeyW");
+  };
+  const releaseRecoveryKeys = () => { game.release("Space"); game.release("KeyD"); };
+  let craftedThisGap = false, prevRem = null, splitJump = false, wave6Countdown = false;
+  for (let i = 0; i < 16000 && game.get("death-screen").hidden && !wave6Countdown; i++) {
+    frame();
+    if (recovery === 0) releaseRecoveryKeys();
+    const live = /第 (\d+) 波 · 剩余 (\d+) 只/.exec(waveStatus());
+    if (live) {
+      craftedThisGap = false;
+      if (Number(live[1]) === 5) {
+        const rem = Number(live[2]);
+        if (prevRem !== null && rem === prevRem + 1) splitJump = true;
+        prevRem = rem;
+      } else prevRem = null;
+    }
+    if (/第 6 波 · \d+ 秒后/.test(waveStatus())) wave6Countdown = true;
+    const upcoming = /第 (\d+) 波 · \d+ 秒后/.exec(waveStatus());
+    if (upcoming && !craftedThisGap && Number(upcoming[1]) > 1) {
+      craftedThisGap = true;
+      game.release("KeyW");
+      game.key("KeyC");
+      frame();
+      game.click("craft-dressing");
+      game.click("craft-dressing");
+      game.click("craft-dressing");
+      game.click("craft-dressing");
+      game.click("craft-dressing");
+      game.key("KeyC");
+      game.grantPointerLock();
+      frame();
+    }
+    fightStep();
+    if (hp() <= 70) game.key("KeyH");
+  }
+  game.release("KeyW");
+  releaseRecoveryKeys();
+  assert.equal(game.get("death-screen").hidden, true, "the player must survive to the end of wave 5");
+  assert.ok(splitJump, "a splitter's death must raise the remaining count by exactly one (parent out, two splitlings in)");
+  assert.ok(wave6Countdown, "wave 5 must clear, splitlings included, into the wave-6 countdown");
+});
+
+test("the wave-6 summoner's whelps appear but never count toward the remaining total", t => {
+  // Batch 94, the summoner at game level: it fields in survival
+  // wave 6 and summons whelps on its 6-second clock. Two player-
+  // visible facts are pinned here: whelp coat vertices appear on
+  // the field (a summon happened — the coat is the only safe
+  // finder, since the whelp's skin and eyes ratios sit inside
+  // .10 of the summoner's own), and the remaining count never
+  // rises above the wave's roster size of 7 while they do
+  // (whelps are pressure, not progress — killing one must never
+  // move the count, and the count is sampled every live frame).
+  // What this test does NOT cover, stated plainly: the wave-end
+  // sweep that takes the whelps with the wave, and the lurker's
+  // mound at game level. Both need a wave-6-or-later clear, which
+  // this driver cannot do (it dies in wave 6 — the wave fields a
+  // juggernaut, an exploder, a splitter and the caster together);
+  // the sweep is six lines on the same kill path the splitter
+  // test above exercises, the lurker's numbers and its
+  // untargetable-while-burrowed rule are pinned in defense.test,
+  // and the game-level sightings are staged to join the defense
+  // end-to-end run once its wave-5 tuning is settled (batch 94
+  // report). The run below ends once wave 6 has been live long
+  // enough for several summons, with the player still standing.
+  let seed = 1;
+  t.mock.method(Math, "random", () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296));
+  const data = new Map();
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  let time = 0;
+  const game = mountGame({ storage, pointerLock: true, now: () => time });
+  const frame = () => game.frame(time += 20);
+  game.click("start-button");
+  game.grantPointerLock();
+  frame();
+  const hp = () => Number(game.get("health-value").textContent);
+  const waveStatus = () => game.get("wave-status").textContent;
+  const whelpCoatRatios = [ENEMIES.whelp.coat].map(([r, g, b]) => [g / b, r / g]);
+  const whelpCoats = () => {
+    const vertices = game.actorVertices;
+    if (!vertices?.length) return 0;
+    let count = 0;
+    for (let v = 0; v < vertices.length; v += 12) {
+      const r = vertices[v + 3], g = vertices[v + 4], b = vertices[v + 5];
+      if (g > 0.08 && b > 0.04 && whelpCoatRatios.some(([gb, rg]) => Math.abs(g / b - gb) < .10 && Math.abs(r / g - rg) < .10)) count++;
+    }
+    return count;
+  };
+  let swingCooldown = 0, recovery = 0, stillFrames = 0;
+  let lastX = game.camera[0], lastZ = game.camera[2];
+  const fightStep = () => {
+    if (recovery > 0) { recovery--; return; }
+    if (swingCooldown > 0) { swingCooldown--; return; }
+    if (game.get("crosshair").classList.contains("on-target")) {
+      game.release("KeyW");
+      game.get("game").emit("mousedown", { button: 0 });
+      swingCooldown = 25;
+      return;
+    }
+    const target = nearestZombieVertex(game);
+    if (!target) { game.release("KeyW"); return; }
+    if (Math.hypot(game.camera[0] - lastX, game.camera[2] - lastZ) > .05) {
+      lastX = game.camera[0]; lastZ = game.camera[2]; stillFrames = 0;
+    } else if (++stillFrames > 30) {
+      game.release("KeyW");
+      game.key("Space");
+      game.key("KeyD");
+      recovery = 15;
+      stillFrames = 0;
+      return;
+    }
+    const dx = target.x - game.camera[0], dz = target.z - game.camera[2];
+    const turn = Math.atan2(dx, -dz) - Math.atan2(game.direction[0], -game.direction[2]);
+    const dist = Math.hypot(dx, dz);
+    const desiredPitch = Math.max(-1.35, Math.min(0.35, Math.atan2(target.y - game.camera[1], dist)));
+    const currentPitch = Math.asin(Math.max(-1, Math.min(1, game.direction[1])));
+    const clampTurn = radians => Math.max(-65, Math.min(65, radians / .0013));
+    game.document.emit("mousemove", {
+      movementX: clampTurn(Math.atan2(Math.sin(turn), Math.cos(turn))),
+      movementY: clampTurn(-(desiredPitch - currentPitch))
+    });
+    game.key("KeyW");
+  };
+  const releaseRecoveryKeys = () => { game.release("Space"); game.release("KeyD"); };
+  let craftedThisGap = false, whelpSeen = false, wave6RemMax = 0, wave6Frames = 0;
+  for (let i = 0; i < 20000 && game.get("death-screen").hidden; i++) {
+    frame();
+    if (recovery === 0) releaseRecoveryKeys();
+    const live = /第 (\d+) 波 · 剩余 (\d+) 只/.exec(waveStatus());
+    if (live) {
+      craftedThisGap = false;
+      if (Number(live[1]) === 6) {
+        wave6Frames++;
+        wave6RemMax = Math.max(wave6RemMax, Number(live[2]));
+        if (whelpCoats() > 0) whelpSeen = true;
+        if (whelpSeen && wave6Frames > 900) break;
+      }
+    }
+    const upcoming = /第 (\d+) 波 · \d+ 秒后/.exec(waveStatus());
+    if (upcoming && !craftedThisGap && Number(upcoming[1]) > 1) {
+      craftedThisGap = true;
+      game.release("KeyW");
+      game.key("KeyC");
+      frame();
+      game.click("craft-dressing");
+      game.click("craft-dressing");
+      game.click("craft-dressing");
+      game.click("craft-dressing");
+      game.click("craft-dressing");
+      game.key("KeyC");
+      game.grantPointerLock();
+      frame();
+    }
+    fightStep();
+    if (hp() <= 70) game.key("KeyH");
+  }
+  game.release("KeyW");
+  releaseRecoveryKeys();
+  assert.equal(game.get("death-screen").hidden, true, "the player must still be standing in wave 6");
+  assert.ok(wave6Frames > 900, `wave 6 must be observed live for several summons (saw ${wave6Frames} frames)`);
+  assert.ok(whelpSeen, "the wave-6 summoner must summon at least one whelp (its coat vertices appear)");
+  assert.ok(wave6RemMax <= 7, `whelps must never count toward the remaining total (wave 6 peaked at ${wave6RemMax})`);
 });
 
 test("defense runs all eight waves end to end and clears wave 8", t => {
@@ -1952,8 +2281,27 @@ test("defense runs all eight waves end to end and clears wave 8", t => {
   // beacon shares the actor buffer, so the plain nearest-vertex aim the
   // survival test uses would lock onto the beacon instead of a zombie
   // standing further away — the ratio filter keeps only zombie parts.
-  const zombieRatios = Object.values(ENEMIES).flatMap(style => [style.coat, style.skin, style.eyes])
-    .map(([r, g, b]) => [g / b, r / g]);
+  // The ratio table is scoped to the kinds the current wave can
+  // field (plus a roster kind's affiliated offspring), NOT the
+  // whole registry — batch 94's lesson, learned by bisect: the
+  // registry growing from five kinds to ten put new pairs all over
+  // the ratio plane, and the hit flash (red channel +2*hurt, the
+  // others +1.2*hurt, clamped) sweeps every part's ratios as it
+  // fades, so flashed spitter skin and even the universal leg
+  // colour started passing as summoner/whelp/lurker. The lock-on
+  // average then included legs and flashed parts it used to
+  // exclude, the aim point sank, and the bot lost fights in waves
+  // whose rosters never changed. A player identifies targets
+  // among the kinds that can actually be present; so does the bot.
+  let zombieRatios = [];
+  const refreshZombieRatios = wave => {
+    const kinds = new Set(defenseWaveRoster(wave - 1));
+    if (kinds.has("splitter")) kinds.add("splitling");
+    if (kinds.has("summoner")) kinds.add("whelp");
+    zombieRatios = [...kinds].flatMap(kind => [ENEMIES[kind].coat, ENEMIES[kind].skin, ENEMIES[kind].eyes])
+      .map(([r, g, b]) => [g / b, r / g]);
+  };
+  refreshZombieRatios(1);
   const isZombieVertex = (r, g, b) => g > 0.08 && b > 0.04
     && zombieRatios.some(([gb, rg]) => Math.abs(g / b - gb) < 0.10 && Math.abs(r / g - rg) < 0.10);
   // The beacon's rotating crystal is the only actor part coloured
@@ -2043,6 +2391,34 @@ test("defense runs all eight waves end to end and clears wave 8", t => {
     }
     return best ? { ...best, distance: bestD } : null;
   };
+  // Summoners by colour ratio, the exploder finder's pattern: coat
+  // (0.41, 1.89), skin (1.47, 1.24) and eyes (0.60, 1.42) sit apart
+  // from every other kind's parts at a 0.10 tolerance. A summoner
+  // is the one kind that must be hunted down: left alone it stands
+  // off at 8–10, refills its whelps forever, and the wave cannot
+  // end — it counts, and it never comes to the player.
+  // Coat only, here too: the summoner's skin and eyes ratios sit
+  // inside .10 of its own whelp's (skin 1.471/1.240 against
+  // 1.486/1.231), so a three-part finder keeps "finding" the
+  // whelp at the player's feet — the survival summoner test
+  // measured its hunt steering at distance 0.2 from a minion for
+  // thousands of frames. The coats are far apart (.409/1.889
+  // against .625/1.333).
+  const summonerRatios = [ENEMIES.summoner.coat]
+    .map(([r, g, b]) => [g / b, r / g]);
+  const isSummonerVertex = (r, g, b) => g > 0.08 && b > 0.04
+    && summonerRatios.some(([gb, rg]) => Math.abs(g / b - gb) < 0.10 && Math.abs(r / g - rg) < 0.10);
+  const nearestSummonerToPlayer = () => {
+    const vertices = game.actorVertices;
+    if (!vertices?.length) return null;
+    let best = null, bestD = Infinity;
+    for (let v = 0; v < vertices.length; v += 12) {
+      if (!isSummonerVertex(vertices[v + 3], vertices[v + 4], vertices[v + 5])) continue;
+      const d = Math.hypot(vertices[v] - game.camera[0], vertices[v + 2] - game.camera[2]);
+      if (d < bestD) { bestD = d; best = { x: vertices[v], y: vertices[v + 1], z: vertices[v + 2] }; }
+    }
+    return best ? { ...best, distance: bestD } : null;
+  };
   // A spitter vertex by its coat ratio (g/b 1.91, r/g 0.76), the same
   // signature spitterClusters uses. Spitters never close in on their
   // own, so they are the one kind worth walking out to meet.
@@ -2117,6 +2493,7 @@ test("defense runs all eight waves end to end and clears wave 8", t => {
   // beacon died. A centre that jumps more than 1.0 in a frame is a
   // different zombie, so the lock clears instead of following it.
   let lockPos = null;
+  let summonerMemory = null;
   const lockCenter = () => {
     if (!lockPos) return null;
     const vertices = game.actorVertices;
@@ -2142,6 +2519,7 @@ test("defense runs all eight waves end to end and clears wave 8", t => {
     return center;
   };
   const seenWaves = new Set();
+  let ratioWave = 1;
   let maxWave = 0, wave6Spitters = 0, wave6Frames = 0, wave6SpitterSeen = false;
   let noNameFrames = 0, gapHandled = false;
   // Stone budget for repairs: every kill pays 1 stone, every repair
@@ -2151,11 +2529,22 @@ test("defense runs all eight waves end to end and clears wave 8", t => {
   // record (savedProgress loads at run start and merges at run end),
   // so it reads zero all through a fresh run and cannot feed this.
   let repairs = 0, liveKills = 0, prevRem = 0, prevWave = 0, swingStall = 0;
+  let lastMidCraft = -1000;
+  let waveStartRem = 0;
+  let stallRem = -1, stallFrame = 0;
   // Victory margins: the lowest beacon / player HP seen all run. A bot
   // win with the beacon at 5 hp proves far less than a win at 60 — the
   // margins are the number that says how much slack a human has.
   let minBeaconHp = 120, minPlayerHp = 100;
   const kills = () => liveKills;
+  // Total healing items on hand, read off the HUD line ("<敷料> ·
+  // 树皮绷带 <n> · 树叶大敷料 <n> · ..."): the mid-wave craft below
+  // keys on the whole stock, not one recipe — KeyH eats whichever
+  // tier is available, so "out of healing" means all three at zero.
+  const healingStock = () => {
+    const match = /^(\d+) · 树皮绷带 (\d+) · 树叶大敷料 (\d+)/.exec(game.get("hud-dressings").textContent);
+    return match ? Number(match[1]) + Number(match[2]) + Number(match[3]) : 99;
+  };
   // Stuck detection: the player walks into hill slopes and tree trunks
   // that need a jump or a sidestep to get past. Position is sampled at
   // the top of the loop; if the player meant to walk but has not moved
@@ -2172,10 +2561,22 @@ test("defense runs all eight waves end to end and clears wave 8", t => {
     const hop = () => { if (i % 15 === 0) game.key("Space"); };
     const wave = waveNumber();
     if (wave) { maxWave = Math.max(maxWave, wave); seenWaves.add(wave); }
+    if (wave && wave !== ratioWave) { ratioWave = wave; refreshZombieRatios(wave); }
     if (fighting()) {
       const rem = remaining();
+      if (wave !== prevWave) waveStartRem = rem;
       if (wave === prevWave && rem < prevRem) { liveKills += prevRem - rem; swingStall = 0; }
       prevRem = rem; prevWave = wave;
+      // Strategy stall (batch 94): track the last frame the
+      // remaining count moved at all (a split moves it UP — that
+      // is progress too). Six hundred frames without a change
+      // means the endgame is stuck: batch 94's first case was a
+      // splitter route-blocked behind a spitter's firing position
+      // while the other survivor held at range — the camp-at-the-
+      // beacon rule below then waits forever, because neither foe
+      // qualifies as closest-worthy. A player walks over and
+      // finishes it; the hunt override makes the bot do the same.
+      if (rem !== stallRem) { stallRem = rem; stallFrame = i; }
     }
     if (wave === 6 && fighting() && wave6Frames < 300) {
       wave6Frames++;
@@ -2226,6 +2627,35 @@ test("defense runs all eight waves end to end and clears wave 8", t => {
       continue;
     }
     gapHandled = false;
+    // Mid-wave crafting (batch 94 tuning follow-up, HQ-approved
+    // with four guardrails): a player who runs out of dressings
+    // mid-wave opens the backpack and makes more when nothing is
+    // in their face; the gap-only crafter instead starved in wave
+    // 5's endgame — measured hp 89 to 15 in 500 frames against the
+    // juggernaut and a breaker with KeyH printing "no dressings".
+    // Guardrails: only at zero healing stock, only with no foe
+    // within 7 (past any kind's closing distance over the crafting
+    // seconds), only through the real backpack craft path (real
+    // recipe, real leaf cost), and driver-only — no game code is
+    // touched. The 300-frame retry gap keeps a leaf-less failure
+    // from re-opening the pack every frame instead of fighting.
+    if (healingStock() === 0 && i - lastMidCraft > 300) {
+      const foe = nearest();
+      if (!foe || foe.distance > 7) {
+        lastMidCraft = i;
+        game.release("KeyW");
+        game.key("KeyC");
+        frame();
+        game.click("craft-dressing");
+        game.click("craft-dressing");
+        game.click("craft-dressing");
+        game.key("KeyC");
+        game.grantPointerLock();
+        frame();
+        lastMoveFrame = i;
+        continue;
+      }
+    }
     if (i - lastMoveFrame > 120 && i >= unstickUntil) { unstickUntil = i + 60; unstickCount++; }
     if (i < unstickUntil) {
       // Sidestep around whatever the straight walk is stuck on.
@@ -2264,6 +2694,53 @@ test("defense runs all eight waves end to end and clears wave 8", t => {
       && exploderThreat && exploderThreat.distance < 3.2 && !/爆裂者/.test(status)
       ? exploderThreat : null;
     if (forcedExploder) lockPos = { x: forcedExploder.x, z: forcedExploder.z };
+    // A summoner on the field outranks an ordinary lock the same
+    // way, at any range the bot can see it: it retreats as the
+    // player closes, but the player is four times faster, and
+    // every second it lives is another whelp in the fight. Only a
+    // breaker at (or already walking to) the beacon or an exploder
+    // about to blow pre-empts the hunt — the first version without
+    // the en-route clause let wave 5's two breakers chew the
+    // beacon to 36 while the bot was across the field hunting. The
+    // hunt is also gated on a close summoner: an unguarded
+    // full-field chase spent 1500 frames running one down while
+    // its whelps and the juggernaut ground the player from 93 to
+    // 27, and a thin-field gate (remaining <= 4) dragged the bot
+    // to the map corner after the retreating caster while the
+    // pack kited it. The pack dies first (it comes to the player
+    // anyway); a summoner that wanders close dies on the spot;
+    // and a summoner left as the last counting zombie is chased
+    // by the ordinary last-foe rule with nothing else competing
+    // for the lock. The strategy stall is the final backstop: a
+    // summoner is the one kind that can hold a wave open forever
+    // (its stream replaces the bot's whelp kills one for one —
+    // measured: 600+ frames at remaining 2, hp frozen, the bot on
+    // a whelp treadmill at the map's edge), so a stalled count
+    // forces the hunt at any range. The half-wave rule (HQ's
+    // (alpha), the last driver rule of the night) widens it once
+    // more: past the wave's halfway count the hunt is on at any
+    // range, because the caster IS this roster's priority target
+    // by design — a player kills the source mid-wave instead of
+    // mowing whelps until the endgame, and the endgame-only hunt
+    // measured too late twice (600 frames of stall, then ~500 of
+    // clock at remaining 2 with the caster still at 4.9). The
+    // memory steering below follows the same widened gate: a
+    // mid-wave hunt loses its target to view culling exactly the
+    // way the endgame one did. The endgame rule is the
+    // sharpest of the three: at two counting zombies left, the
+    // hunt starts immediately, stall or not — measured on the
+    // wave-6 clock, where the stall trigger alone fired at
+    // remaining 1 with ~600 frames of wave time left and the
+    // timer ran out with the caster at 3.9 units and closing.
+    // The other zombie walks to the player on its own; the
+    // caster never does, and every second spent on its whelps
+    // is a second off a 64-second wave.
+    const summonerThreat = nearestSummonerToPlayer();
+    if (summonerThreat) summonerMemory = { x: summonerThreat.x, z: summonerThreat.z, frame: i };
+    const forcedSummoner = !forcedBreaker && !forcedExploder && !(breakerThreat && breakerThreat.beaconDistance < 8)
+      && summonerThreat && (summonerThreat.distance < 7 || remaining() <= 2 || remaining() * 2 <= waveStartRem || i - stallFrame > 600) && !/召唤者/.test(status)
+      ? summonerThreat : null;
+    if (forcedSummoner) lockPos = { x: forcedSummoner.x, z: forcedSummoner.z };
     let foe = lockCenter();
     let foeIsBeaconPoint = false;
     if (!foe) {
@@ -2279,7 +2756,7 @@ test("defense runs all eight waves end to end and clears wave 8", t => {
       if (!foe) {
         const closest = nearest();
         if (remaining() === 1) foe = closest;
-        else if (closest && (closest.spitter || closest.beaconDistance < 6)) foe = closest;
+        else if (closest && (closest.spitter || closest.beaconDistance < 6 || i - stallFrame > 600)) foe = closest;
         else {
           const beacon = findBeaconPos();
           if (beacon && Math.hypot(game.camera[0] - beacon.x, game.camera[2] - beacon.z) > 4) {
@@ -2290,12 +2767,28 @@ test("defense runs all eight waves end to end and clears wave 8", t => {
       }
       if (foe && !foeIsBeaconPoint) lockPos = { x: foe.x, z: foe.z };
     }
+    // Last resort in the caster endgame: the finder only sees the
+    // summoner while the view faces it — turn to fight the whelp
+    // at the player's feet and its coat leaves the vertex set, the
+    // lock clears, and the bot goes back to waiting at the beacon
+    // while the wave clock runs (measured in wave 6: the caster
+    // flickering at 5-9 units for 900 frames, never engaged). At
+    // two counting zombies left, steer at the last seen position
+    // instead: walking toward it turns the view back onto the
+    // caster, the finder re-acquires it, and the ordinary lock
+    // takes over. Only when nothing else was chosen this frame —
+    // a breaker at the beacon still outranks the memory.
+    if ((!foe || foeIsBeaconPoint) && (remaining() <= 2 || remaining() * 2 <= waveStartRem) && summonerMemory && i - summonerMemory.frame < 900
+      && Math.hypot(summonerMemory.x - game.camera[0], summonerMemory.z - game.camera[2]) > 2) {
+      foe = { x: summonerMemory.x, y: game.camera[1], z: summonerMemory.z };
+      foeIsBeaconPoint = false;
+    }
     if (foe) {
       foe.distance = Math.hypot(foe.x - game.camera[0], foe.z - game.camera[2]);
       const beacon = findBeaconPos();
       foe.beaconDistance = beacon ? Math.hypot(foe.x - beacon.x, foe.z - beacon.z) : Infinity;
     }
-    const named = /破城者|投掷者|爆裂者/.test(status);
+    const named = /破城者|投掷者|爆裂者|分裂者|小分裂体|召唤者|幼体|潜伏者/.test(status);
     if (named) swingStall = 0;
     if (named && !forcedBreaker && !forcedExploder) {
       noNameFrames = 0;
@@ -2338,7 +2831,7 @@ test("defense runs all eight waves end to end and clears wave 8", t => {
         noNameFrames = 0;
         turnToward(foe, 0);
         if (foe.distance > 3) { game.key("KeyW"); hop(); walking = true; }
-        else if (!status && foe.distance > 0.4 && ++swingStall > 60) {
+        else if (!status && ++swingStall > 60) {
           // Anti-stall (batch 88): the foe is in swing range on paper
           // but the sights stay empty — the classic case is a zombie
           // stuck below a ledge, its parts behind the terrain edge the
@@ -2346,6 +2839,12 @@ test("defense runs all eight waves end to end and clears wave 8", t => {
           // the wave cannot clear, so step in and change the geometry
           // (a player walks over and looks down the ledge). The stall
           // counter resets whenever a name shows or a kill lands.
+          // Batch 94 dropped the old foe.distance > 0.4 condition:
+          // a whelp at the player's feet on a slope sits at 0.27 —
+          // inside the excluded band — with its body below the
+          // pitch clamp's reach, and the bot swung at air for 400
+          // frames while the pack ate it. Point-blank is exactly
+          // where the geometry step is needed.
           game.key("KeyW"); hop(); walking = true;
           attack();
         }
@@ -2539,14 +3038,20 @@ test("survival difficulty comes from the config table, unchanged", () => {
   // spitter as the fill kind (the deleted walker's seat), the
   // batch-88 mechanism kinds on their original mix-in slots, and
   // breakers from wave 7. The deleted runner's rule is gone — its
-  // slots fall through to the fill.
+  // slots fall through to the fill. Batch 94 adds its three kinds:
+  // the splitter on slot 3 from wave 5, the summoner on slot 5 from
+  // wave 6, and the lurker — listed first so its slot-6 claim beats
+  // the dasher's period-6 repeat — on slot 6 from wave 7.
   assert.deepEqual(SURVIVAL_DIFFICULTY, {
     hpPerWave: 0.05,
     maxZombies: 7,
     mixIns: [
+      { kind: "lurker", fromWave: 7, period: 8, offset: 6 },
       { kind: "dasher", fromWave: 4, period: 6, offset: 0 },
       { kind: "exploder", fromWave: 5, period: 6, offset: 1 },
       { kind: "juggernaut", fromWave: 6, period: 7, offset: 2 },
+      { kind: "splitter", fromWave: 5, period: 7, offset: 3 },
+      { kind: "summoner", fromWave: 6, period: 8, offset: 5 },
       { kind: "breaker", fromWave: 7, period: 5, offset: 4 }
     ]
   });
@@ -2557,10 +3062,10 @@ test("survival difficulty comes from the config table, unchanged", () => {
   assert.deepEqual(survivalRoster(1), ["spitter", "spitter"]);
   assert.deepEqual(survivalRoster(2), ["spitter", "spitter", "spitter"]);
   assert.deepEqual(survivalRoster(4), ["dasher", "spitter", "spitter", "spitter", "spitter"]);
-  assert.deepEqual(survivalRoster(5), ["dasher", "exploder", "spitter", "spitter", "spitter", "spitter"]);
-  assert.deepEqual(survivalRoster(6), ["dasher", "exploder", "juggernaut", "spitter", "spitter", "spitter", "dasher"]);
-  assert.deepEqual(survivalRoster(7), ["dasher", "exploder", "juggernaut", "spitter", "breaker", "spitter", "dasher"]);
-  assert.deepEqual(survivalRoster(10), ["dasher", "exploder", "juggernaut", "spitter", "breaker", "spitter", "dasher"]);
+  assert.deepEqual(survivalRoster(5), ["dasher", "exploder", "spitter", "splitter", "spitter", "spitter"]);
+  assert.deepEqual(survivalRoster(6), ["dasher", "exploder", "juggernaut", "splitter", "spitter", "summoner", "dasher"]);
+  assert.deepEqual(survivalRoster(7), ["dasher", "exploder", "juggernaut", "splitter", "breaker", "summoner", "lurker"]);
+  assert.deepEqual(survivalRoster(10), ["dasher", "exploder", "juggernaut", "splitter", "breaker", "summoner", "lurker"]);
   assert.equal(survivalRoster(20).length, 7, "the wave-size cap holds past wave 6");
   // Each kind first appears in the same wave as before.
   const firstSeen = kind => {
@@ -2572,8 +3077,13 @@ test("survival difficulty comes from the config table, unchanged", () => {
   assert.equal(firstSeen("exploder"), 5);
   assert.equal(firstSeen("juggernaut"), 6);
   assert.equal(firstSeen("breaker"), 7);
-  // The mechanism kinds are registered but unwired this step: no
-  // survival wave fields them until the wiring step adds their rules.
+  assert.equal(firstSeen("splitter"), 5);
+  assert.equal(firstSeen("summoner"), 6);
+  assert.equal(firstSeen("lurker"), 7);
+  // The affiliated kinds never appear in a roster at all: they only
+  // exist as a summoner's summons or a splitter's split.
+  assert.equal(firstSeen("whelp"), null);
+  assert.equal(firstSeen("splitling"), null);
 
   // HP curve: 1 at wave 1, then +5% per wave past it.
   assert.equal(hpMultiplier(1), 1);

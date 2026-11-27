@@ -17,11 +17,15 @@ export function choosesBeacon(kind, hasBeacon, distanceToPlayer, playerReachable
 }
 
 // The roster a defense wave actually spawns: the configured roster
-// from waves.mjs plus the batch-88 kind ramps, appended after the
-// table's own entries. The tables (rebuilt by the deletion on
-// spitters and breakers) carry the base composition; the ramps add
-// one dasher per wave from wave 3, the juggernaut in waves 5, 6
-// and 8, and the exploder in waves 6 and 8 — wave 7 stays the
+// from waves.mjs plus the kind ramps, appended after the table's own
+// entries. The tables (rebuilt by the deletion on spitters and
+// breakers, splitters swapped into waves 4-5 by batch 94) carry the
+// base composition; the ramps add one dasher per wave from wave 3,
+// the juggernaut in waves 5, 6 and 8, the summoner in waves 6 and 8
+// (batch 94's tuning follow-up moved it off wave 5: with a splitter
+// also traded back to a spitter in the final table, wave 5's clock
+// still did not close — HQ ruling, options (b) then (a)), and the
+// exploder and the lurker in waves 6 and 8 — wave 7 stays the
 // breather before the finale. Past the configured waves the final
 // wave repeats, ramps included. Returns a fresh array — the
 // configured roster is never mutated.
@@ -31,8 +35,11 @@ export function defenseWaveRoster(waveIndex) {
   const dashers = waveIndex >= 2 ? 1 : 0;
   const juggernauts = waveIndex >= 4 && waveIndex !== 6 ? 1 : 0;
   const exploders = waveIndex >= 5 && waveIndex !== 6 ? 1 : 0;
+  const summoners = waveIndex >= 5 && waveIndex !== 6 ? 1 : 0;
+  const lurkers = waveIndex >= 5 && waveIndex !== 6 ? 1 : 0;
   return [...wave.enemies, ...Array(dashers).fill("dasher"),
-    ...Array(juggernauts).fill("juggernaut"), ...Array(exploders).fill("exploder")];
+    ...Array(juggernauts).fill("juggernaut"), ...Array(exploders).fill("exploder"),
+    ...Array(summoners).fill("summoner"), ...Array(lurkers).fill("lurker")];
 }
 
 export function selectWaveSpawns(roster, candidates, alternateSides) {
@@ -102,6 +109,15 @@ export function actorRay(origin, direction, actor, angle, width = 1, height = 1)
 }
 
 export function zombieParts(zombie, style, part) {
+  // A burrowed lurker shows no body at all — only the soil mound it
+  // pushes ahead of itself (two dirt slabs, in ground browns no
+  // zombie part uses). findMeleeTarget skips burrowed lurkers, so
+  // these parts are pure presentation: the trail the player reads.
+  if (zombie.burrow === "burrowed") {
+    part(-.5, 0, -.5, 1.0, .18, 1.0, .36, .27, .17);
+    part(-.28, .18, -.28, .56, .14, .56, .43, .33, .21);
+    return;
+  }
   const pace = Math.sin(zombie.walk) * .11;
   const raised = zombie.windup > 0 ? .18 : zombie.cooldown > style.cooldown - .15 ? .08 : 0;
   part(-.26, .48, -.15, .52, .70, .30, ...style.coat);
@@ -147,6 +163,10 @@ export function findMeleeTarget(origin, direction, nearest, zombies, beacon, ela
   }
   for (const zombie of zombies) {
     if (zombie.dying !== undefined) continue;
+    // A burrowed lurker is underground: no sword or pulse can reach
+    // it until it surfaces. (Surfacing is fair game — it is already
+    // rising out of the ground.)
+    if (zombie.burrow === "burrowed") continue;
     const profile = ENEMIES[zombie.kind] ?? ENEMIES.spitter;
     const hit = actorRay(origin, direction, zombie, zombie.angle, profile.width, profile.height);
     let distance = nearest;

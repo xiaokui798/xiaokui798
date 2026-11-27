@@ -15,11 +15,17 @@ export const SURVIVAL_DIFFICULTY = Object.freeze({
   // fills every slot no rule claims — since the walker deletion it is
   // the roster's base kind. The batch-88 mechanism kinds keep their
   // original slots; the deleted runner's rule is gone, its slots fall
-  // to the fill.)
+  // to the fill. Batch 94: the splitter takes slot 3 from wave 5, the
+  // summoner slot 5 from wave 6, and the lurker — listed first so its
+  // slot-6 claim beats the dasher's period-6 repeat — slot 6 from
+  // wave 7, which makes wave 7 the full house: one of every kind.)
   mixIns: Object.freeze([
+    Object.freeze({ kind: "lurker", fromWave: 7, period: 8, offset: 6 }),
     Object.freeze({ kind: "dasher", fromWave: 4, period: 6, offset: 0 }),
     Object.freeze({ kind: "exploder", fromWave: 5, period: 6, offset: 1 }),
     Object.freeze({ kind: "juggernaut", fromWave: 6, period: 7, offset: 2 }),
+    Object.freeze({ kind: "splitter", fromWave: 5, period: 7, offset: 3 }),
+    Object.freeze({ kind: "summoner", fromWave: 6, period: 8, offset: 5 }),
     Object.freeze({ kind: "breaker", fromWave: 7, period: 5, offset: 4 })
   ])
 });
